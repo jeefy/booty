@@ -1,0 +1,53 @@
+passwd:
+  files:
+    - filesystem: root
+      path: /opt/hostname.sh
+      contents:
+        remote:
+          url: http://your-server-ip/scripts/hostname.sh
+      mode: 775
+    - filesystem: root
+      path: /opt/version-check.sh
+      contents:
+        remote:
+          url: http://your-server-ip/scripts/version-check.sh
+      mode: 775
+systemd:
+  units:
+    - enabled: true
+      name: docker.service
+    - enabled: true
+      name: containerd.service
+    - name: update.service
+      contents: |
+        [Unit]
+        Description=Compares current version to remote version
+
+        [Service]
+        Type=oneshot
+        ExecStart=/opt/version-check.sh
+    - name: update.timer
+      enable: true
+      contents: |
+        [Unit]
+        Description=Run update-check every 10 minutes
+
+        [Timer]
+        OnCalendar=*:0/10
+
+        [Install]
+        WantedBy=multi-user.target
+    - enabled: true
+      name: fetch-hostname.service
+      contents: |
+        [Install]
+        WantedBy=multi-user.target
+
+        [Unit]
+        Description=fetch hostname script
+        Wants=network-online.target
+        After=network.target network-online.target
+        
+        [Service]
+        Type=oneshot
+        ExecStart=/opt/hostname.sh
