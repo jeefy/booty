@@ -1,15 +1,13 @@
-package main
+package versions
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"os"
-	"path"
 	"time"
 
 	"github.com/go-co-op/gocron"
+	"github.com/jeefy/booty/pkg/config"
 	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
@@ -17,7 +15,7 @@ import (
 func StartCron() {
 	log.Println("Starting CRON version check")
 	cron := gocron.NewScheduler(time.UTC)
-	_, err := cron.Cron(args.cronSchedule).Do(VersionCheck)
+	_, err := cron.Cron(viper.GetString(config.UpdateSchedule)).Do(VersionCheck)
 	if err != nil {
 		log.Fatalf("Error creating prune cronjob: %s", err.Error())
 	}
@@ -27,8 +25,8 @@ func StartCron() {
 func VersionCheck() {
 	log.Println("Checking remote version")
 	LoadRemoteVersion()
-	if viper.GetString(RemoteVersion) != viper.GetString(CurrentVersion) {
-		log.Printf("Remote version %s is different than local version %s", viper.GetString(RemoteVersion), viper.GetString(CurrentVersion))
+	if viper.GetString(config.RemoteVersion) != viper.GetString(config.CurrentVersion) {
+		log.Printf("Remote version %s is different than local version %s", viper.GetString(config.RemoteVersion), viper.GetString(config.CurrentVersion))
 
 		if err := DownloadFlatcarFile(fmt.Sprintf("version.txt")); err != nil {
 			log.Printf("Error downloading version.txt: %s", err.Error())
@@ -40,7 +38,7 @@ func VersionCheck() {
 			log.Printf("Error downloading flatcar_production_pxe.vmlinuz: %s", err.Error())
 		}
 
-		viper.Set(CurrentVersion, viper.GetString(RemoteVersion))
+		viper.Set(config.CurrentVersion, viper.GetString(config.RemoteVersion))
 	}
 
 }
@@ -55,7 +53,7 @@ func LoadRemoteVersion() {
 			}
 			return
 		}
-		viper.Set(RemoteVersion, data["FLATCAR_VERSION"])
+		viper.Set(config.RemoteVersion, data["FLATCAR_VERSION"])
 		log.Printf("Remote version found: %s", data["FLATCAR_VERSION"])
 	} else {
 		log.Printf("Error retrieving remote version from %s: %s", RemoteFlatcarURL(), err.Error())
@@ -63,31 +61,9 @@ func LoadRemoteVersion() {
 }
 
 func RemoteFlatcarURL() string {
-	return fmt.Sprintf(viper.GetString(FlatcarURL), viper.GetString(Channel), viper.GetString(Architecture))
+	return fmt.Sprintf(viper.GetString(config.FlatcarURL), viper.GetString(config.Channel), viper.GetString(config.Architecture))
 }
 
 func DownloadFlatcarFile(filename string) error {
-	return DownloadFile(fmt.Sprintf(RemoteFlatcarURL()+"/%s", filename))
-}
-
-func DownloadFile(url string) error {
-	log.Printf("Downloading %s", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	f, err := os.Create(fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(resp.Request.URL.Path)))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = io.Copy(f, resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return config.DownloadFile(fmt.Sprintf(RemoteFlatcarURL()+"/%s", filename))
 }

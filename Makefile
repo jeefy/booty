@@ -1,8 +1,8 @@
 build:
-	go build -o bin/booty *.go
+	go build -o bin/booty cmd/main.go
 
 run:
-	go run *.go
+	go run cmd/main.go
 
 image:
 	docker build -t jeefy/booty .

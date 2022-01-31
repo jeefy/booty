@@ -1,4 +1,4 @@
-package main
+package tftp
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeefy/booty/pkg/config"
 	"github.com/pin/tftp"
 	"github.com/spf13/viper"
 )
@@ -31,11 +32,11 @@ label flatcar
 func readHandler(filename string, rf io.ReaderFrom) error {
 	log.Printf("TFTP Get: %s\n", filename)
 	if filename == "pxelinux.cfg/default" {
-		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, viper.GetString(ServerIP)))
+		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, viper.GetString(config.ServerIP)))
 		rf.ReadFrom(r)
 		return nil
 	}
-	file, err := os.Open(fmt.Sprintf("%s/%s", viper.GetString(DataDir), filename))
+	file, err := os.Open(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), filename))
 	if err != nil {
 		return err
 	}

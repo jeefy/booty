@@ -1,10 +1,11 @@
-package main
+package hardware
 
 import (
 	"encoding/json"
 	"io/ioutil"
 	"log"
 
+	"github.com/jeefy/booty/pkg/config"
 	"github.com/spf13/viper"
 )
 
@@ -19,7 +20,7 @@ func init() {
 }
 
 func GetMacAddress(mac string) *Host {
-	data, err := ioutil.ReadFile(viper.GetString(DataDir) + "/" + viper.GetString(HardwareMap))
+	data, err := ioutil.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
 		log.Printf("Error reading hardware map: %s", err.Error())
 		return nil

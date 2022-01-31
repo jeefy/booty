@@ -6,6 +6,10 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/jeefy/booty/pkg/config"
+	bootyHTTP "github.com/jeefy/booty/pkg/http"
+	"github.com/jeefy/booty/pkg/tftp"
+	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -98,19 +102,22 @@ func main() {
 
 func run(cmd *cobra.Command, argv []string) error {
 	log.Println("Starting Booty!")
-	LoadConfig(cmd)
-	EnsureDeps()
+	config.LoadConfig(cmd)
+	config.EnsureDeps()
 
-	if viper.GetBool(Debug) {
+	if viper.GetBool(config.Debug) {
 		go func() {
 			log.Println("Starting pprof server on port 6060")
 			log.Println(http.ListenAndServe(":6060", nil))
 		}()
 	}
 
-	StartCron()
-	StartTFTP()
-	StartHTTP()
+	versions.StartCron()
+	tftp.StartTFTP()
+
+	// Start the HTTP server
+	// This is a blocking operation
+	bootyHTTP.StartHTTP()
 
 	return nil
 }

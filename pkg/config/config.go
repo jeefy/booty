@@ -1,9 +1,12 @@
-package main
+package config
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"path"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -36,17 +39,38 @@ func LoadConfig(cmd *cobra.Command) {
 			viper.Set(CurrentVersion, data["FLATCAR_VERSION"])
 			log.Printf("Local version found: %s", data["FLATCAR_VERSION"])
 		}
-	} else {
-		VersionCheck()
 	}
-
-	viper.BindEnv(RemoteVersion, "REMOTE_VERSION")
-	viper.SetDefault(RemoteVersion, "")
-	LoadRemoteVersion()
 
 	viper.BindEnv(IgnitionFile, "IGNITION_FILE")
 	viper.SetDefault(IgnitionFile, "ignition.yaml")
 
 	viper.BindEnv(HardwareMap, "HARDWARE_MAP")
 	viper.SetDefault(HardwareMap, "hardware.json")
+}
+
+func DownloadFile(url string) error {
+	log.Printf("Downloading %s", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	f, err := os.Create(fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(resp.Request.URL.Path)))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func EnsureDeps() {
+	DownloadFile("http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20210731/images/netboot/pxelinux.0")
+	DownloadFile("http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20210731/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
 }

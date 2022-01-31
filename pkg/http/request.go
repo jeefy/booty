@@ -1,4 +1,4 @@
-package main
+package http
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	tConfig "github.com/flatcar-linux/container-linux-config-transpiler/config"
+	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/spf13/viper"
 )
 
@@ -20,7 +22,7 @@ func handleHostsRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := GetMacAddress(r.URL.Query().Get("mac"))
+	host := hardware.GetMacAddress(r.URL.Query().Get("mac"))
 	if host == nil {
 		w.Write([]byte("Error retrieving host"))
 		return
@@ -37,7 +39,7 @@ func handleHostsRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
-	ignitionFile, err := ioutil.ReadFile(fmt.Sprintf("%s/%s", viper.GetString(DataDir), viper.GetString(IgnitionFile)))
+	ignitionFile, err := ioutil.ReadFile(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), viper.GetString(config.IgnitionFile)))
 	if err != nil {
 		w.Write([]byte(err.Error()))
 		return
@@ -52,5 +54,5 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(fmt.Sprintf("FLATCAR_VERSION=%s", viper.GetString(CurrentVersion))))
+	w.Write([]byte(fmt.Sprintf("FLATCAR_VERSION=%s", viper.GetString(config.CurrentVersion))))
 }

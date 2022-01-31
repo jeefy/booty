@@ -1,4 +1,4 @@
-package main
+package http
 
 import (
 	"context"
@@ -9,10 +9,13 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/jeefy/booty/pkg/config"
+	"github.com/spf13/viper"
 )
 
 func StartHTTP() {
-	port := fmt.Sprintf(":%d", args.httpPort)
+	port := fmt.Sprintf(":%d", viper.GetInt(config.HttpPort))
 	log.Printf("Starting HTTP server on %s", port)
 	// Create a mux for routing incoming requests
 	myHandler := http.NewServeMux()
