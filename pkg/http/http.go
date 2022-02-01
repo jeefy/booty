@@ -25,6 +25,8 @@ func StartHTTP() {
 	myHandler.HandleFunc("/ignition.json", handleIgnitionRequest)
 	myHandler.HandleFunc("/version.txt", handleVersionRequest)
 	myHandler.HandleFunc("/hosts", handleHostsRequest)
+	fs := http.FileServer(http.Dir(viper.GetString(config.DataDir)))
+	myHandler.Handle("/data/", http.StripPrefix("/data/", fs))
 
 	s := &http.Server{
 		Addr:           port,

@@ -13,13 +13,13 @@ data:
           path: /opt/hostname.sh
           contents:
             remote:
-              url: http://{{ .ServerIP }}/scripts/hostname.sh
+              url: http://{{ .ServerIP }}/data/scripts/hostname.sh
           mode: 775
         - filesystem: root
           path: /opt/version-check.sh
           contents:
             remote:
-              url: http://{{ .ServerIP }}/scripts/version-check.sh
+              url: http://{{ .ServerIP }}/data/scripts/version-check.sh
           mode: 775
     systemd:
       units:
