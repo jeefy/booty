@@ -1,6 +1,6 @@
 # Booty
 
-A simple (i)PXE Server for booting Flatcar-Linux
+A simple PXE Server for booting Flatcar-Linux
 
 ```
 > booty --help
