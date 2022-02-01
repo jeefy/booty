@@ -42,10 +42,10 @@ func LoadConfig(cmd *cobra.Command) {
 	}
 
 	viper.BindEnv(IgnitionFile, "IGNITION_FILE")
-	viper.SetDefault(IgnitionFile, "ignition.yaml")
+	viper.SetDefault(IgnitionFile, "config/ignition.yaml")
 
 	viper.BindEnv(HardwareMap, "HARDWARE_MAP")
-	viper.SetDefault(HardwareMap, "hardware.json")
+	viper.SetDefault(HardwareMap, "config/hardware.json")
 }
 
 func DownloadFile(url string) error {

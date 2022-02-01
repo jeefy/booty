@@ -2,14 +2,18 @@ module github.com/jeefy/booty
 
 go 1.16
 
+replace (
+	github.com/flatcar-linux/container-linux-config-transpiler => github.com/flatcar-linux/container-linux-config-transpiler v0.9.2
+	github.com/pin/tftp => github.com/pin/tftp v0.0.0-20210809155059-0161c5dd2e96
+)
+
 require (
-	github.com/flatcar-linux/container-linux-config-transpiler v0.9.2 // indirect
-	github.com/go-co-op/gocron v1.7.1
+	github.com/flatcar-linux/container-linux-config-transpiler v0.9.2
+	github.com/go-co-op/gocron v1.11.0
 	github.com/joho/godotenv v1.4.0
-	github.com/pin/tftp v2.1.0+incompatible // indirect
-	github.com/segmentio/fasthash v1.0.3
-	github.com/spf13/cobra v1.2.1
-	github.com/spf13/viper v1.8.1
-	golang.org/x/sys v0.0.0-20210603081109-ebe580a85c40 // indirect
-	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
+	github.com/pin/tftp v2.2.0+incompatible
+	github.com/spf13/cobra v1.3.0
+	github.com/spf13/viper v1.10.1
+	golang.org/x/net v0.0.0-20220127200216-cd36cc0744dd // indirect
+	golang.org/x/sys v0.0.0-20220128215802-99c3d69c2c27 // indirect
 )

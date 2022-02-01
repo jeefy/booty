@@ -18,7 +18,12 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	log.Printf("TFTP Get: %s\n", filename)
 	if filename == "pxelinux.cfg/default" {
 		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, viper.GetString(config.ServerIP)))
-		rf.ReadFrom(r)
+		n, err := rf.ReadFrom(r)
+		if err != nil {
+			log.Printf("Error reading PXE config: %v\n", err)
+			return err
+		}
+		log.Printf("%d bytes sent\n", n)
 		return nil
 	}
 	file, err := os.Open(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), filename))
@@ -42,6 +47,8 @@ func writeHandler(filename string, wt io.WriterTo) error {
 func StartTFTP() {
 	// use nil in place of handler to disable read or write operations
 	s := tftp.NewServer(readHandler, writeHandler)
+	s.SetBlockSize(2000)
+	s.EnableSinglePort()
 	s.SetTimeout(5 * time.Second) // optional
 	go func() {
 		err := s.ListenAndServe(":69") // blocks until s.Shutdown() is called
