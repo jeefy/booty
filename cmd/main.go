@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 
 	"github.com/jeefy/booty/pkg/config"
@@ -12,8 +11,6 @@ import (
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-
-	_ "net/http/pprof"
 )
 
 var Cmd = &cobra.Command{
@@ -58,7 +55,7 @@ func init() {
 	flags.StringVar(
 		&args.dataDir,
 		"dataDir",
-		"/tmp",
+		"/data",
 		"Directory to store stateful data",
 	)
 
@@ -104,13 +101,6 @@ func run(cmd *cobra.Command, argv []string) error {
 	log.Println("Starting Booty!")
 	config.LoadConfig(cmd)
 	config.EnsureDeps()
-
-	if viper.GetBool(config.Debug) {
-		go func() {
-			log.Println("Starting pprof server on port 6060")
-			log.Println(http.ListenAndServe(":6060", nil))
-		}()
-	}
 
 	versions.StartCron()
 	tftp.StartTFTP()

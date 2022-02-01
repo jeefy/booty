@@ -1,16 +1,16 @@
-passwd:
+storage:
   files:
     - filesystem: root
       path: /opt/hostname.sh
       contents:
         remote:
-          url: http://your-server-ip/scripts/hostname.sh
+          url: http://{{ .ServerIP }}/scripts/hostname.sh
       mode: 775
     - filesystem: root
       path: /opt/version-check.sh
       contents:
         remote:
-          url: http://your-server-ip/scripts/version-check.sh
+          url: http://{{ .ServerIP }}/scripts/version-check.sh
       mode: 775
 systemd:
   units:
@@ -24,6 +24,7 @@ systemd:
         Description=Compares current version to remote version
 
         [Service]
+        Environment=BOOTY_IP={{ .ServerIP }}
         Type=oneshot
         ExecStart=/opt/version-check.sh
     - name: update.timer
@@ -50,4 +51,5 @@ systemd:
         
         [Service]
         Type=oneshot
+        Environment=BOOTY_IP={{ .ServerIP }}
         ExecStart=/opt/hostname.sh

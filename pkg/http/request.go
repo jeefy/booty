@@ -1,10 +1,12 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+
+	"text/template"
 
 	tConfig "github.com/flatcar-linux/container-linux-config-transpiler/config"
 	"github.com/jeefy/booty/pkg/config"
@@ -39,12 +41,22 @@ func handleHostsRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
-	ignitionFile, err := ioutil.ReadFile(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), viper.GetString(config.IgnitionFile)))
+	templateData := struct {
+		ServerIP string
+	}{
+		ServerIP: viper.GetString(config.ServerIP),
+	}
+	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), viper.GetString(config.IgnitionFile)))
 	if err != nil {
 		w.Write([]byte(err.Error()))
 		return
 	}
-	conf, _, _ := tConfig.Parse(ignitionFile)
+	var tpl bytes.Buffer
+	err = t.Execute(&tpl, templateData)
+	if err != nil {
+		w.Write([]byte(err.Error()))
+	}
+	conf, _, _ := tConfig.Parse(tpl.Bytes())
 	data, err := json.Marshal(conf)
 	if err != nil {
 		w.Write([]byte(err.Error()))

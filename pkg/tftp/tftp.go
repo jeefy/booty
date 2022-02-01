@@ -13,21 +13,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-const (
-	PXEConfigContents = `default flatcar
-prompt 1
-timeout 5
-
-display boot.msg
-
-label flatcar
-	menu default
-	kernel flatcar_production_pxe.vmlinuz
-	initrd flatcar_production_pxe_image.cpio.gz
-	append flatcar.first_boot=1 ignition.config.url=http://%s/config/flatcar.ign
-`
-)
-
 // readHandler is called when client starts file download from server
 func readHandler(filename string, rf io.ReaderFrom) error {
 	log.Printf("TFTP Get: %s\n", filename)

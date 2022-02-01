@@ -2,7 +2,7 @@
 
 set -a
 . /etc/lsb-release
-. <(curl http://your-server-ip/version.txt)
+. <(curl http://${BOOTY_IP}/version.txt)
 set +a
 
 echo "Local version: $DISTRIB_RELEASE";
