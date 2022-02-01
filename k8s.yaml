@@ -1,0 +1,144 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: booty-config
+data:
+  hardware.json: |
+    {}
+  ignition.yaml: |
+    storage:
+      files:
+        - filesystem: root
+          path: /opt/hostname.sh
+          contents:
+            remote:
+              url: http://{{ .ServerIP }}/scripts/hostname.sh
+          mode: 775
+        - filesystem: root
+          path: /opt/version-check.sh
+          contents:
+            remote:
+              url: http://{{ .ServerIP }}/scripts/version-check.sh
+          mode: 775
+    systemd:
+      units:
+        - enabled: true
+          name: docker.service
+        - enabled: true
+          name: containerd.service
+        - name: update.service
+          contents: |
+            [Unit]
+            Description=Compares current version to remote version
+
+            [Service]
+            Environment=BOOTY_IP={{ .ServerIP }}
+            Type=oneshot
+            ExecStart=/opt/version-check.sh
+        - name: update.timer
+          enable: true
+          contents: |
+            [Unit]
+            Description=Run update-check every 10 minutes
+
+            [Timer]
+            OnCalendar=*:0/10
+
+            [Install]
+            WantedBy=multi-user.target
+        - enabled: true
+          name: fetch-hostname.service
+          contents: |
+            [Install]
+            WantedBy=multi-user.target
+
+            [Unit]
+            Description=fetch hostname script
+            Wants=network-online.target
+            After=network.target network-online.target
+            
+            [Service]
+            Type=oneshot
+            Environment=BOOTY_IP={{ .ServerIP }}
+            ExecStart=/opt/hostname.sh
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booty
+  labels:
+    app: booty
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: booty
+  template:
+    metadata:
+      labels:
+        app: booty
+    spec:
+      containers:
+      - name: booty
+        image: jeefy/booty:latest
+        args:
+          - "--dataDir"
+          - "/data"
+          - "--serverIP"
+          - "192.168.50.55" # This should be the IP of the service your hosts can connect to
+        ports:
+        - containerPort: 69
+        - containerPort: 8080
+        volumeMounts:
+        - name: booty-config
+          mountPath: /data/config/
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+      volumes:
+      - name: booty-config
+        configMap:
+          # Provide the name of the ConfigMap containing the files you want
+          # to add to the container
+          name: booty-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    metallb.universe.tf/allow-shared-ip: booty-svc # If you have a metallb setup, you need this to attach two services to the same IP
+  labels:
+    app: booty
+  name: booty-tcp
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: booty
+  type: LoadBalancer
+  loadBalancerIP: 192.168.50.55
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    metallb.universe.tf/allow-shared-ip: booty-svc # If you have a metallb setup, you need this to attach two services to the same IP
+  labels:
+    app: booty
+  name: booty-udp
+spec:
+  ports:
+  - name: tftp
+    port: 69
+    protocol: UDP
+    targetPort: 69
+  selector:
+    app: booty
+  type: LoadBalancer
+  loadBalancerIP: 192.168.50.55

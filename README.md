@@ -49,9 +49,9 @@ jeefy/booty:latest \
 
 ### Kubernetes
 
-```
-TODO
-```
+[Example deployment](k8s.yaml)
+
+This creates a configmap with the example ignition yaml config, a deployment of booty, and a service.
 
 ## Additional Thoughts
 
