@@ -82,7 +82,7 @@ spec:
     spec:
       containers:
       - name: booty
-        image: jeefy/booty:latest
+        image: ghcr.io/jeefy/booty:main
         args:
           - "--dataDir"
           - "/data"

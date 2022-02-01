@@ -42,7 +42,7 @@ docker run --rm -it \
 -v $PWD:/data/ \
 -p 69:69/udp \
 -p 80:8080 \
-jeefy/booty:latest \
+ghcr.io/jeefy/booty:main \
 --dataDir=/storage/ \
 --serverIP=192.168.1.10
 ```
