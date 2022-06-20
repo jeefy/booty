@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"text/template"
@@ -56,13 +57,41 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Write([]byte(err.Error()))
 	}
-	conf, _, _ := tConfig.Parse(tpl.Bytes())
+
+	/*conf, _, _ := tConfig.Parse(tpl.Bytes())
 	data, err := json.Marshal(conf)
 	if err != nil {
 		w.Write([]byte(err.Error()))
 		return
+	}*/
+
+	cfg, ast, report := tConfig.Parse(tpl.Bytes())
+	if len(report.Entries) > 0 {
+		errMsg := fmt.Sprintf("Error parsing ignition: %s", report.String())
+		log.Println(errMsg)
+		if report.IsFatal() {
+			w.Write([]byte(errMsg))
+			return
+		}
 	}
-	w.Write(data)
+
+	ignCfg, report := tConfig.Convert(cfg, "", ast)
+	if len(report.Entries) > 0 {
+		errMsg := fmt.Sprintf("Error converting ignition: %s", report.String())
+		log.Println(errMsg)
+		if report.IsFatal() {
+			w.Write([]byte(errMsg))
+			return
+		}
+	}
+
+	var dataOut []byte
+	dataOut, err = json.Marshal(&ignCfg)
+	if err != nil {
+		log.Printf("Failed to marshal output: %v", err)
+	}
+
+	w.Write(dataOut)
 }
 
 func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
