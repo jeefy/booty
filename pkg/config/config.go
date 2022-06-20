@@ -66,6 +66,11 @@ func DownloadFile(url string) error {
 	if err != nil {
 		return err
 	}
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	log.Printf("Download completed for %s (%d)", url, fileInfo.Size())
 
 	return nil
 }
