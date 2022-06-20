@@ -23,7 +23,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 			log.Printf("Error reading PXE config: %v\n", err)
 			return err
 		}
-		log.Printf("%d bytes sent\n", n)
+		log.Printf("%d bytes sent (%s)\n", n, filename)
 		return nil
 	}
 	file, err := os.Open(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), filename))
@@ -34,7 +34,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("%d bytes sent\n", n)
+	log.Printf("%d bytes sent (%s)\n", n, filename)
 	return nil
 }
 
