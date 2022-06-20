@@ -23,9 +23,14 @@ func StartCron() {
 }
 
 func VersionCheck() {
+	if viper.GetBool(config.Updating) {
+		log.Println("Already updating, skipping version check")
+		return
+	}
 	log.Println("Checking remote version")
 	LoadRemoteVersion()
 	if viper.GetString(config.RemoteVersion) != viper.GetString(config.CurrentVersion) {
+		viper.Set(config.Updating, true)
 		log.Printf("Remote version %s is different than local version %s", viper.GetString(config.RemoteVersion), viper.GetString(config.CurrentVersion))
 
 		if err := DownloadFlatcarFile(fmt.Sprintf("version.txt")); err != nil {
@@ -39,6 +44,7 @@ func VersionCheck() {
 		}
 
 		viper.Set(config.CurrentVersion, viper.GetString(config.RemoteVersion))
+		viper.Set(config.Updating, false)
 	}
 
 }

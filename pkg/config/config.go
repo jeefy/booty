@@ -26,10 +26,12 @@ const (
 	DataDir        = "dataDir"
 	FlatcarURL     = "flatcarURL"
 	ServerIP       = "serverIP"
+	Updating       = "updating"
 )
 
 func LoadConfig(cmd *cobra.Command) {
 	viper.SetDefault(Debug, false)
+	viper.SetDefault(Updating, false)
 	viper.SetDefault(FlatcarURL, "https://%s.release.flatcar-linux.net/%s-usr/current")
 	//https: //stable.release.flatcar-linux.net/amd64-usr/current/version.txt
 
