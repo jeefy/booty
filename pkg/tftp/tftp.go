@@ -47,9 +47,9 @@ func writeHandler(filename string, wt io.WriterTo) error {
 func StartTFTP() {
 	// use nil in place of handler to disable read or write operations
 	s := tftp.NewServer(readHandler, writeHandler)
-	s.SetBlockSize(2000)
+	s.SetBlockSize(512)
 	s.EnableSinglePort()
-	s.SetTimeout(5 * time.Second) // optional
+	s.SetTimeout(60 * time.Second) // optional
 	go func() {
 		err := s.ListenAndServe(":69") // blocks until s.Shutdown() is called
 		if err != nil {
