@@ -1,5 +1,5 @@
 #!/bin/bash
-MAC=$(ifconfig eno1 | awk '/ether/ {print $2}')
+MAC=$(ifconfig $(ip addr | awk '/state UP/ {print $2}' | sed 's/.$//') | awk '/ether/ {print $2}')
 HOSTNAME=$(curl --fail http://${BOOTY_IP}/hosts"?mac=$MAC")
 
 RET=$?
