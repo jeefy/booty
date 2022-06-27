@@ -4,22 +4,69 @@ kind: ConfigMap
 metadata:
   name: booty-config
 data:
+  # Update Hardware with your MAC/Hostname mapping. Here's mine for an example
   hardware.json: |
-    {}
+    {
+      "40:a8:f0:af:39:8d":
+        {"hostname": "aren"},
+      "40:a8:f0:b1:8d:e1":
+        {"hostname":"yghitan"},
+      "d4:c9:ef:dc:10:72":
+        {"hostname":"ehrlitan"},
+      "d4:be:d9:11:d0:bf":
+        {"hostname":"kartool"},
+      "74:d0:2b:33:4d:5d":
+        {"hostname":"lether"}
+    }
   ignition.yaml: |
+    passwd:
+      users:
+        - name: core
+          ssh_authorized_keys: [] # You should put your SSH keys here ;)
     storage:
+      filesystems:
+        - name: ssd
+          mount:
+            device: /dev/sda
+            format: ext4
+            wipe_filesystem: true
+            label: ssd
       files:
         - filesystem: root
           path: /opt/hostname.sh
           contents:
             remote:
-              url: http://{{ .ServerIP }}/data/scripts/hostname.sh
+              url: http://{{ .ServerIP }}/data/config/hostname.sh
+          mode: 775
+        - filesystem: root
+          path: /opt/cni.sh
+          contents:
+            remote:
+              url: http://{{ .ServerIP }}/data/config/cni.sh
+          mode: 775
+        - filesystem: root
+          path: /opt/systemd.sh
+          contents:
+            remote:
+              url: http://{{ .ServerIP }}/data/config/systemd.sh
+          mode: 775
+        - filesystem: root
+          path: /opt/kube-tools.sh
+          contents:
+            remote:
+              url: http://{{ .ServerIP }}/data/config/kube-tools.sh
+          mode: 775
+        - filesystem: root
+          path: /opt/join.sh
+          contents:
+            remote:
+              url: http://{{ .ServerIP }}/data/config/join.sh
           mode: 775
         - filesystem: root
           path: /opt/version-check.sh
           contents:
             remote:
-              url: http://{{ .ServerIP }}/data/scripts/version-check.sh
+              url: http://{{ .ServerIP }}/data/config/version-check.sh
           mode: 775
     systemd:
       units:
@@ -57,11 +104,131 @@ data:
             Description=fetch hostname script
             Wants=network-online.target
             After=network.target network-online.target
-            
+
+            [Service]
+            Environment=BOOTY_IP={{ .ServerIP }}
+            Type=oneshot
+            ExecStart=/opt/hostname.sh
+        - enabled: true
+          name: cni-install.service
+          contents: |
+            [Install]
+            WantedBy=multi-user.target
+
+            [Unit]
+            Description=k8s installation script
+            Wants=network-online.target
+            After=network.target network-online.target
+
             [Service]
             Type=oneshot
-            Environment=BOOTY_IP={{ .ServerIP }}
-            ExecStart=/opt/hostname.sh
+            ExecStart=/opt/cni.sh
+        - enabled: true
+          name: kube-tools-install.service
+          contents: |
+            [Install]
+            WantedBy=multi-user.target
+
+            [Unit]
+            Description=k8s installation script
+            Requires=cni-install.service
+            After=cni-install.service
+
+            [Service]
+            Type=oneshot
+            ExecStart=/opt/kube-tools.sh
+        - enabled: true
+          name: systemd-k8s-setup.service
+          contents: |
+            [Install]
+            WantedBy=multi-user.target
+
+            [Unit]
+            Description=k8s installation script
+            Requires=kube-tools-install.service
+            After=kube-tools-install.service
+
+            [Service]
+            Type=oneshot
+            ExecStart=/opt/systemd.sh
+        - enabled: true
+          name: k8s-join.service
+          contents: |
+            [Install]
+            WantedBy=multi-user.target
+
+            [Unit]
+            Description=k8s join script
+            Requires=systemd-k8s-setup.service
+            After=systemd-k8s-setup.service
+
+            [Service]
+            Type=oneshot
+            ExecStart=/bin/bash -c 'PATH=/opt/bin:$PATH exec /opt/join.sh'
+  cni.sh: |
+    #!/bin/bash
+    CNI_VERSION="v1.1.1"
+    mkdir -p /opt/cni/bin
+    curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-amd64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+    echo "CNI driver installed";
+  hostname.sh: |
+    #!/bin/bash
+    MAC=$(ifconfig $(ip addr | awk '/state UP/ {print $2}' | sed 's/.$//') | awk '/ether/ {print $2}')
+    HOSTNAME=$(curl --fail http://${BOOTY_IP}/hosts?mac="$MAC" | jq -r '.hostname')
+
+    RET=$?
+    if [ $RET -ne 0 ]; then
+            echo "Failed to get hostname from server"
+            HOSTNAME=flatcar
+    fi
+
+    echo "$HOSTNAME" > /etc/hostname
+    sudo hostnamectl set-hostname "$HOSTNAME"
+  join.sh: |
+    #!/bin/bash
+    sysctl net.bridge.bridge-nf-call-iptables=1
+    /opt/bin/kubeadm join ##Kube IP## --token ##Token## --discovery-token-ca-cert-hash ##Discovery SHA## # Update with your stuff
+
+  kube-tools.sh: |
+    #!/bin/bash
+    RELEASE="$(curl -sSL https://dl.k8s.io/release/stable.txt)"
+    mkdir -p /opt/bin
+    cd /opt/bin
+    curl -L --remote-name-all https://storage.googleapis.com/kubernetes-release/release/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}
+    chmod +x {kubeadm,kubelet,kubectl}
+    VERSION="v1.22.0"
+    wget https://github.com/kubernetes-incubator/cri-tools/releases/download/$VERSION/crictl-$VERSION-linux-amd64.tar.gz
+    sudo tar zxvf crictl-$VERSION-linux-amd64.tar.gz -C /opt/bin
+    rm -f crictl-$VERSION-linux-amd64.tar.gz
+    echo "Kube Tools installed.";
+  systemd.sh: |
+    #!/bin/bash
+    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/kubepkg/templates/latest/deb/kubelet/lib/systemd/system/kubelet.service" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service
+    mkdir -p /etc/systemd/system/kubelet.service.d
+    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/kubepkg/templates/latest/deb/kubeadm/10-kubeadm.conf" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+
+    echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd" > /etc/default/kubelet
+
+    systemctl enable kubelet && systemctl start kubelet
+    echo "Kubelet started";
+  version-check.sh: |
+    #!/bin/bash
+
+    set -a
+    . /etc/lsb-release
+    . <(curl http://${BOOTY_IP}/version.txt)
+    set +a
+
+    echo "Local version: $DISTRIB_RELEASE";
+    echo "Remote version: $FLATCAR_VERSION";
+
+    if [ "$DISTRIB_RELEASE" != "$FLATCAR_VERSION" ]; then
+      echo "Need to reboot!";
+      touch /var/run/reboot-required
+    else
+      echo "Up to date";
+    fi
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -70,6 +237,7 @@ metadata:
   labels:
     app: booty
 spec:
+  replicas: 1
   strategy:
     type: Recreate
   selector:
@@ -82,12 +250,13 @@ spec:
     spec:
       containers:
       - name: booty
+        imagePullPolicy: Always
         image: ghcr.io/jeefy/booty:main
         args:
           - "--dataDir"
           - "/data"
           - "--serverIP"
-          - "192.168.50.55" # This should be the IP of the service your hosts can connect to
+          - "192.168.50.20" # This should be the IP of the service your hosts can connect to
         ports:
         - containerPort: 69
         - containerPort: 8080
@@ -96,13 +265,11 @@ spec:
           mountPath: /data/config/
         resources:
           limits:
-            cpu: "500m"
-            memory: "512Mi"
+            cpu: "500m" # This could probably be tuned lower
+            memory: "512Mi" # This could probably be tuned lower
       volumes:
       - name: booty-config
         configMap:
-          # Provide the name of the ConfigMap containing the files you want
-          # to add to the container
           name: booty-config
 ---
 apiVersion: v1
@@ -122,7 +289,7 @@ spec:
   selector:
     app: booty
   type: LoadBalancer
-  loadBalancerIP: 192.168.50.55
+  loadBalancerIP: 192.168.50.20 # This should be the IP of the service your hosts can connect to
 ---
 apiVersion: v1
 kind: Service
@@ -141,4 +308,4 @@ spec:
   selector:
     app: booty
   type: LoadBalancer
-  loadBalancerIP: 192.168.50.55
+  loadBalancerIP: 192.168.50.20 # This should be the IP of the service your hosts can connect to
