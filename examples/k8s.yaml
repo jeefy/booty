@@ -187,7 +187,7 @@ data:
   join.sh: |
     #!/bin/bash
     sysctl net.bridge.bridge-nf-call-iptables=1
-    /opt/bin/kubeadm join ##Kube IP## --token ##Token## --discovery-token-ca-cert-hash ##Discovery SHA## # Update with your stuff
+    /opt/bin/${JOIN_STRING}
 
   kube-tools.sh: |
     #!/bin/bash
@@ -255,6 +255,8 @@ spec:
         args:
           - "--dataDir"
           - "/data"
+          - "--joinString"
+          - "kubeadm join 192.168.1.10:6443 --token LOLNOPE --discovery-token-ca-cert-hash sha256:LOLNOPE"
           - "--serverIP"
           - "192.168.50.20" # This should be the IP of the service your hosts can connect to
         ports:
