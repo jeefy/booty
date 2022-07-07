@@ -80,7 +80,7 @@ data:
             Description=Compares current version to remote version
 
             [Service]
-            Environment=BOOTY_IP={{ .ServerIP }}
+            Environment="BOOTY_IP={{ .ServerIP }}"
             Type=oneshot
             ExecStart=/opt/version-check.sh
         - name: update.timer
@@ -106,7 +106,7 @@ data:
             After=network.target network-online.target
 
             [Service]
-            Environment=BOOTY_IP={{ .ServerIP }}
+            Environment="BOOTY_IP={{ .ServerIP }}"
             Type=oneshot
             ExecStart=/opt/hostname.sh
         - enabled: true
@@ -163,6 +163,7 @@ data:
             After=systemd-k8s-setup.service
 
             [Service]
+            Environment="JOIN_STRING={{ .JoinString }}"
             Type=oneshot
             ExecStart=/bin/bash -c 'PATH=/opt/bin:$PATH exec /opt/join.sh'
   cni.sh: |
