@@ -14,5 +14,3 @@ if [ "$DISTRIB_RELEASE" != "$FLATCAR_VERSION" ]; then
 else
 	echo "Up to date";
 fi
-
-

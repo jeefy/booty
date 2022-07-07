@@ -1,16 +1,51 @@
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys: [] # You should put your SSH keys here ;)
 storage:
+  filesystems:
+    - name: ssd
+      mount:
+        device: /dev/sda
+        format: ext4
+        wipe_filesystem: true
+        label: ssd
   files:
     - filesystem: root
       path: /opt/hostname.sh
       contents:
         remote:
-          url: http://{{ .ServerIP }}/scripts/hostname.sh
+          url: http://{{ .ServerIP }}/data/config/hostname.sh
+      mode: 775
+    - filesystem: root
+      path: /opt/cni.sh
+      contents:
+        remote:
+          url: http://{{ .ServerIP }}/data/config/cni.sh
+      mode: 775
+    - filesystem: root
+      path: /opt/systemd.sh
+      contents:
+        remote:
+          url: http://{{ .ServerIP }}/data/config/systemd.sh
+      mode: 775
+    - filesystem: root
+      path: /opt/kube-tools.sh
+      contents:
+        remote:
+          url: http://{{ .ServerIP }}/data/config/kube-tools.sh
+      mode: 775
+    - filesystem: root
+      path: /opt/join.sh
+      contents:
+        remote:
+          url: http://{{ .ServerIP }}/data/config/join.sh
       mode: 775
     - filesystem: root
       path: /opt/version-check.sh
       contents:
         remote:
-          url: http://{{ .ServerIP }}/scripts/version-check.sh
+          url: http://{{ .ServerIP }}/data/config/version-check.sh
       mode: 775
 systemd:
   units:
@@ -48,8 +83,65 @@ systemd:
         Description=fetch hostname script
         Wants=network-online.target
         After=network.target network-online.target
-        
+
+        [Service]
+        Environment=BOOTY_IP={{ .ServerIP }}
+        Type=oneshot
+        ExecStart=/opt/hostname.sh
+    - enabled: true
+      name: cni-install.service
+      contents: |
+        [Install]
+        WantedBy=multi-user.target
+
+        [Unit]
+        Description=k8s installation script
+        Wants=network-online.target
+        After=network.target network-online.target
+
         [Service]
         Type=oneshot
-        Environment=BOOTY_IP={{ .ServerIP }}
-        ExecStart=/opt/hostname.sh
+        ExecStart=/opt/cni.sh
+    - enabled: true
+      name: kube-tools-install.service
+      contents: |
+        [Install]
+        WantedBy=multi-user.target
+
+        [Unit]
+        Description=k8s installation script
+        Requires=cni-install.service
+        After=cni-install.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/opt/kube-tools.sh
+    - enabled: true
+      name: systemd-k8s-setup.service
+      contents: |
+        [Install]
+        WantedBy=multi-user.target
+
+        [Unit]
+        Description=k8s installation script
+        Requires=kube-tools-install.service
+        After=kube-tools-install.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/opt/systemd.sh
+    - enabled: true
+      name: k8s-join.service
+      contents: |
+        [Install]
+        WantedBy=multi-user.target
+
+        [Unit]
+        Description=k8s join script
+        Requires=systemd-k8s-setup.service
+        After=systemd-k8s-setup.service
+
+        [Service]
+        Environment=JOIN_STRING={{ .JoinString }}
+        Type=oneshot
+        ExecStart=/bin/bash -c 'PATH=/opt/bin:$PATH exec /opt/join.sh'

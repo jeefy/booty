@@ -43,9 +43,11 @@ func handleHostsRequest(w http.ResponseWriter, r *http.Request) {
 
 func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	templateData := struct {
-		ServerIP string
+		JoinString string
+		ServerIP   string
 	}{
-		ServerIP: viper.GetString(config.ServerIP),
+		JoinString: viper.GetString(config.JoinString),
+		ServerIP:   viper.GetString(config.ServerIP),
 	}
 	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), viper.GetString(config.IgnitionFile)))
 	if err != nil {

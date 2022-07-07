@@ -18,6 +18,7 @@ Flags:
   -h, --help                    help for booty
       --httpPort int            Port to use for the HTTP server (default 8080)
       --serverIP string         IP address that clients can connect to (default "127.0.0.1")
+      --joinString string       The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH (default "")
       --updateSchedule string   Cron schedule to use for cleaning up cache files (default "* */1 * * *")
 ```
 
@@ -44,14 +45,15 @@ docker run --rm -it \
 -p 80:8080 \
 ghcr.io/jeefy/booty:main \
 --dataDir=/storage/ \
+--joinString="kubeadm join 192.168.1.10:6443 --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${SHA_HASH}
 --serverIP=192.168.1.10
 ```
 
 ### Kubernetes
 
-[Example deployment](k8s.yaml)
+[Example deployment](examples/k8s.yaml)
 
-This creates a configmap with the example ignition yaml config, a deployment of booty, and a service.
+This creates a configmap with the example ignition yaml config, scripts, a deployment of booty, and a service.
 
 ## Additional Thoughts
 

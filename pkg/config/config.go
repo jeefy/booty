@@ -26,6 +26,7 @@ const (
 	DataDir        = "dataDir"
 	FlatcarURL     = "flatcarURL"
 	ServerIP       = "serverIP"
+	JoinString     = "joinString"
 	Updating       = "updating"
 )
 

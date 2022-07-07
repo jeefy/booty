@@ -27,6 +27,7 @@ var args struct {
 	httpPort     int
 	architecture string
 	serverIP     string
+	joinString   string
 	channel      string
 }
 
@@ -78,6 +79,13 @@ func init() {
 		"serverIP",
 		"127.0.0.1",
 		"IP address that clients can connect to",
+	)
+
+	flags.StringVar(
+		&args.joinString,
+		"joinString",
+		"",
+		"The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH",
 	)
 
 	Cmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
