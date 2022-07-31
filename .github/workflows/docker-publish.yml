@@ -86,7 +86,7 @@ jobs:
           # that the image we attest has not been modified.
           # NOTE: The digest output from docker/build-push-action is of the
           # form "sha256:<digest>"
-          image_name="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          image_name="${REGISTRY}/${IMAGE_NAME}"
           echo "::set-output name=image::$image_name"
 
   # Generate SLSA provenance for the image
@@ -124,8 +124,5 @@ jobs:
           IMAGE_NAME: ${{ needs.build.outputs.image }}
           IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
         run: |
-          cosign login "${REGISTRY}" -u "${REGISTRY_USERNAME}" -p "${REGISTRY_PASSWORD}"
-          # TODO: use --enforce-sct
-          # TODO: add cue policy for further validation.
           COSIGN_EXPERIMENTAL=1 cosign verify-attestation --type slsaprovenance "${IMAGE_NAME}@${IMAGE_DIGEST}"
       # TODO(github.com/slsa-framework/slsa-verifier/issues/92): Add step to verify using slsa-verifier
