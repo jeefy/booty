@@ -22,7 +22,9 @@ env:
 
 jobs:
   build:
-
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.build-and-push.outputs.digest }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,15 +79,53 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # Sign the resulting Docker image digest except on PRs.
-      # This will only write to the public Rekor transparency log when the Docker
-      # repository is public to avoid leaking data.  If you would like to publish
-      # transparency data even for private images, pass --force to cosign below.
-      # https://github.com/sigstore/cosign
-      - name: Sign the published Docker image
-        if: ${{ github.event_name != 'pull_request' }}
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        # This step uses the identity token to provision an ephemeral certificate
-        # against the sigstore community Fulcio instance.
-        run: cosign sign --force ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
+      - name: Output image
+        id: image
+        run: |
+          # NOTE: We need to use the image and digest in order to make sure
+          # that the image we attest has not been modified.
+          # NOTE: The digest output from docker/build-push-action is of the
+          # form "sha256:<digest>"
+          image_name="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          echo "::set-output name=image::$image_name"
+
+  # Generate SLSA provenance for the image
+  # Upload the provenance to ghcr.io
+  provenance:
+    needs: [build]
+    permissions:
+      id-token: write # For signing.
+      actions: read # For reading workflow info.
+      packages: write # For uploading attestations.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@main
+    with:
+      image: ${{ needs.build.outputs.image }}
+      digest: ${{ needs.build.outputs.digest }}
+      registry-username: ${{ github.actor }}
+      compile-generator: true
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+# Verify the created provenance attestation.
+  verify:
+    # NOTE: this name is used as the status check name and by protected
+    # branches for required status checks. It should have a unique name among
+    # other pre-submits.
+    name: verify container provenance
+    needs: [build, provenance]
+    permissions:
+      packages: read # For reading attestations.
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - uses: sigstore/cosign-installer@48866aa521d8bf870604709cd43ec2f602d03ff2 # tag=v2.4.1
+      - env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_NAME: ${{ needs.build.outputs.image }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          cosign login "${REGISTRY}" -u "${REGISTRY_USERNAME}" -p "${REGISTRY_PASSWORD}"
+          # TODO: use --enforce-sct
+          # TODO: add cue policy for further validation.
+          COSIGN_EXPERIMENTAL=1 cosign verify-attestation --type slsaprovenance "${IMAGE_NAME}@${IMAGE_DIGEST}"
+      # TODO(github.com/slsa-framework/slsa-verifier/issues/92): Add step to verify using slsa-verifier
