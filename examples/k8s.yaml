@@ -239,6 +239,8 @@ metadata:
     app: booty
 spec:
   replicas: 1
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
   strategy:
     type: Recreate
   selector:
