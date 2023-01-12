@@ -17,7 +17,12 @@ import (
 func readHandler(filename string, rf io.ReaderFrom) error {
 	log.Printf("TFTP Get: %s\n", filename)
 	if filename == "pxelinux.cfg/default" {
-		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, viper.GetString(config.ServerIP)))
+		urlHost = viper.GetString(config.ServerIP)
+		hostPort = viper.GetInt(config.ServerHttpPort)
+		if hostPort != 80 {
+			urlHost = fmt.Sprintf("%s:%d", urlHost, hostPort)
+		}
+		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, urlHost))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading PXE config: %v\n", err)
