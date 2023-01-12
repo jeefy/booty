@@ -18,6 +18,7 @@ Flags:
   -h, --help                    help for booty
       --httpPort int            Port to use for the HTTP server (default 8080)
       --serverIP string         IP address that clients can connect to (default "127.0.0.1")
+      --serverHttpPort int      Port to use for the client HTTP connection (default "80)
       --joinString string       The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH (default "")
       --updateSchedule string   Cron schedule to use for cleaning up cache files (default "* */1 * * *")
 ```

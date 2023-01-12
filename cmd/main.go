@@ -20,15 +20,16 @@ var Cmd = &cobra.Command{
 }
 
 var args struct {
-	debug        bool
-	dataDir      string
-	maxCacheAge  int
-	cronSchedule string
-	httpPort     int
-	architecture string
-	serverIP     string
-	joinString   string
-	channel      string
+	debug        	bool
+	dataDir      	string
+	maxCacheAge  	int
+	cronSchedule 	string
+	httpPort     	int
+	architecture 	string
+	serverIP     	string
+	serverHttpPort 	int
+	joinString   	string
+	channel      	string
 }
 
 func init() {
@@ -79,6 +80,12 @@ func init() {
 		"serverIP",
 		"127.0.0.1",
 		"IP address that clients can connect to",
+	)
+	flags.IntVar(
+		&args.serverHttpPort,
+		"serverHttpPort",
+		80,
+		"Alternative HTTP port to use for clients",
 	)
 
 	flags.StringVar(
