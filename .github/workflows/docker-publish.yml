@@ -41,11 +41,7 @@ jobs:
       # https://github.com/sigstore/cosign-installer
       - name: Install cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@1e95c1de343b5b0c23352d6417ee3e48d5bcd422
-        with:
-          cosign-release: 'v1.10.0'
-
-
+        uses: sigstore/cosign-installer@main
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
       - name: Set up Docker Buildx
@@ -125,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
-      - uses: sigstore/cosign-installer@48866aa521d8bf870604709cd43ec2f602d03ff2 # tag=v2.4.1
+      - uses: sigstore/cosign-installer@main
       - env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
