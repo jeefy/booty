@@ -27,7 +27,9 @@ func VersionCheck() {
 		log.Println("Already updating, skipping version check")
 		return
 	}
-	log.Println("Checking remote version")
+	if viper.GetBool("debug") {
+		log.Println("Checking remote version")
+	}
 	LoadRemoteVersion()
 	if viper.GetString(config.RemoteVersion) != viper.GetString(config.CurrentVersion) {
 		viper.Set(config.Updating, true)
@@ -60,7 +62,9 @@ func LoadRemoteVersion() {
 			return
 		}
 		viper.Set(config.RemoteVersion, data["FLATCAR_VERSION"])
-		log.Printf("Remote version found: %s", data["FLATCAR_VERSION"])
+		if viper.GetBool("debug") {
+			log.Printf("Remote version found: %s", data["FLATCAR_VERSION"])
+		}
 	} else {
 		log.Printf("Error retrieving remote version from %s: %s", RemoteFlatcarURL(), err.Error())
 	}

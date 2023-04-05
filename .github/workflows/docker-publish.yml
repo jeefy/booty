@@ -12,12 +12,18 @@ on:
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ main ]
+  release:
+    types: [published]
 
 env:
   # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
+  # Map current release tag to the version of booty
+  BOOTY_VERSION: ${{ github.event.release.tag_name }}
+  # Map last repo update to the build timestamp
+  BOOTY_TIMESTAMP: ${{ github.event.repository.updated_at}}
 
 
 jobs:
@@ -81,7 +87,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
-        run: cosign sign ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
+        run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
 
       - name: Output image
         id: image
@@ -128,5 +134,5 @@ jobs:
           IMAGE_NAME: ${{ needs.build.outputs.image }}
           IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
         run: |
-          COSIGN_EXPERIMENTAL=1 cosign verify-attestation --type slsaprovenance "${IMAGE_NAME}@${IMAGE_DIGEST}"
+          COSIGN_EXPERIMENTAL=1 cosign verify-attestation --certificate-identity-regexp=".*" --certificate-oidc-issuer-regexp=".*" --type slsaprovenance "${IMAGE_NAME}@${IMAGE_DIGEST}"
       # TODO(github.com/slsa-framework/slsa-verifier/issues/92): Add step to verify using slsa-verifier

@@ -31,6 +31,8 @@ Flags:
 * JSON "Hardware Database" (right now just a MAC-to-hostname mapping)
 * Automatic updates retrieved from Flatcar-Linux
 * Automatic drain/reboot of nodes (in conjunction with [Kured](https://github.com/weaveworks/kured))
+* Web UI to add/edit/remove hosts
+* Unrecognized MAC addresses go into the brig (boot loop till the MAC is registered)
 
 
 ## Examples

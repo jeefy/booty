@@ -22,7 +22,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 		if hostPort != 80 {
 			urlHost = fmt.Sprintf("%s:%d", urlHost, hostPort)
 		}
-		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, urlHost))
+		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, urlHost, urlHost, urlHost))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading PXE config: %v\n", err)

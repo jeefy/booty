@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/jeefy/booty/pkg/config"
 	bootyHTTP "github.com/jeefy/booty/pkg/http"
@@ -20,17 +21,22 @@ var Cmd = &cobra.Command{
 }
 
 var args struct {
-	debug        	bool
-	dataDir      	string
-	maxCacheAge  	int
-	cronSchedule 	string
-	httpPort     	int
-	architecture 	string
-	serverIP     	string
-	serverHttpPort 	int
-	joinString   	string
-	channel      	string
+	debug          bool
+	dataDir        string
+	maxCacheAge    int
+	cronSchedule   string
+	httpPort       int
+	architecture   string
+	serverIP       string
+	serverHttpPort int
+	joinString     string
+	channel        string
 }
+
+var (
+	version   string
+	timestamp string
+)
 
 func init() {
 	flags := Cmd.Flags()
@@ -99,6 +105,15 @@ func init() {
 		return []string{"json", "prom"}, cobra.ShellCompDirectiveDefault
 	})
 	viper.BindPFlags(flags)
+
+	viper.SetDefault("version", "dev")
+	if version != "" {
+		viper.Set("version", version)
+	}
+	viper.SetDefault("timestamp", time.Now().Format("2006-01-02 15:04:05.000000"))
+	if timestamp != "" {
+		viper.Set("timestamp", timestamp)
+	}
 }
 
 func main() {

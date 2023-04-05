@@ -24,9 +24,14 @@ func StartHTTP() {
 	myHandler.HandleFunc("/", handleRequest)
 	myHandler.HandleFunc("/ignition.json", handleIgnitionRequest)
 	myHandler.HandleFunc("/version.txt", handleVersionRequest)
+	myHandler.HandleFunc("/version.json", handleVersionRequest)
 	myHandler.HandleFunc("/hosts", handleHostsRequest)
-	fs := http.FileServer(http.Dir(viper.GetString(config.DataDir)))
-	myHandler.Handle("/data/", http.StripPrefix("/data/", fs))
+	myHandler.HandleFunc("/register", handleRegistrationRequest)
+	myHandler.HandleFunc("/unregister", handleUnregistrationRequest)
+	myHandler.HandleFunc("/booty.json", handleDataRequest)
+	myHandler.HandleFunc("/info", handleInfoRequest)
+	myHandler.Handle("/data/", http.StripPrefix("/data/", http.FileServer(http.Dir(viper.GetString(config.DataDir)))))
+	myHandler.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.Dir("./web/dist"))))
 
 	s := &http.Server{
 		Addr:           port,

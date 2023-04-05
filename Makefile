@@ -1,11 +1,18 @@
+TOPDIR=$(PWD)
+WHOAMI=$(shell whoami)
+
 build:
 	go build -o bin/booty cmd/main.go
 
 run:
-	go run cmd/main.go
+	cd web && npm run build && cd ..
+	go run cmd/main.go --dataDir=data/
 
 image:
-	docker build -t jeefy/booty .
+	docker build -t ${WHOAMI}/booty .
 
-image-push:
-	docker push jeefy/booty
+image-push: image
+	docker push ${WHOAMI}/booty
+
+image-run: image
+	docker run -ti -v ${TOPDIR}/data:/data -p 8080:8080 -p 69:69/udp ${WHOAMI}/booty --debug=true --dataDir=/data

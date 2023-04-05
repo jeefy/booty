@@ -4,20 +4,6 @@ kind: ConfigMap
 metadata:
   name: booty-config
 data:
-  # Update Hardware with your MAC/Hostname mapping. Here's mine for an example
-  hardware.json: |
-    {
-      "40:a8:f0:af:39:8d":
-        {"hostname": "aren"},
-      "40:a8:f0:b1:8d:e1":
-        {"hostname":"yghitan"},
-      "d4:c9:ef:dc:10:72":
-        {"hostname":"ehrlitan"},
-      "d4:be:d9:11:d0:bf":
-        {"hostname":"kartool"},
-      "74:d0:2b:33:4d:5d":
-        {"hostname":"lether"}
-    }
   ignition.yaml: |
     passwd:
       users:
@@ -266,6 +252,8 @@ spec:
         - containerPort: 69
         - containerPort: 8080
         volumeMounts:
+        - name: booty-data
+          mountPath: /data/
         - name: booty-config
           mountPath: /data/config/
         resources:
@@ -276,6 +264,20 @@ spec:
       - name: booty-config
         configMap:
           name: booty-config
+      - name: booty-data
+        persistentVolumeClaim:
+          claimName: booty-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: booty-data
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
 ---
 apiVersion: v1
 kind: Service
@@ -286,6 +288,7 @@ metadata:
     app: booty
   name: booty-tcp
 spec:
+  externalTrafficPolicy: Local
   ports:
   - name: http
     port: 80
@@ -305,6 +308,7 @@ metadata:
     app: booty
   name: booty-udp
 spec:
+  externalTrafficPolicy: Local
   ports:
   - name: tftp
     port: 69
