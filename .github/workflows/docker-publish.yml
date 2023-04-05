@@ -21,7 +21,7 @@ env:
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
   # Map current release tag to the version of booty
-  BOOTY_VERSION: ${{ github.event.release.tag_name }}
+  BOOTY_VERSION: $GITHUB_REF_NAME
   # Map last repo update to the build timestamp
   BOOTY_TIMESTAMP: ${{ github.event.repository.updated_at}}
 
