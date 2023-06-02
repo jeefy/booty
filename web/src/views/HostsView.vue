@@ -75,7 +75,7 @@ export default {
     <table>
           <tr v-for="(host, mac, index) of hostData.hosts">
                <td>
-                    <span>{{mac}}</span>
+                    <span><a href="/ignition.json?mac={{mac}}" target="_blank">{{mac}}</a></span>
                </td>
                <td>
                     <span v-show="!host.edit">{{host.hostname}}</span>

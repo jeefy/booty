@@ -102,7 +102,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		macAddress = hwAddr.String()
 	}
 
-	if viper.GetBool("debug") && r.URL.Query().Get("mac") != "" {
+	if r.URL.Query().Get("mac") != "" {
 		macAddress = r.URL.Query().Get("mac")
 	}
 
