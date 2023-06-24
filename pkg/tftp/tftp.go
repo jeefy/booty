@@ -16,6 +16,12 @@ import (
 // readHandler is called when client starts file download from server
 func readHandler(filename string, rf io.ReaderFrom) error {
 	log.Printf("TFTP Get: %s\n", filename)
+	if viper.GetBool("debug") {
+		raddr := rf.(tftp.OutgoingTransfer).RemoteAddr()
+		laddr := rf.(tftp.RequestPacketInfo).LocalIP()
+		log.Println("RRQ from", raddr.String(), "To ", laddr.String())
+		log.Println("")
+	}
 	if filename == "pxelinux.cfg/default" {
 		urlHost := viper.GetString(config.ServerIP)
 		hostPort := viper.GetInt(config.ServerHttpPort)
