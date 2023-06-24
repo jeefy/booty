@@ -75,11 +75,15 @@ export default {
     <table>
           <tr v-for="(host, mac, index) of hostData.hosts">
                <td>
-                    <span><a href="/ignition.json?mac={{mac}}" target="_blank">{{mac}}</a></span>
+                    <span><a :href="`/ignition.json?mac=${mac}`" target="_blank">{{mac}}</a></span>
                </td>
                <td>
                     <span v-show="!host.edit">{{host.hostname}}</span>
-                    <input type="text" v-model="host.hostname" v-show="host.edit">
+                    <input type="text" placeholder="Hostname" v-model="host.hostname" v-show="host.edit">
+               </td>
+               <td>
+                    <span v-show="!host.edit">{{host.ignitionFile}}</span>
+                    <input type="text" placeholder="Ignition File" v-model="host.ignitionFile" v-show="host.edit">
                </td>
                <td>
                     <button v-show="!host.edit" v-on:click="editHost(mac, host)">edit</button>
@@ -94,11 +98,15 @@ export default {
     <table>
           <tr v-for="(host, mac, index) of hostData.unknownHosts">
                <td>
-                    <span>{{mac}}</span>
+                  <span><a :href="`/ignition.json?mac=${mac}`" target="_blank">{{mac}}</a></span>
                </td>
                <td>
                     <span v-show="!host.edit">{{host.hostname}}</span>
-                    <input type="text" v-model="host.hostname" v-show="host.edit">
+                    <input type="text" placeholder="Hostname" v-model="host.hostname" v-show="host.edit">
+               </td>
+               <td>
+                    <span v-show="!host.edit">{{host.ignitionFile}}</span>
+                    <input type="text" placeholder="Ignition File" v-model="host.ignitionFile" v-show="host.edit">
                </td>
                <td>
                     <button v-show="!host.edit" v-on:click="editHost(mac, host)">edit</button>

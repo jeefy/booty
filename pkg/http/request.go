@@ -141,7 +141,12 @@ WantedBy=default.target`,
 		JoinString: viper.GetString(config.JoinString),
 		ServerIP:   viper.GetString(config.ServerIP),
 	}
-	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), viper.GetString(config.IgnitionFile)))
+
+	ignitionFile := viper.GetString(config.IgnitionFile)
+	if host.IgnitionFile != "" {
+		ignitionFile = host.IgnitionFile
+	}
+	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), ignitionFile))
 	if err != nil {
 		w.Write([]byte(err.Error()))
 		return

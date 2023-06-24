@@ -12,10 +12,11 @@ import (
 )
 
 type Host struct {
-	MAC      string `json:"mac"`
-	Hostname string `json:"hostname"`
-	IP       string `json:"ip"`
-	Booted   string `json:"booted"`
+	MAC          string `json:"mac"`
+	Hostname     string `json:"hostname"`
+	IP           string `json:"ip"`
+	Booted       string `json:"booted"`
+	IgnitionFile string `json:"ignitionFile",omitempty`
 }
 
 type BootyData struct {
