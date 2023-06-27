@@ -43,13 +43,13 @@ Flags:
 
 ```
 docker run --rm -it \
+--network=host \
 -v $PWD:/data/ \
--p 69:69/udp \
--p 80:8080 \
 ghcr.io/jeefy/booty:main \
 --dataDir=/storage/ \
 --joinString="kubeadm join 192.168.1.10:6443 --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${SHA_HASH}
 --serverIP=192.168.1.10
+--serverHttpPort=8080
 ```
 
 ### Kubernetes
