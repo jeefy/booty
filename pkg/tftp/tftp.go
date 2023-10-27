@@ -24,8 +24,15 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 		log.Println("RRQ from", raddr.String(), "To ", laddr.String())
 		log.Println("")
 	}
+
+	urlHost := viper.GetString(config.ServerIP)
+	hostPort := viper.GetInt(config.ServerHttpPort)
+	if hostPort != 80 {
+		urlHost = fmt.Sprintf("%s:%d", urlHost, hostPort)
+	}
+
 	if filename == "booty.ipxe" {
-		r := strings.NewReader(fmt.Sprintf(PXEConfig["ipxe"]))
+		r := strings.NewReader(strings.Replace(PXEConfig["ipxe"], "[[server]]", urlHost, -1))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading iPXE config: %v\n", err)
@@ -36,12 +43,6 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	}
 
 	if filename == "pxelinux.cfg/default" {
-		urlHost := viper.GetString(config.ServerIP)
-		hostPort := viper.GetInt(config.ServerHttpPort)
-		if hostPort != 80 {
-			urlHost = fmt.Sprintf("%s:%d", urlHost, hostPort)
-		}
-
 		osToLoad := "flatcar"
 
 		if hwAddr, _, err := arping.Ping(raddr.IP); err != nil {
@@ -54,7 +55,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 			}
 		}
 
-		r := strings.NewReader(fmt.Sprintf(PXEConfig[osToLoad], urlHost, urlHost, urlHost))
+		r := strings.NewReader(strings.Replace(PXEConfig[osToLoad], "[[server]]", urlHost, -1))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading PXE config: %v\n", err)

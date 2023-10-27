@@ -131,6 +131,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	log.Println("Starting Booty!")
 	config.LoadConfig(cmd)
 	config.EnsureDeps()
+	versions.VersionCheck()
 
 	versions.StartCron()
 	tftp.StartTFTP()
