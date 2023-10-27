@@ -25,6 +25,18 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 		log.Println("")
 	}
 
+	osToLoad := "flatcar"
+
+	if hwAddr, _, err := arping.Ping(raddr.IP); err != nil {
+		log.Printf("Error with ARP request: %s", err)
+	} else {
+		macAddress := hwAddr.String()
+		host := hardware.GetMacAddress(macAddress)
+		if host != nil && host.OS != "" {
+			osToLoad = host.OS
+		}
+	}
+
 	urlHost := viper.GetString(config.ServerIP)
 	hostPort := viper.GetInt(config.ServerHttpPort)
 	if hostPort != 80 {
@@ -32,7 +44,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	}
 
 	if filename == "booty.ipxe" {
-		r := strings.NewReader(strings.Replace(PXEConfig["ipxe"], "[[server]]", urlHost, -1))
+		r := strings.NewReader(strings.Replace(PXEConfig[fmt.Sprintf("%s.ipxe", osToLoad)], "[[server]]", urlHost, -1))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading iPXE config: %v\n", err)
@@ -43,18 +55,6 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	}
 
 	if filename == "pxelinux.cfg/default" {
-		osToLoad := "flatcar"
-
-		if hwAddr, _, err := arping.Ping(raddr.IP); err != nil {
-			log.Printf("Error with ARP request: %s", err)
-		} else {
-			macAddress := hwAddr.String()
-			host := hardware.GetMacAddress(macAddress)
-			if host != nil && host.OS != "" {
-				osToLoad = host.OS
-			}
-		}
-
 		r := strings.NewReader(strings.Replace(PXEConfig[osToLoad], "[[server]]", urlHost, -1))
 		n, err := rf.ReadFrom(r)
 		if err != nil {

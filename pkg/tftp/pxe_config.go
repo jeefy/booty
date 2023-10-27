@@ -17,9 +17,10 @@ func init() {
 		append flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json`
 
 	PXEConfig["flatcar.ipxe"] = `#!ipxe
-			kernel http://[[server]]/flatcar_production_pxe.vmlinuz initrd=flatcar_production_pxe_image.cpio.gz
-			initrd http://[[server]]/flatcar_production_pxe_image.cpio.gz
-			imgargs flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json`
+	echo Hello from Booty!
+	kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json
+	initrd http://[[server]]/data/flatcar_production_pxe_image.cpio.gz
+	boot`
 
 	PXEConfig["ucore"] = `default ucore
 	prompt 1
@@ -32,9 +33,4 @@ func init() {
 		kernel vmlinuz
 		initrd initrd.img
 		append imageurl=ghcr.io/ublue-os/ucore:stable ignition.config.url=http://[[server]]/ignition.json`
-	PXEConfig["ipxe"] = `#!ipxe
-	echo Hello from Booty!
-	kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json
-	initrd http://[[server]]/data/flatcar_production_pxe_image.cpio.gz
-	boot`
 }
