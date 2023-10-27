@@ -56,7 +56,7 @@ func init() {
 	flags.StringVar(
 		&args.cronSchedule,
 		"updateSchedule",
-		"* */1 * * *",
+		"*/5 * * * *",
 		"Cron schedule to use for cleaning up cache files",
 	)
 
