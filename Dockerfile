@@ -1,5 +1,5 @@
 ### Stage One
-FROM golang:1.19-alpine
+FROM golang:1.19-alpine as build-golang
 
 WORKDIR /app
 
@@ -7,7 +7,9 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOARCH=amd64 GOOS=linux go build -o bin/booty -ldflags "-X main.version=$BOOTY_VERSION -X main.timestamp=$BOOTY_TIMESTAMP" cmd/main.go
 
-FROM node:lts-alpine as build-stage
+
+### Stage Two
+FROM node:lts-alpine as build-web
 WORKDIR /app
 COPY web/package*.json ./
 RUN npm install

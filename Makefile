@@ -15,4 +15,5 @@ image-push: image
 	docker push ${WHOAMI}/booty
 
 image-run: image
-	docker run -ti -v ${TOPDIR}/data:/data -p 8080:8080 -p 69:69/udp ${WHOAMI}/booty --debug=true --dataDir=/data
+	docker run -ti --rm -v ${TOPDIR}/data:/data -p 8080:8080 -p 69:69/udp ${WHOAMI}/booty --debug=true --dataDir=/data
+
