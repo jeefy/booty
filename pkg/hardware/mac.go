@@ -17,6 +17,7 @@ type Host struct {
 	IP           string `json:"ip"`
 	Booted       string `json:"booted"`
 	IgnitionFile string `json:"ignitionFile",omitempty`
+	OS           string `json:"os"`
 }
 
 type BootyData struct {

@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/pin/tftp"
 	"github.com/spf13/viper"
 )
@@ -16,19 +18,43 @@ import (
 // readHandler is called when client starts file download from server
 func readHandler(filename string, rf io.ReaderFrom) error {
 	log.Printf("TFTP Get: %s\n", filename)
+	raddr := rf.(tftp.OutgoingTransfer).RemoteAddr()
+	laddr := rf.(tftp.RequestPacketInfo).LocalIP()
 	if viper.GetBool("debug") {
-		raddr := rf.(tftp.OutgoingTransfer).RemoteAddr()
-		laddr := rf.(tftp.RequestPacketInfo).LocalIP()
 		log.Println("RRQ from", raddr.String(), "To ", laddr.String())
 		log.Println("")
 	}
+	if filename == "booty.ipxe" {
+		r := strings.NewReader(fmt.Sprintf(PXEConfig["ipxe"]))
+		n, err := rf.ReadFrom(r)
+		if err != nil {
+			log.Printf("Error reading iPXE config: %v\n", err)
+			return err
+		}
+		log.Printf("%d bytes sent (%s)\n", n, filename)
+		return nil
+	}
+
 	if filename == "pxelinux.cfg/default" {
 		urlHost := viper.GetString(config.ServerIP)
 		hostPort := viper.GetInt(config.ServerHttpPort)
 		if hostPort != 80 {
 			urlHost = fmt.Sprintf("%s:%d", urlHost, hostPort)
 		}
-		r := strings.NewReader(fmt.Sprintf(PXEConfigContents, urlHost, urlHost, urlHost))
+
+		osToLoad := "flatcar"
+
+		if hwAddr, _, err := arping.Ping(raddr.IP); err != nil {
+			log.Printf("Error with ARP request: %s", err)
+		} else {
+			macAddress := hwAddr.String()
+			host := hardware.GetMacAddress(macAddress)
+			if host != nil && host.OS != "" {
+				osToLoad = host.OS
+			}
+		}
+
+		r := strings.NewReader(fmt.Sprintf(PXEConfig[osToLoad], urlHost, urlHost, urlHost))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading PXE config: %v\n", err)

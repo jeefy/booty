@@ -59,8 +59,10 @@ func DownloadFile(url string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	filename := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
+	log.Printf("Creating %s", filename)
 
-	f, err := os.Create(fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(resp.Request.URL.Path)))
+	f, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
