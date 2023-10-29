@@ -82,6 +82,10 @@ export default {
                     <input type="text" placeholder="Hostname" v-model="host.hostname" v-show="host.edit">
                </td>
                <td>
+                    <span v-show="!host.edit">{{host.os}}</span>
+                    <input type="text" placeholder="OS" v-model="host.os" v-show="host.edit">
+               </td>
+               <td>
                     <span v-show="!host.edit">{{host.ignitionFile}}</span>
                     <input type="text" placeholder="Ignition File" v-model="host.ignitionFile" v-show="host.edit">
                </td>
@@ -103,6 +107,10 @@ export default {
                <td>
                     <span v-show="!host.edit">{{host.hostname}}</span>
                     <input type="text" placeholder="Hostname" v-model="host.hostname" v-show="host.edit">
+               </td>
+               <td>
+                    <span v-show="!host.edit">{{host.os}}</span>
+                    <input type="text" placeholder="OS" v-model="host.os" v-show="host.edit">
                </td>
                <td>
                     <span v-show="!host.edit">{{host.ignitionFile}}</span>

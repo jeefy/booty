@@ -25,14 +25,15 @@ Flags:
 
 ## Features
 
-* PXE boot into the latest Flatcar-Linux
+* (i)PXE boot into the latest Flatcar-Linux
 * MAC address based hostnames
 * Automatic conversion of Container Linux Config to Ignition JSON
-* JSON "Hardware Database" (right now just a MAC-to-hostname mapping)
+* JSON "Hardware Database" (Containing boot-time config data)
 * Automatic updates retrieved from Flatcar-Linux
 * Automatic drain/reboot of nodes (in conjunction with [Kured](https://github.com/weaveworks/kured))
 * Web UI to add/edit/remove hosts
 * Unrecognized MAC addresses go into the brig (boot loop till the MAC is registered)
+* Support for different operating systems per machine
 
 
 ## Examples
@@ -57,6 +58,14 @@ ghcr.io/jeefy/booty:main \
 [Example deployment](examples/k8s.yaml)
 
 This creates a configmap with the example ignition yaml config, scripts, a deployment of booty, and a service.
+
+### PXE vs iPXE
+
+The boot target file is different depending on whether you want to use PXE or iPXE. While iPXE is recommended due to performance, there may be some use cases where PXE is required.
+
+To boot into PXE, use `pxelinux.cfg/default`
+
+To boot into iPXE, use `undionly.kpxe`
 
 ## Additional Thoughts
 
