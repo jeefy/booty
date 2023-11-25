@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-co-op/gocron"
@@ -30,6 +31,25 @@ func VersionCheck() {
 	if viper.GetBool("debug") {
 		log.Println("Checking remote version")
 	}
+
+	if viper.GetString(config.CurrentVersion) == "" {
+		// Check for an existing version.txt file
+		if oldVer, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir))); err == nil {
+			log.Println("Found old version.txt, setting current version to that")
+			data, _ := godotenv.Parse(oldVer)
+			if _, ok := data["FLATCAR_VERSION"]; !ok {
+				log.Println("Old version.txt file is invalid")
+				if err != nil {
+					log.Println(err.Error())
+				}
+			}
+			viper.Set(config.CurrentVersion, data["FLATCAR_VERSION"])
+		} else {
+			log.Printf("%s not found, setting current version to 0.0.0", fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir)))
+			viper.Set(config.CurrentVersion, "0.0.0")
+		}
+	}
+
 	LoadRemoteVersion()
 	if viper.GetString(config.RemoteVersion) != viper.GetString(config.CurrentVersion) {
 		viper.Set(config.Updating, true)

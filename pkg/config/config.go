@@ -43,6 +43,8 @@ func LoadConfig(cmd *cobra.Command) {
 			viper.Set(CurrentVersion, data["FLATCAR_VERSION"])
 			log.Printf("Local version found: %s", data["FLATCAR_VERSION"])
 		}
+	} else {
+		log.Printf("Error retrieving existing local version: %s", err.Error())
 	}
 
 	viper.BindEnv(IgnitionFile, "IGNITION_FILE")
