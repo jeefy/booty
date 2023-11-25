@@ -131,9 +131,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	log.Println("Starting Booty!")
 	config.LoadConfig(cmd)
 	config.EnsureDeps()
-	versions.VersionCheck()
+	versions.FlatcarVersionCheck()
 
-	versions.StartCron()
+	versions.StartFlatcarCron()
 	tftp.StartTFTP()
 
 	// Start the HTTP server

@@ -189,13 +189,13 @@ WantedBy=default.target`,
 func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.RequestURI, "json") {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(fmt.Sprintf(`{"version":"%s"}`, viper.GetString(config.CurrentVersion))))
+		w.Write([]byte(fmt.Sprintf(`{"version":"%s"}`, viper.GetString(config.CurrentFlatcarVersion))))
 		return
 	}
-	w.Write([]byte(fmt.Sprintf("FLATCAR_VERSION=%s", viper.GetString(config.CurrentVersion))))
+	w.Write([]byte(fmt.Sprintf("FLATCAR_VERSION=%s", viper.GetString(config.CurrentFlatcarVersion))))
 }
 
 func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(fmt.Sprintf(`{"flatcar":{"version":"%s"},"booty":{"version":"%s","timestamp":"%s"}}`, viper.GetString(config.CurrentVersion), viper.GetString("version"), viper.GetString("timestamp"))))
+	w.Write([]byte(fmt.Sprintf(`{"flatcar":{"version":"%s"},"booty":{"version":"%s","timestamp":"%s"}}`, viper.GetString(config.CurrentFlatcarVersion), viper.GetString("version"), viper.GetString("timestamp"))))
 }

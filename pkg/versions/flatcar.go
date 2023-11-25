@@ -13,17 +13,17 @@ import (
 	"github.com/spf13/viper"
 )
 
-func StartCron() {
+func StartFlatcarCron() {
 	log.Println("Starting CRON version check")
 	cron := gocron.NewScheduler(time.UTC)
-	_, err := cron.Cron(viper.GetString(config.UpdateSchedule)).Do(VersionCheck)
+	_, err := cron.Cron(viper.GetString(config.UpdateSchedule)).Do(FlatcarVersionCheck)
 	if err != nil {
 		log.Fatalf("Error creating prune cronjob: %s", err.Error())
 	}
 	cron.StartAsync()
 }
 
-func VersionCheck() {
+func FlatcarVersionCheck() {
 	if viper.GetBool(config.Updating) {
 		log.Println("Already updating, skipping version check")
 		return
@@ -32,7 +32,7 @@ func VersionCheck() {
 		log.Println("Checking remote version")
 	}
 
-	if viper.GetString(config.CurrentVersion) == "" {
+	if viper.GetString(config.CurrentFlatcarVersion) == "" {
 		// Check for an existing version.txt file
 		if oldVer, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir))); err == nil {
 			log.Println("Found old version.txt, setting current version to that")
@@ -43,17 +43,17 @@ func VersionCheck() {
 					log.Println(err.Error())
 				}
 			}
-			viper.Set(config.CurrentVersion, data["FLATCAR_VERSION"])
+			viper.Set(config.CurrentFlatcarVersion, data["FLATCAR_VERSION"])
 		} else {
 			log.Printf("%s not found, setting current version to 0.0.0", fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir)))
-			viper.Set(config.CurrentVersion, "0.0.0")
+			viper.Set(config.CurrentFlatcarVersion, "0.0.0")
 		}
 	}
 
-	LoadRemoteVersion()
-	if viper.GetString(config.RemoteVersion) != viper.GetString(config.CurrentVersion) {
+	LoadRemoteFlatcarVersion()
+	if viper.GetString(config.RemoteFlatcarVersion) != viper.GetString(config.CurrentFlatcarVersion) {
 		viper.Set(config.Updating, true)
-		log.Printf("Remote version %s is different than local version %s", viper.GetString(config.RemoteVersion), viper.GetString(config.CurrentVersion))
+		log.Printf("Remote version %s is different than local version %s", viper.GetString(config.RemoteFlatcarVersion), viper.GetString(config.CurrentFlatcarVersion))
 
 		if err := DownloadFlatcarFile("version.txt"); err != nil {
 			log.Printf("Error downloading version.txt: %s", err.Error())
@@ -65,13 +65,13 @@ func VersionCheck() {
 			log.Printf("Error downloading flatcar_production_pxe.vmlinuz: %s", err.Error())
 		}
 
-		viper.Set(config.CurrentVersion, viper.GetString(config.RemoteVersion))
+		viper.Set(config.CurrentFlatcarVersion, viper.GetString(config.RemoteFlatcarVersion))
 		viper.Set(config.Updating, false)
 	}
 
 }
 
-func LoadRemoteVersion() {
+func LoadRemoteFlatcarVersion() {
 	if resp, err := http.Get(RemoteFlatcarURL() + "/version.txt"); err == nil {
 		data, _ := godotenv.Parse(resp.Body)
 		if _, ok := data["FLATCAR_VERSION"]; !ok {
@@ -81,7 +81,7 @@ func LoadRemoteVersion() {
 			}
 			return
 		}
-		viper.Set(config.RemoteVersion, data["FLATCAR_VERSION"])
+		viper.Set(config.RemoteFlatcarVersion, data["FLATCAR_VERSION"])
 		if viper.GetBool("debug") {
 			log.Printf("Remote version found: %s", data["FLATCAR_VERSION"])
 		}
@@ -91,7 +91,7 @@ func LoadRemoteVersion() {
 }
 
 func RemoteFlatcarURL() string {
-	return fmt.Sprintf(viper.GetString(config.FlatcarURL), viper.GetString(config.Channel), viper.GetString(config.Architecture))
+	return fmt.Sprintf(viper.GetString(config.FlatcarURL), viper.GetString(config.FlatcarChannel), viper.GetString(config.Architecture))
 }
 
 func DownloadFlatcarFile(filename string) error {

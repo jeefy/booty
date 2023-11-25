@@ -14,21 +14,21 @@ import (
 )
 
 const (
-	CurrentVersion = "currentVersion"
-	RemoteVersion  = "remoteVersion"
-	Channel        = "channel"
-	IgnitionFile   = "ignitionFile"
-	HardwareMap    = "hardwareMap"
-	Architecture   = "architecture"
-	Debug          = "debug"
-	UpdateSchedule = "updateSchedule"
-	HttpPort       = "httpPort"
-	DataDir        = "dataDir"
-	FlatcarURL     = "flatcarURL"
-	ServerIP       = "serverIP"
-	ServerHttpPort = "serverHttpPort"
-	JoinString     = "joinString"
-	Updating       = "updating"
+	CurrentFlatcarVersion = "currentFlatcarVersion"
+	RemoteFlatcarVersion  = "remoteFlatcarVersion"
+	FlatcarChannel        = "flatcarChannel"
+	IgnitionFile          = "ignitionFile"
+	HardwareMap           = "hardwareMap"
+	Architecture          = "architecture"
+	Debug                 = "debug"
+	UpdateSchedule        = "updateSchedule"
+	HttpPort              = "httpPort"
+	DataDir               = "dataDir"
+	FlatcarURL            = "flatcarURL"
+	ServerIP              = "serverIP"
+	ServerHttpPort        = "serverHttpPort"
+	JoinString            = "joinString"
+	Updating              = "updating"
 )
 
 func LoadConfig(cmd *cobra.Command) {
@@ -40,7 +40,7 @@ func LoadConfig(cmd *cobra.Command) {
 	if file, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(DataDir))); err == nil {
 		data, _ := godotenv.Parse(file)
 		if _, ok := data["FLATCAR_VERSION"]; !ok {
-			viper.Set(CurrentVersion, data["FLATCAR_VERSION"])
+			viper.Set(CurrentFlatcarVersion, data["FLATCAR_VERSION"])
 			log.Printf("Local version found: %s", data["FLATCAR_VERSION"])
 		}
 	} else {
