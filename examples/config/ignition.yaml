@@ -1,69 +1,74 @@
+variant: flatcar
+version: 1.1.0
 passwd:
   users:
     - name: core
-      ssh_authorized_keys: [] # You should put your SSH keys here ;)
+      ssh_authorized_keys: [] # Add your SSH keys here
 storage:
   filesystems:
-    - name: ssd
-      mount:
-        device: /dev/sda
-        format: ext4
-        wipe_filesystem: true
-        label: ssd
+    - device: /dev/sda
+      format: ext4
+      path: /var/lib/containerd
+      wipe_filesystem: true
+      label: ssd
   files:
-    - filesystem: root
-      path: /opt/hostname.sh
+    - path: /opt/hostname.sh
       contents:
-        remote:
-          url: http://{{ .ServerIP }}/data/config/hostname.sh
-      mode: 775
-    - filesystem: root
-      path: /opt/cni.sh
+        source: http://192.168.50.20/data/config/hostname.sh
+      mode: 0775
+    - path: /opt/cni.sh
       contents:
-        remote:
-          url: http://{{ .ServerIP }}/data/config/cni.sh
-      mode: 775
-    - filesystem: root
-      path: /opt/systemd.sh
+        source: http://192.168.50.20/data/config/cni.sh
+      mode: 0775
+    - path: /opt/systemd.sh
       contents:
-        remote:
-          url: http://{{ .ServerIP }}/data/config/systemd.sh
-      mode: 775
-    - filesystem: root
-      path: /opt/kube-tools.sh
+        source: http://192.168.50.20/data/config/systemd.sh
+      mode: 0775
+    - path: /opt/kube-tools.sh
       contents:
-        remote:
-          url: http://{{ .ServerIP }}/data/config/kube-tools.sh
-      mode: 775
-    - filesystem: root
-      path: /opt/join.sh
+        source: http://192.168.50.20/data/config/kube-tools.sh
+      mode: 0775
+    - path: /opt/join.sh
       contents:
-        remote:
-          url: http://{{ .ServerIP }}/data/config/join.sh
-      mode: 775
-    - filesystem: root
-      path: /opt/version-check.sh
+        source: http://192.168.50.20/data/config/join.sh
+      mode: 0775
+    - path: /opt/version-check.sh
       contents:
-        remote:
-          url: http://{{ .ServerIP }}/data/config/version-check.sh
-      mode: 775
+        source: http://192.168.50.20/data/config/version-check.sh
+      mode: 0775
 systemd:
   units:
-    - enabled: true
-      name: docker.service
+    - name: var-lib-containerd.mount
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Mount ephemeral to /var/lib/containerd
+        Before=local-fs.target
+        [Mount]
+        What=/dev/disk/by-label/ssd
+        Where=/var/lib/containerd
+        Type=ext4
+        [Install]
+        WantedBy=local-fs.target        
     - enabled: true
       name: containerd.service
+      dropins:
+        - name: 10-wait-containerd.conf
+          contents: |
+            [Unit]
+            After=var-lib-containerd.mount
+            Requires=var-lib-containerd.mount 
     - name: update.service
       contents: |
         [Unit]
         Description=Compares current version to remote version
 
         [Service]
-        Environment=BOOTY_IP={{ .ServerIP }}
+        Environment="BOOTY_IP={{ .ServerIP }}"
         Type=oneshot
         ExecStart=/opt/version-check.sh
     - name: update.timer
-      enable: true
+      enabled: true
       contents: |
         [Unit]
         Description=Run update-check every 10 minutes
@@ -85,7 +90,7 @@ systemd:
         After=network.target network-online.target
 
         [Service]
-        Environment=BOOTY_IP={{ .ServerIP }}
+        Environment="BOOTY_IP={{ .ServerIP }}"
         Type=oneshot
         ExecStart=/opt/hostname.sh
     - enabled: true
@@ -142,6 +147,6 @@ systemd:
         After=systemd-k8s-setup.service
 
         [Service]
-        Environment=JOIN_STRING={{ .JoinString }}
+        Environment="JOIN_STRING={{ .JoinString }}"
         Type=oneshot
         ExecStart=/bin/bash -c 'PATH=/opt/bin:$PATH exec /opt/join.sh'

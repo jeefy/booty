@@ -4,62 +4,68 @@ kind: ConfigMap
 metadata:
   name: booty-config
 data:
+  # Update Hardware with your MAC/Hostname mapping. Here's mine for an example
   ignition.yaml: |
+    variant: flatcar
+    version: 1.1.0
     passwd:
       users:
         - name: core
-          ssh_authorized_keys: [] # You should put your SSH keys here ;)
+          ssh_authorized_keys: [] # Add your SSH keys here
     storage:
       filesystems:
-        - name: ssd
-          mount:
-            device: /dev/sda
-            format: ext4
-            wipe_filesystem: true
-            label: ssd
+        - device: /dev/sda
+          format: ext4
+          path: /var/lib/containerd
+          wipe_filesystem: true
+          label: ssd
       files:
-        - filesystem: root
-          path: /opt/hostname.sh
+        - path: /opt/hostname.sh
           contents:
-            remote:
-              url: http://{{ .ServerIP }}/data/config/hostname.sh
-          mode: 775
-        - filesystem: root
-          path: /opt/cni.sh
+            source: http://192.168.50.20/data/config/hostname.sh
+          mode: 0775
+        - path: /opt/cni.sh
           contents:
-            remote:
-              url: http://{{ .ServerIP }}/data/config/cni.sh
-          mode: 775
-        - filesystem: root
-          path: /opt/systemd.sh
+            source: http://192.168.50.20/data/config/cni.sh
+          mode: 0775
+        - path: /opt/systemd.sh
           contents:
-            remote:
-              url: http://{{ .ServerIP }}/data/config/systemd.sh
-          mode: 775
-        - filesystem: root
-          path: /opt/kube-tools.sh
+            source: http://192.168.50.20/data/config/systemd.sh
+          mode: 0775
+        - path: /opt/kube-tools.sh
           contents:
-            remote:
-              url: http://{{ .ServerIP }}/data/config/kube-tools.sh
-          mode: 775
-        - filesystem: root
-          path: /opt/join.sh
+            source: http://192.168.50.20/data/config/kube-tools.sh
+          mode: 0775
+        - path: /opt/join.sh
           contents:
-            remote:
-              url: http://{{ .ServerIP }}/data/config/join.sh
-          mode: 775
-        - filesystem: root
-          path: /opt/version-check.sh
+            source: http://192.168.50.20/data/config/join.sh
+          mode: 0775
+        - path: /opt/version-check.sh
           contents:
-            remote:
-              url: http://{{ .ServerIP }}/data/config/version-check.sh
-          mode: 775
+            source: http://192.168.50.20/data/config/version-check.sh
+          mode: 0775
     systemd:
       units:
-        - enabled: true
-          name: docker.service
+        - name: var-lib-containerd.mount
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Mount ephemeral to /var/lib/containerd
+            Before=local-fs.target
+            [Mount]
+            What=/dev/disk/by-label/ssd
+            Where=/var/lib/containerd
+            Type=ext4
+            [Install]
+            WantedBy=local-fs.target        
         - enabled: true
           name: containerd.service
+          dropins:
+            - name: 10-wait-containerd.conf
+              contents: |
+                [Unit]
+                After=var-lib-containerd.mount
+                Requires=var-lib-containerd.mount 
         - name: update.service
           contents: |
             [Unit]
@@ -70,7 +76,7 @@ data:
             Type=oneshot
             ExecStart=/opt/version-check.sh
         - name: update.timer
-          enable: true
+          enabled: true
           contents: |
             [Unit]
             Description=Run update-check every 10 minutes
@@ -190,9 +196,9 @@ data:
     echo "Kube Tools installed.";
   systemd.sh: |
     #!/bin/bash
-    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/kubepkg/templates/latest/deb/kubelet/lib/systemd/system/kubelet.service" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service
+    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest/kubelet/kubelet.service" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service
     mkdir -p /etc/systemd/system/kubelet.service.d
-    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/kubepkg/templates/latest/deb/kubeadm/10-kubeadm.conf" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest/kubeadm/10-kubeadm.conf" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
 
     echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd" > /etc/default/kubelet
 
@@ -215,7 +221,6 @@ data:
     else
       echo "Up to date";
     fi
-
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -245,7 +250,7 @@ spec:
           - "--dataDir"
           - "/data"
           - "--joinString"
-          - "kubeadm join 192.168.1.10:6443 --token LOLNOPE --discovery-token-ca-cert-hash sha256:LOLNOPE"
+          - "kubeadm join 192.168.1.10:6443 --token LOLNOPE --discovery-token-ca-cert-hash sha256:LOLNOPE" # This should be the IP of your K8s Control Plane
           - "--serverIP"
           - "192.168.50.20" # This should be the IP of the service your hosts can connect to
         ports:
