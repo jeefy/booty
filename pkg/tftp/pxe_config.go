@@ -21,4 +21,27 @@ func init() {
 	kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json
 	initrd http://[[server]]/data/flatcar_production_pxe_image.cpio.gz
 	boot`
+
+	PXEConfig["coreos.ipxe"] = `#!ipxe
+	echo Hello from Booty!
+	set BASEURL http://[[server]]/data/
+	set CONFIGURL http://[[server]]/ignition.json
+	set STREAM [[coreos-channel]]
+	set VERSION [[coreos-version]]
+	set ARCH [[coreos-arch]]
+
+	kernel ${BASEURL}/fedora-coreos-${VERSION}-live-kernel-${ARCH} enforcing=0 initrd=main coreos.live.rootfs_url=${BASEURL}/fedora-coreos-${VERSION}-live-rootfs.${ARCH}.img ignition.firstboot ignition.platform.id=metal ignition.firstboot=1 ignition.config.url=${CONFIGURL}
+	initrd --name main ${BASEURL}/fedora-coreos-${VERSION}-live-initramfs.${ARCH}.img
+	boot`
+
+	PXEConfig["ublue.ipxe"] = `#!ipxe
+	set BASEURL http://[[server]]/data/
+	set CONFIGURL http://[[server]]/data/ucore.ign
+	set STREAM [[coreos-channel]]
+	set VERSION [[coreos-version]]
+
+	echo "Hello from Booty!"
+	chain http://[[server]]/data/test.ipxe
+	boot
+	`
 }

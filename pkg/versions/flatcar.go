@@ -29,7 +29,7 @@ func FlatcarVersionCheck() {
 		return
 	}
 	if viper.GetBool("debug") {
-		log.Println("Checking remote version")
+		log.Println("Checking remote flatcar version")
 	}
 
 	if viper.GetString(config.CurrentFlatcarVersion) == "" {
@@ -43,6 +43,7 @@ func FlatcarVersionCheck() {
 					log.Println(err.Error())
 				}
 			}
+			log.Printf("Flatcar version set to %s", data["FLATCAR_VERSION"])
 			viper.Set(config.CurrentFlatcarVersion, data["FLATCAR_VERSION"])
 		} else {
 			log.Printf("%s not found, setting current version to 0.0.0", fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir)))
@@ -53,7 +54,7 @@ func FlatcarVersionCheck() {
 	LoadRemoteFlatcarVersion()
 	if viper.GetString(config.RemoteFlatcarVersion) != viper.GetString(config.CurrentFlatcarVersion) {
 		viper.Set(config.Updating, true)
-		log.Printf("Remote version %s is different than local version %s", viper.GetString(config.RemoteFlatcarVersion), viper.GetString(config.CurrentFlatcarVersion))
+		log.Printf("Remote flatcar version %s is different than local version %s", viper.GetString(config.RemoteFlatcarVersion), viper.GetString(config.CurrentFlatcarVersion))
 
 		if err := DownloadFlatcarFile("version.txt"); err != nil {
 			log.Printf("Error downloading version.txt: %s", err.Error())
@@ -75,7 +76,7 @@ func LoadRemoteFlatcarVersion() {
 	if resp, err := http.Get(RemoteFlatcarURL() + "/version.txt"); err == nil {
 		data, _ := godotenv.Parse(resp.Body)
 		if _, ok := data["FLATCAR_VERSION"]; !ok {
-			log.Printf("Error retrieving remote version from %s", resp.Request.URL.String())
+			log.Printf("Error retrieving remote flatcar version from %s", resp.Request.URL.String())
 			if err != nil {
 				log.Println(err.Error())
 			}
@@ -83,15 +84,15 @@ func LoadRemoteFlatcarVersion() {
 		}
 		viper.Set(config.RemoteFlatcarVersion, data["FLATCAR_VERSION"])
 		if viper.GetBool("debug") {
-			log.Printf("Remote version found: %s", data["FLATCAR_VERSION"])
+			log.Printf("Remote flatcar version found: %s", data["FLATCAR_VERSION"])
 		}
 	} else {
-		log.Printf("Error retrieving remote version from %s: %s", RemoteFlatcarURL(), err.Error())
+		log.Printf("Error retrieving remote flatcar version from %s: %s", RemoteFlatcarURL(), err.Error())
 	}
 }
 
 func RemoteFlatcarURL() string {
-	return fmt.Sprintf(viper.GetString(config.FlatcarURL), viper.GetString(config.FlatcarChannel), viper.GetString(config.Architecture))
+	return fmt.Sprintf(viper.GetString(config.FlatcarURL), viper.GetString(config.FlatcarChannel), viper.GetString(config.FlatcarArchitecture))
 }
 
 func DownloadFlatcarFile(filename string) error {

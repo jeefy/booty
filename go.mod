@@ -8,14 +8,13 @@ replace (
 )
 
 require (
-	github.com/flatcar-linux/container-linux-config-transpiler v0.9.2
+	github.com/buger/jsonparser v1.1.1
+	github.com/coreos/butane v0.19.0
+	github.com/coreos/ignition/v2 v2.17.0
 	github.com/go-co-op/gocron v1.11.0
 	github.com/j-keck/arping v1.0.3
 	github.com/joho/godotenv v1.4.0
 	github.com/pin/tftp v2.2.0+incompatible
 	github.com/spf13/cobra v1.3.0
 	github.com/spf13/viper v1.10.1
-	github.com/stretchr/testify v1.8.4 // indirect
-	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/text v0.8.0 // indirect
 )

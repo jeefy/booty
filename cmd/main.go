@@ -21,16 +21,18 @@ var Cmd = &cobra.Command{
 }
 
 var args struct {
-	debug          bool
-	dataDir        string
-	maxCacheAge    int
-	cronSchedule   string
-	httpPort       int
-	architecture   string
-	serverIP       string
-	serverHttpPort int
-	joinString     string
-	channel        string
+	debug               bool
+	dataDir             string
+	maxCacheAge         int
+	cronSchedule        string
+	httpPort            int
+	flatcarArchitecture string
+	coreOSArchitecture  string
+	serverIP            string
+	serverHttpPort      int
+	joinString          string
+	flatcarChannel      string
+	coreOSChannel       string
 }
 
 var (
@@ -68,17 +70,30 @@ func init() {
 	)
 
 	flags.StringVar(
-		&args.architecture,
-		"architecture",
+		&args.flatcarArchitecture,
+		"flatcarArchitecture",
 		"amd64",
-		"Architecture to use for the iPXE server",
+		"Architecture to use for the Flatcar downloads",
+	)
+	flags.StringVar(
+		&args.coreOSArchitecture,
+		"coreOSArchitecture",
+		"x86_64",
+		"Architecture to use for CoreOS downloads",
 	)
 
 	flags.StringVar(
-		&args.channel,
-		"channel",
+		&args.flatcarChannel,
+		"flatcarChannel",
 		"stable",
 		"Flatcar channel to look for updates",
+	)
+
+	flags.StringVar(
+		&args.coreOSChannel,
+		"coreOSChannel",
+		"stable",
+		"CoreOS channel to look for updates",
 	)
 
 	flags.StringVar(
@@ -131,9 +146,13 @@ func run(cmd *cobra.Command, argv []string) error {
 	log.Println("Starting Booty!")
 	config.LoadConfig(cmd)
 	config.EnsureDeps()
+
 	versions.FlatcarVersionCheck()
+	versions.CoreOSVersionCheck()
 
 	versions.StartFlatcarCron()
+	versions.StartCoreOSCron()
+
 	tftp.StartTFTP()
 
 	// Start the HTTP server

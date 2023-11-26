@@ -44,7 +44,11 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	}
 
 	if filename == "booty.ipxe" {
-		r := strings.NewReader(strings.Replace(PXEConfig[fmt.Sprintf("%s.ipxe", osToLoad)], "[[server]]", urlHost, -1))
+		toServe := strings.Replace(PXEConfig[fmt.Sprintf("%s.ipxe", osToLoad)], "[[server]]", urlHost, -1)
+		toServe = strings.Replace(toServe, "[[coreos-channel]]", viper.GetString(config.CoreOSChannel), -1)
+		toServe = strings.Replace(toServe, "[[coreos-arch]]", viper.GetString(config.CoreOSArchitecture), -1)
+		toServe = strings.Replace(toServe, "[[coreos-version]]", viper.GetString(config.CurrentCoreOSVersion), -1)
+		r := strings.NewReader(toServe)
 		n, err := rf.ReadFrom(r)
 		if err != nil {
 			log.Printf("Error reading iPXE config: %v\n", err)

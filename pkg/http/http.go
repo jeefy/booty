@@ -35,7 +35,7 @@ func StartHTTP() {
 
 	s := &http.Server{
 		Addr:           port,
-		Handler:        myHandler,
+		Handler:        logRequest(myHandler),
 		ReadTimeout:    60 * time.Second,
 		WriteTimeout:   300 * time.Second,
 		MaxHeaderBytes: 1 << 20,
@@ -64,4 +64,11 @@ func StartHTTP() {
 		log.Fatalf("Server Shutdown Failed:%+v", err)
 	}
 	log.Print("Server Exited Properly")
+}
+
+func logRequest(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s %s %s\n", r.RemoteAddr, r.Method, r.URL)
+		handler.ServeHTTP(w, r)
+	})
 }

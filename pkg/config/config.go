@@ -17,14 +17,19 @@ const (
 	CurrentFlatcarVersion = "currentFlatcarVersion"
 	RemoteFlatcarVersion  = "remoteFlatcarVersion"
 	FlatcarChannel        = "flatcarChannel"
+	CurrentCoreOSVersion  = "currentCoreOSVersion"
+	RemoteCoreOSVersion   = "remoteCoreOSVersion"
+	CoreOSChannel         = "coreOSChannel"
 	IgnitionFile          = "ignitionFile"
 	HardwareMap           = "hardwareMap"
-	Architecture          = "architecture"
+	CoreOSArchitecture    = "coreOSArchitecture"
+	FlatcarArchitecture   = "flatcarArchitecture"
 	Debug                 = "debug"
 	UpdateSchedule        = "updateSchedule"
 	HttpPort              = "httpPort"
 	DataDir               = "dataDir"
 	FlatcarURL            = "flatcarURL"
+	CoreOSURL             = "coreOSURL"
 	ServerIP              = "serverIP"
 	ServerHttpPort        = "serverHttpPort"
 	JoinString            = "joinString"
@@ -35,7 +40,9 @@ func LoadConfig(cmd *cobra.Command) {
 	viper.SetDefault(Debug, false)
 	viper.SetDefault(Updating, false)
 	viper.SetDefault(FlatcarURL, "https://%s.release.flatcar-linux.net/%s-usr/current")
-	//https: //stable.release.flatcar-linux.net/amd64-usr/current/version.txt
+	viper.SetDefault(CoreOSURL, "https://builds.coreos.fedoraproject.org/prod/streams/%s/builds/%s/%s")
+	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
+	// https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt
 
 	if file, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(DataDir))); err == nil {
 		data, _ := godotenv.Parse(file)
