@@ -20,10 +20,10 @@ data:
           wipe_filesystem: true
           label: ssd
       files:
-        - path: /opt/hostname.sh
+        - path: /etc/hostname
+          mode: 0644
           contents:
-            source: http://192.168.50.20/data/config/hostname.sh
-          mode: 0775
+            inline: {{ .Hostname }}
         - path: /opt/cni.sh
           contents:
             source: http://192.168.50.20/data/config/cni.sh
@@ -87,21 +87,6 @@ data:
             [Install]
             WantedBy=multi-user.target
         - enabled: true
-          name: fetch-hostname.service
-          contents: |
-            [Install]
-            WantedBy=multi-user.target
-
-            [Unit]
-            Description=fetch hostname script
-            Wants=network-online.target
-            After=network.target network-online.target
-
-            [Service]
-            Environment="BOOTY_IP={{ .ServerIP }}"
-            Type=oneshot
-            ExecStart=/opt/hostname.sh
-        - enabled: true
           name: cni-install.service
           contents: |
             [Install]
@@ -164,19 +149,6 @@ data:
     mkdir -p /opt/cni/bin
     curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-amd64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
     echo "CNI driver installed";
-  hostname.sh: |
-    #!/bin/bash
-    MAC=$(ifconfig $(ip addr | awk '/state UP/ {print $2}' | sed 's/.$//') | awk '/ether/ {print $2}')
-    HOSTNAME=$(curl --fail http://${BOOTY_IP}/hosts?mac="$MAC" | jq -r '.hostname')
-
-    RET=$?
-    if [ $RET -ne 0 ]; then
-            echo "Failed to get hostname from server"
-            HOSTNAME=flatcar
-    fi
-
-    echo "$HOSTNAME" > /etc/hostname
-    sudo hostnamectl set-hostname "$HOSTNAME"
   join.sh: |
     #!/bin/bash
     sysctl net.bridge.bridge-nf-call-iptables=1

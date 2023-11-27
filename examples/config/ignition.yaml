@@ -12,10 +12,10 @@ storage:
       wipe_filesystem: true
       label: ssd
   files:
-    - path: /opt/hostname.sh
+    - path: /etc/hostname
+      mode: 0644
       contents:
-        source: http://192.168.50.20/data/config/hostname.sh
-      mode: 0775
+        inline: {{ .Hostname }}
     - path: /opt/cni.sh
       contents:
         source: http://192.168.50.20/data/config/cni.sh
@@ -78,21 +78,6 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
-    - enabled: true
-      name: fetch-hostname.service
-      contents: |
-        [Install]
-        WantedBy=multi-user.target
-
-        [Unit]
-        Description=fetch hostname script
-        Wants=network-online.target
-        After=network.target network-online.target
-
-        [Service]
-        Environment="BOOTY_IP={{ .ServerIP }}"
-        Type=oneshot
-        ExecStart=/opt/hostname.sh
     - enabled: true
       name: cni-install.service
       contents: |
