@@ -123,16 +123,20 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	var tpl bytes.Buffer
 
 	templateData := struct {
-		JoinString string
-		ServerIP   string
+		JoinString  string
+		ServerIP    string
+		OSTreeImage string
 	}{
 		JoinString: viper.GetString(config.JoinString),
 		ServerIP:   viper.GetString(config.ServerIP),
 	}
 
 	ignitionFile := viper.GetString(config.IgnitionFile)
-	if host != nil && host.IgnitionFile != "" {
-		ignitionFile = host.IgnitionFile
+	if host != nil {
+		if host.IgnitionFile != "" {
+			ignitionFile = host.IgnitionFile
+		}
+		templateData.OSTreeImage = host.OSTreeImage
 	}
 	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), ignitionFile))
 	if err != nil {
@@ -216,58 +220,4 @@ func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(fmt.Sprintf(`{"flatcar":{"version":"%s"},"booty":{"version":"%s","timestamp":"%s"}}`, viper.GetString(config.CurrentFlatcarVersion), viper.GetString("version"), viper.GetString("timestamp"))))
-}
-
-func coreOSIgnition(host *hardware.Host, tpl bytes.Buffer) []byte {
-	if host == nil {
-		coreosConfig := coreOSType.Config{}
-		coreosConfig.Ignition.Version = "3.4.0"
-		truePointer := true
-		contentsPointer := `
-[Service]
-Type=simple
-ExecStart=reboot
-
-[Install]
-WantedBy=default.target
-`
-		coreosConfig.Systemd.Units = append(coreosConfig.Systemd.Units, coreOSType.Unit{
-			Name:     "Reboot now please",
-			Enabled:  &truePointer,
-			Contents: &contentsPointer,
-		})
-		var dataOut []byte
-		dataOut, err := json.Marshal(&coreosConfig)
-		if err != nil {
-			return []byte(fmt.Sprintf("Failed to marshal output: %v", err))
-		}
-		return dataOut
-	}
-
-	ignCfg, report, err := butaneConfig.TranslateBytes(tpl.Bytes(), butaneCommon.TranslateBytesOptions{
-		Pretty: true,
-	})
-	if err != nil {
-		errMsg := fmt.Sprintf("Error parsing coreos ignition: %s", err.Error())
-		log.Println(errMsg)
-		log.Printf("%s", tpl.Bytes())
-		for _, entry := range report.Entries {
-			log.Printf("%s", entry.String())
-		}
-		return []byte(errMsg)
-	}
-	if len(report.Entries) > 0 {
-		errMsg := fmt.Sprintf("Problems parsing coreos ignition: %s", report.String())
-		log.Println(errMsg)
-		log.Printf("%s", tpl.Bytes())
-		for _, entry := range report.Entries {
-			log.Printf("%s", entry.String())
-		}
-		if report.IsFatal() {
-			return []byte(errMsg)
-
-		}
-	}
-
-	return ignCfg
 }

@@ -26,6 +26,7 @@ func init() {
 	echo Hello from Booty!
 	set BASEURL http://[[server]]/data/
 	set CONFIGURL http://[[server]]/ignition.json
+	set OSTREE_IMAGE [[ostree-image]]
 	set STREAM [[coreos-channel]]
 	set VERSION [[coreos-version]]
 	set ARCH [[coreos-arch]]
@@ -36,12 +37,12 @@ func init() {
 
 	PXEConfig["ublue.ipxe"] = `#!ipxe
 	set BASEURL http://[[server]]/data/
-	set CONFIGURL http://[[server]]/data/ucore.ign
+	set CONFIGURL http://[[server]]/ignition.json
+	set OSTREE_IMAGE [[ostree-image]]
 	set STREAM [[coreos-channel]]
 	set VERSION [[coreos-version]]
 
 	echo "Hello from Booty!"
-	chain http://[[server]]/data/test.ipxe
-	boot
-	`
+	chain http://[[server]]/data/ublue.ipxe
+	boot`
 }

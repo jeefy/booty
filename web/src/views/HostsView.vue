@@ -90,6 +90,10 @@ export default {
                     <input type="text" placeholder="Ignition File" v-model="host.ignitionFile" v-show="host.edit">
                </td>
                <td>
+                    <span v-show="!host.edit">{{host.ostreeImage}}</span>
+                    <input type="text" placeholder="OSTree Image" v-model="host.ostreeImage" v-show="host.edit">
+               </td>
+               <td>
                     <button v-show="!host.edit" v-on:click="editHost(mac, host)">edit</button>
                     <button v-show="host.edit" v-on:click="cancelHost(mac, host)">cancel</button>
                     <button v-show="host.edit" v-on:click="saveHost(mac, host)">save</button>
