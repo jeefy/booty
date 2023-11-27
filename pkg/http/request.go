@@ -126,6 +126,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		JoinString  string
 		ServerIP    string
 		OSTreeImage string
+		Hostname    string
 	}{
 		JoinString: viper.GetString(config.JoinString),
 		ServerIP:   viper.GetString(config.ServerIP),
@@ -136,6 +137,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		if host.IgnitionFile != "" {
 			ignitionFile = host.IgnitionFile
 		}
+		templateData.Hostname = host.Hostname
 		templateData.OSTreeImage = host.OSTreeImage
 	}
 	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), ignitionFile))
