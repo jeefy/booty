@@ -1,0 +1,13 @@
+.row-striped:nth-of-type(odd){
+    background-color: #efefef;
+}
+  
+.row-striped:nth-of-type(even){
+    background-color: #ffffff;
+}
+
+.row.header {
+    font-weight: 900;
+    color: #ffffff;
+    background-color: #ea6153;
+}

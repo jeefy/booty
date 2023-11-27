@@ -11,7 +11,7 @@ export default {
         fetch('/booty.json')
             .then(response => response.json())
             .then(data => (this.hostData = data));
-        fetch('/version.json')
+        fetch('/info')
             .then(response => response.json())
             .then(data => (this.version = data));
     }
@@ -25,7 +25,8 @@ export default {
     <div>
         <h3>Hello friend!</h3>
         <div>
-            <div>Flatcar version {{ version.version || "not polled yet" }}</div>
+            <div>Flatcar version {{ version.flatcar.version || "not polled yet" }}</div>
+            <div>CoreOS version {{ version.coreos.version || "not polled yet" }}</div>
             <div>
                 <router-link to="/hosts">{{ hostData.hosts ? Object.keys(hostData.hosts).length : 0}} Hosts registered</router-link>
             </div>

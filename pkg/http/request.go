@@ -205,7 +205,6 @@ WantedBy=default.target
 	}
 
 	w.Write(ignCfg)
-	return
 }
 
 func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
