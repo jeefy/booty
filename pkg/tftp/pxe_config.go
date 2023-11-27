@@ -41,6 +41,7 @@ func init() {
 	set OSTREE_IMAGE [[ostree-image]]
 	set STREAM [[coreos-channel]]
 	set VERSION [[coreos-version]]
+	set menu-default [[menu-default]]
 
 	echo "Hello from Booty!"
 	chain http://[[server]]/data/ublue.ipxe

@@ -26,14 +26,20 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	}
 
 	osToLoad := "flatcar"
+	menuDefault := "run-from-disk"
 
 	if hwAddr, _, err := arping.Ping(raddr.IP); err != nil {
 		log.Printf("Error with ARP request: %s", err)
 	} else {
 		macAddress := hwAddr.String()
 		host := hardware.GetMacAddress(macAddress)
-		if host != nil && host.OS != "" {
-			osToLoad = host.OS
+		if host != nil {
+			if host.OS != "" {
+				osToLoad = host.OS
+			}
+			if host.DoInstall {
+				menuDefault = "install"
+			}
 		}
 	}
 
@@ -45,9 +51,11 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 
 	if filename == "booty.ipxe" {
 		toServe := strings.Replace(PXEConfig[fmt.Sprintf("%s.ipxe", osToLoad)], "[[server]]", urlHost, -1)
+		toServe = strings.Replace(toServe, "[[menu-default]]", menuDefault, -1)
 		toServe = strings.Replace(toServe, "[[coreos-channel]]", viper.GetString(config.CoreOSChannel), -1)
 		toServe = strings.Replace(toServe, "[[coreos-arch]]", viper.GetString(config.CoreOSArchitecture), -1)
 		toServe = strings.Replace(toServe, "[[coreos-version]]", viper.GetString(config.CurrentCoreOSVersion), -1)
+
 		r := strings.NewReader(toServe)
 		n, err := rf.ReadFrom(r)
 		if err != nil {

@@ -19,6 +19,7 @@ type Host struct {
 	IgnitionFile string `json:"ignitionFile,omitempty"`
 	OS           string `json:"os,omitempty"`
 	OSTreeImage  string `json:"ostreeImage,omitempty"`
+	DoInstall    bool   `json:"doInstall,omitempty"`
 }
 
 type BootyData struct {
