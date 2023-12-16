@@ -2,5 +2,7 @@ bin/*
 data/*
 examples/*
 old/*
+.vscode/*
+.github/*
 Makefile
 README.md
