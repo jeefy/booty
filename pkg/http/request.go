@@ -14,9 +14,11 @@ import (
 	butaneConfig "github.com/coreos/butane/config"
 	butaneCommon "github.com/coreos/butane/config/common"
 	coreOSType "github.com/coreos/ignition/v2/config/v3_5_experimental/types"
+	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
 
@@ -41,7 +43,19 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.OSTreeImage != "" {
+		ociImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), h.OSTreeImage)
+
+		go func() {
+			err := versions.OSTreeImagePull(h.OSTreeImage)
+			if err != nil {
+				log.Printf("Error pulling %s: %s", ociImage, err.Error())
+			}
+		}()
+	}
+
 	hardware.WriteMacAddress(h.MAC, h)
+
 	w.Write([]byte("OK"))
 }
 
@@ -129,7 +143,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		Hostname    string
 	}{
 		JoinString: viper.GetString(config.JoinString),
-		ServerIP:   viper.GetString(config.ServerIP),
+		ServerIP:   fmt.Sprintf("%s:%s", viper.GetString(config.ServerIP), viper.GetString(config.ServerHttpPort)),
 	}
 
 	ignitionFile := viper.GetString(config.IgnitionFile)
@@ -138,7 +152,22 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 			ignitionFile = host.IgnitionFile
 		}
 		templateData.Hostname = host.Hostname
+
+		// Ingelligently rewrite what image to send to the client depending on cache state
+		// First, default to the remote image location
 		templateData.OSTreeImage = host.OSTreeImage
+
+		// If we have a local image, use that instead
+		localImage := fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), host.OSTreeImage)
+		digest, err := crane.Digest(localImage)
+		if err != nil {
+			log.Printf("Error getting %s from cache: %s", localImage, err)
+		}
+		if digest == "" {
+			log.Printf("Image (%s) not found in local cache yet...", localImage)
+		} else {
+			templateData.OSTreeImage = localImage
+		}
 	}
 	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), ignitionFile))
 	if err != nil {

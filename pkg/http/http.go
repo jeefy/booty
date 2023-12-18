@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/spf13/viper"
 )
@@ -33,11 +35,15 @@ func StartHTTP() {
 	myHandler.Handle("/data/", http.StripPrefix("/data/", http.FileServer(http.Dir(viper.GetString(config.DataDir)))))
 	myHandler.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.Dir("./web/dist"))))
 
+	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(viper.GetString(config.DataDir) + "/registry")))
+
+	myHandler.Handle("/v2/", ociRegistry)
+
 	s := &http.Server{
 		Addr:           port,
 		Handler:        logRequest(myHandler),
-		ReadTimeout:    60 * time.Second,
-		WriteTimeout:   300 * time.Second,
+		ReadTimeout:    900 * time.Second,
+		WriteTimeout:   900 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 
@@ -68,7 +74,10 @@ func StartHTTP() {
 
 func logRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s %s\n", r.RemoteAddr, r.Method, r.URL)
+		// Don't log OCI registry requests
+		if !strings.Contains(r.URL.Path, "/v2/") {
+			log.Printf("%s %s %s\n", r.RemoteAddr, r.Method, r.URL.Path)
+		}
 		handler.ServeHTTP(w, r)
 	})
 }

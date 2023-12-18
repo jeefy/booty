@@ -1,5 +1,6 @@
 bin/*
 data/*
+jeefy/*
 examples/*
 old/*
 .vscode/*

@@ -57,13 +57,13 @@ func GetData() []byte {
 		UnknownHosts: UnknownHosts,
 	}
 
-	data, err = json.Marshal(bd)
+	output, err := json.Marshal(bd)
 	if err != nil {
 		log.Printf("Error marshalling hardware map: %s", err.Error())
 		return nil
 	}
 
-	return data
+	return output
 }
 
 func GetMacAddress(mac string) *Host {

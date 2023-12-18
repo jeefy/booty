@@ -153,6 +153,16 @@ func run(cmd *cobra.Command, argv []string) error {
 	versions.StartFlatcarCron()
 	versions.StartCoreOSCron()
 
+	go func() {
+		time.Sleep(3 * time.Second)
+
+		// Pre-sync the images
+		versions.OSTreeImageSync()
+
+		// Then start the CRON job
+		versions.StartOSTreeImageSync()
+	}()
+
 	tftp.StartTFTP()
 
 	// Start the HTTP server
