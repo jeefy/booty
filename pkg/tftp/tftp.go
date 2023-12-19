@@ -39,6 +39,10 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 			}
 			if host.DoInstall {
 				menuDefault = "install"
+				if filename == "booty.ipxe" {
+					host.DoInstall = false
+					hardware.WriteMacAddress(macAddress, *host)
+				}
 			}
 		}
 	}
