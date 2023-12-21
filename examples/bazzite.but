@@ -1,0 +1,79 @@
+variant: flatcar
+version: 1.1.0
+
+passwd:
+    users:
+    - name: core
+      ssh_authorized_keys:
+      - SSH Pub Key go brrrr
+    - name: gamer
+      password_hash: Generate your own password here and paste it here
+      home_dir: /home/gamer
+      groups:
+        - wheel
+      shell: /bin/bash
+
+systemd:
+    units:
+    - enabled: true
+      name: update-registry-config.service
+      contents: |
+        [Unit]
+        Description=Add Booty registry endpoint to /etc/containers/registries.conf
+        After=network-online.target
+        ConditionPathExists=!/root/.postRegistryConfig
+
+        [Service]
+        type=oneshot
+        ExecStartPre=/usr/bin/bash -c 'echo "[[registry]]" >> /etc/containers/registries.conf'
+        ExecStartPre=/usr/bin/bash -c 'echo "location = \"\\\"{{ .ServerIP }}\\\"\"" >> /etc/containers/registries.conf'
+        ExecStartPre=/usr/bin/bash -c 'echo "insecure = true" >> /etc/containers/registries.conf'
+        ExecStart=touch /root/.postRegistryConfig
+
+        [Install]
+        WantedBy=multi-user.target
+    - enabled: true
+      name: rebase-custom.service
+      contents: |
+        [Unit]
+        Description=Fetch and deploy target image
+        # Only run on the firstboot
+        After=network-online.target
+        ConditionPathExists=!/root/.postRebase
+        ConditionPathExists=/root/.postRegistryConfig
+
+        [Service]
+        # This ordering is important
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStartPre=sleep 10
+        ExecStartPre=mount /dev/disk/by-label/boot /boot
+
+        ExecStart=rpm-ostree rebase ostree-unverified-registry:{{ .OSTreeImage }}
+
+        ExecStartPost=touch /root/postRebase
+        ExecStartPost=systemctl reboot
+
+        [Install]
+        WantedBy=multi-user.target
+    # This is assuming we're using `bazzite-nvidia` images
+    - enabled: true
+      name: ensure-nvidia-kmod.service
+      contents: |
+        [Unit]
+        Description=Install things we like
+        # Only run on the second boot
+        After=rebase-custom.service
+        ConditionPathExists=!/root/.postRebaseNvidia
+
+        [Service]
+        # This ordering is important
+        After=ignition-firstboot-complete.service
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=rpm-ostree kargs --append=rd.driver.blacklist=nouveau --append=modprobe.blacklist=nouveau --append=nvidia-drm.modeset=1
+        ExecStartPost=touch /root/.postRebaseNvidia
+        ExecStartPost=systemctl reboot
+
+        [Install]
+        WantedBy=multi-user.target

@@ -1,11 +1,11 @@
 # Booty
 
-A simple (i)PXE Server for booting Flatcar-Linux and CoreOS
+A simple (i)PXE Server for booting Flatcar-Linux, CoreOS, and [Universal Blue](https://universal-blue.org)
 
 ```
 > booty --help
 
-Easy iPXE server for Flatcar
+Easy iPXE server for Flatcar, CoreOS, and more
 
 Usage:
   booty [flags]
@@ -37,8 +37,9 @@ Flags:
 * Web UI to add/edit/remove hosts
 * Unrecognized MAC addresses go into the brig (boot loop till the MAC is registered)
 * Support for different operating systems and ignition files per machine
-* **EXPERIMENTAL**: Support for per-ostree images per machine (in conjunction with ignition rebase scripts)
-
+* **EXPERIMENTAL**: Support for per-ostree images per machine (in conjunction with [ignition rebase scripts](examples/bazzite.but))
+  * Auto-caches OCI images used for hosts (and has a page listing cached artifacts)
+  * When "Install" is set to Y, it will auto-flip to N when iPXE file is grabbed the first time
 
 ## Examples
 
@@ -55,6 +56,8 @@ ghcr.io/jeefy/booty:main \
 --joinString="kubeadm join 192.168.1.10:6443 --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${SHA_HASH}
 --serverIP=192.168.1.10
 --serverHttpPort=8080
+--flatcarChannel=beta
+--coreOSChannel=testing
 ```
 
 ### Kubernetes

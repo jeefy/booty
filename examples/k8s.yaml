@@ -215,28 +215,37 @@ spec:
         app: booty
     spec:
       containers:
-      - name: booty
-        imagePullPolicy: Always
+      - args:
+        - --dataDir
+        - /data
+        - --serverIP
+        - YOUR IP ADDRESS HERE
+        - --httpPort
+        - "80"
+        - --debug
+        - --joinString
+        - YOUR JOIN STRING HERE
+        - --flatcarChannel
+        - beta
+        - --coreOSChannel
+        - testing
         image: ghcr.io/jeefy/booty:main
-        args:
-          - "--dataDir"
-          - "/data"
-          - "--joinString"
-          - "kubeadm join 192.168.1.10:6443 --token LOLNOPE --discovery-token-ca-cert-hash sha256:LOLNOPE" # This should be the IP of your K8s Control Plane
-          - "--serverIP"
-          - "192.168.50.20" # This should be the IP of the service your hosts can connect to
+        imagePullPolicy: Always
+        name: booty
         ports:
         - containerPort: 69
-        - containerPort: 8080
-        volumeMounts:
-        - name: booty-data
-          mountPath: /data/
-        - name: booty-config
-          mountPath: /data/config/
+          hostPort: 69
+          protocol: TCP
+        - containerPort: 80
+          hostPort: 80
+          protocol: TCP
         resources:
           limits:
-            cpu: "500m" # This could probably be tuned lower
-            memory: "512Mi" # This could probably be tuned lower
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
       volumes:
       - name: booty-config
         configMap:

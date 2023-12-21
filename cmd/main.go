@@ -16,7 +16,7 @@ import (
 
 var Cmd = &cobra.Command{
 	Use:  "booty",
-	Long: "Easy iPXE server for Flatcar",
+	Long: "Easy iPXE server for Flatcar, CoreOS, and more",
 	RunE: run,
 }
 
