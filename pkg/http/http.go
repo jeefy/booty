@@ -32,6 +32,7 @@ func StartHTTP() {
 	myHandler.HandleFunc("/unregister", handleUnregistrationRequest)
 	myHandler.HandleFunc("/booty.json", handleDataRequest)
 	myHandler.HandleFunc("/info", handleInfoRequest)
+	myHandler.HandleFunc("/registry", handleRegistryRequest)
 	myHandler.Handle("/data/", http.StripPrefix("/data/", http.FileServer(http.Dir(viper.GetString(config.DataDir)))))
 	myHandler.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.Dir("./web/dist"))))
 

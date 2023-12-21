@@ -18,6 +18,9 @@ import { RouterLink, RouterView } from 'vue-router'
           <router-link class="nav-link" to="/hosts">Hosts</router-link>
         </div>
         <div class="navbar-nav mr-auto">
+          <router-link class="nav-link" to="/cache">OCI Cache</router-link>
+        </div>
+        <div class="navbar-nav mr-auto">
           <router-link class="nav-link" to="/about">About</router-link>
         </div>
       </div>

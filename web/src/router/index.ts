@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('../views/HostsView.vue')
     },
     {
+      path: '/cache',
+      name: 'cache',
+      component: () => import('../views/CacheView.vue')
+    },
+    {
       path: '/about',
       name: 'about',
       // route level code-splitting
