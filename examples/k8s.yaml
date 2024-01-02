@@ -156,7 +156,7 @@ data:
 
   kube-tools.sh: |
     #!/bin/bash
-    RELEASE="$(curl -sSL https://dl.k8s.io/release/stable.txt)"
+    RELEASE="$(curl -sSL https://cdn.dl.k8s.io/release/stable.txt)"
     mkdir -p /opt/bin
     cd /opt/bin
     curl -L --remote-name-all https://storage.googleapis.com/kubernetes-release/release/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}

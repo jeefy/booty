@@ -44,10 +44,11 @@ func handleHostsRequest(w http.ResponseWriter, r *http.Request) {
 func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.RequestURI, "json") {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(fmt.Sprintf(`{"version":"%s"}`, viper.GetString(config.CurrentFlatcarVersion))))
+		w.Write([]byte(fmt.Sprintf(`{"flatcar":"%s","coreos":"%s"}`, viper.GetString(config.CurrentFlatcarVersion), viper.GetString(config.CurrentCoreOSVersion))))
 		return
 	}
-	w.Write([]byte(fmt.Sprintf("FLATCAR_VERSION=%s", viper.GetString(config.CurrentFlatcarVersion))))
+	w.Write([]byte(fmt.Sprintf("FLATCAR_VERSION=%s\n", viper.GetString(config.CurrentFlatcarVersion))))
+	w.Write([]byte(fmt.Sprintf("COREOS_VERSION=%s\n", viper.GetString(config.CurrentCoreOSVersion))))
 }
 
 func handleInfoRequest(w http.ResponseWriter, r *http.Request) {

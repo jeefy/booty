@@ -1,0 +1,134 @@
+variant: flatcar
+version: 1.1.0
+
+passwd:
+  users:
+  - name: core
+    ssh_authorized_keys:
+    - YOUR SSH KEY(S) HERE 
+
+systemd:
+  units:       
+  - name: update.service
+    contents: |
+      [Unit]
+      Description=Compares current version to remote version
+
+      [Service]
+      Environment="BOOTY_IP={{ .ServerIP }}"
+      Type=oneshot
+      ExecStart=/opt/bin/version-check.sh
+  - name: update.timer
+    enabled: true
+    contents: |
+      [Unit]
+      Description=Run update-check every 10 minutes
+
+      [Timer]
+      OnCalendar=*:0/10
+
+      [Install]
+      WantedBy=multi-user.target
+  - enabled: true
+    name: k8s-join.service
+    contents: |
+      [Install]
+      WantedBy=multi-user.target
+
+      [Unit]
+      Description=k8s join script
+      Requires=network-online.target
+      After=network-online.target grab-scripts.service
+      ConditionPathExists=!/root/.kubeJoin
+
+      [Service]
+      Environment="JOIN_STRING={{ .JoinString }}"
+      Type=oneshot
+      ExecStart=/bin/bash -c 'PATH=/opt/bin/:/opt/bin/cni/:$PATH exec /opt/bin/join.sh'
+      ExecStartPost=touch /root/.kubeJoin
+  - enabled: true
+    name: update-registry-config.service
+    contents: |
+      [Unit]
+      Description=Add Booty registry endpoint to /etc/containers/registries.conf
+      After=network-online.target
+      ConditionPathExists=!/root/.postRegistryConfig
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/bash -c 'echo "[[registry]]" >> /etc/containers/registries.conf'
+      ExecStart=/usr/bin/bash -c 'echo "location = \"\\\"{{ .ServerIP }}\\\"\"" >> /etc/containers/registries.conf'
+      ExecStart=/usr/bin/bash -c 'echo "insecure = true" >> /etc/containers/registries.conf'
+      ExecStartPost=touch /root/.postRegistryConfig
+
+      [Install]
+      WantedBy=multi-user.target
+  - enabled: true
+    name: rebase-custom.service
+    contents: |
+      [Unit]
+      Description=Fetch and deploy target image
+      # Only run on the firstboot
+      Requires=network-online.target
+      After=network-online.target update-registry-config.service
+      ConditionPathExists=!/root/.postRebase
+      ConditionPathExists=/root/.postRegistryConfig
+
+      [Service]
+      # This ordering is important
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStartPre=sleep 10
+      ExecStartPre=mount /dev/disk/by-label/boot /boot
+
+      ExecStart=rpm-ostree rebase ostree-unverified-registry:{{ .OSTreeImage }}
+
+      ExecStartPost=touch /root/.postRebase
+      ExecStartPost=systemctl reboot
+
+      [Install]
+      WantedBy=multi-user.target
+  - enabled: true
+    name: grab-scripts.service
+    contents: |
+      [Install]
+      WantedBy=multi-user.target
+
+      [Unit]
+      Description=Grabs all our booty scrips
+      Requires=network-online.target
+      After=network-online.target ensure-rebase-custom.service
+      ConditionPathExists=/root/.postRebase
+      ConditionPathExists=!/root/.postGrab
+
+      [Service]
+      Type=oneshot
+      # This is bad and I feel bad
+      ExecStart=/bin/bash -c 'mkdir -p /opt/bin/cni'
+      ExecStart=/bin/bash -c 'wget http://{{ .ServerIP }}/data/config/join.sh -O /opt/bin/join.sh'
+      ExecStart=/bin/bash -c 'chmod +x /opt/bin/join.sh'
+      ExecStart=/bin/bash -c 'wget http://{{ .ServerIP }}/data/config/version-check.sh -O /opt/bin/version-check.sh'
+      ExecStart=/bin/bash -c 'chmod +x /opt/bin/version-check.sh'
+      ExecStart=/bin/bash -c 'wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service -O /etc/systemd/system/containerd.service'
+      ExecStart=rpm-ostree install kubernetes-kubeadm kubernetes-node crictl conntrack
+      ExecStart=rpm-ostree apply-live
+      ExecStart=ln -s /usr/bin/containerd /usr/local/bin/containerd
+      ExecStart=systemctl enable containerd
+      ExecStart=systemctl start containerd
+      ExecStart=/bin/bash -c 'sed -i "s:/usr/libexec/cni/:/opt/cni/bin/:g" /etc/containerd/config.toml'
+      ExecStart=/bin/bash -c 'echo "  [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc]" >> /etc/containerd/config.toml'
+      ExecStart=/bin/bash -c 'echo "    runtime_type = \\\"io.containerd.runc.v2\\\"" >> /etc/containerd/config.toml'
+      ExecStart=/bin/bash -c 'echo "  [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc.options]" >> /etc/containerd/config.toml'
+      ExecStart=/bin/bash -c 'echo "    SystemdCgroup = true" >> /etc/containerd/config.toml'
+      ExecStart=systemctl restart containerd
+      ExecStart=systemctl stop firewalld
+      ExecStart=systemctl disable firewalld
+      ExecStart=/bin/bash -c 'echo "export PATH=/opt/bin/:$PATH" >> /etc/profile'
+      ExecStartPost=touch /root/.postGrab
+
+storage:
+  files:
+  - path: /etc/hostname
+    mode: 0644
+    contents:
+      inline: {{ .Hostname }}

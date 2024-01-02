@@ -18,23 +18,23 @@ storage:
         inline: {{ .Hostname }}
     - path: /opt/cni.sh
       contents:
-        source: http://192.168.50.20/data/config/cni.sh
+        source: http://{{ .ServerIP }}/data/config/cni.sh
       mode: 0775
     - path: /opt/systemd.sh
       contents:
-        source: http://192.168.50.20/data/config/systemd.sh
+        source: http://{{ .ServerIP }}/data/config/systemd.sh
       mode: 0775
     - path: /opt/kube-tools.sh
       contents:
-        source: http://192.168.50.20/data/config/kube-tools.sh
+        source: http://{{ .ServerIP }}/data/config/kube-tools.sh
       mode: 0775
     - path: /opt/join.sh
       contents:
-        source: http://192.168.50.20/data/config/join.sh
+        source: http://{{ .ServerIP }}/data/config/join.sh
       mode: 0775
     - path: /opt/version-check.sh
       contents:
-        source: http://192.168.50.20/data/config/version-check.sh
+        source: http://{{ .ServerIP }}/data/config/version-check.sh
       mode: 0775
 systemd:
   units:
