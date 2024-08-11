@@ -51,9 +51,10 @@ func CoreOSVersionCheck() {
 	}
 
 	LoadRemoteCoreOSVersion()
+	oldVersion := viper.GetString(config.CurrentCoreOSVersion)
 	if viper.GetString(config.RemoteCoreOSVersion) != viper.GetString(config.CurrentCoreOSVersion) {
 		viper.Set(config.Updating, true)
-		log.Printf("Remote coreos version %s is different than local version %s", viper.GetString(config.RemoteCoreOSVersion), viper.GetString(config.CurrentCoreOSVersion))
+		log.Printf("Remote coreos version %s is different than local version %s", viper.GetString(config.RemoteCoreOSVersion), oldVersion)
 
 		if err := DownloadCoreOSJSON(); err != nil {
 			log.Printf("Error downloading coreos json: %s", err.Error())
@@ -76,6 +77,12 @@ func CoreOSVersionCheck() {
 		}
 
 		viper.Set(config.CurrentCoreOSVersion, viper.GetString(config.RemoteCoreOSVersion))
+
+		// Remove old versions once new ones are downloaded
+		os.Remove(fmt.Sprintf("fedora-coreos-%s-live-initramfs.%s.img", oldVersion, viper.GetString(config.CoreOSArchitecture)))
+		os.Remove(fmt.Sprintf("fedora-coreos-%s-live-kernel-%s", oldVersion, viper.GetString(config.CoreOSArchitecture)))
+		os.Remove(fmt.Sprintf("fedora-coreos-%s-live-rootfs.%s.img", oldVersion, viper.GetString(config.CoreOSArchitecture)))
+
 		viper.Set(config.Updating, false)
 	}
 
