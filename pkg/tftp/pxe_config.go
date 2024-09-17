@@ -24,6 +24,9 @@ func init() {
 
 	PXEConfig["flatcar_booty.ipxe"] = `#!ipxe
 	echo "Hello from Booty!"
+	set BASEURL http://[[server]]/data/
+	set CONFIGURL http://[[server]]/ignition.json
+	set menu-default [[menu-default]]
 	chain http://[[server]]/data/flatcar_booty.ipxe
 	boot`
 
