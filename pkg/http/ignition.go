@@ -28,22 +28,23 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Ignition Request URI: %s", r.RequestURI)
 
 	macAddress := ""
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		log.Printf("Error splitting user ip: %v is not IP:port", r.RemoteAddr)
-	}
-	remoteIP := net.ParseIP(ip)
 
-	if hwAddr, _, err := arping.Ping(remoteIP); err != nil {
-		log.Printf("Error with ARP request: %s", err)
-	} else {
-		if viper.GetBool("debug") {
-			log.Printf("Mac address from ARP `%s`", macAddress)
+	if r.URL.Query().Get("mac") == "" {
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			log.Printf("Error splitting user ip: %v is not IP:port", r.RemoteAddr)
 		}
-		macAddress = hwAddr.String()
-	}
+		remoteIP := net.ParseIP(ip)
 
-	if r.URL.Query().Get("mac") != "" {
+		if hwAddr, _, err := arping.Ping(remoteIP); err != nil {
+			log.Printf("Error with ARP request: %s", err)
+		} else {
+			if viper.GetBool("debug") {
+				log.Printf("Mac address from ARP `%s`", macAddress)
+			}
+			macAddress = hwAddr.String()
+		}
+	} else {
 		macAddress = r.URL.Query().Get("mac")
 		if viper.GetBool("debug") {
 			log.Printf("Mac address url override `%s`", macAddress)
