@@ -79,15 +79,17 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		templateData.OSTreeImage = host.OSTreeImage
 
 		// If we have a local image, use that instead
-		localImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), host.OSTreeImage)
-		digest, err := crane.Digest(localImage)
-		if err != nil {
-			log.Printf("Error getting %s from cache: %s", localImage, err)
-		}
-		if digest == "" {
-			log.Printf("Image (%s) not found in local cache yet...", localImage)
-		} else {
-			templateData.OSTreeImage = localImage
+		if host.OSTreeImage != "" {
+			localImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), host.OSTreeImage)
+			digest, err := crane.Digest(localImage)
+			if err != nil {
+				log.Printf("Error getting %s from cache: %s", localImage, err)
+			}
+			if digest == "" {
+				log.Printf("Image (%s) not found in local cache yet...", localImage)
+			} else {
+				templateData.OSTreeImage = localImage
+			}
 		}
 	}
 	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), ignitionFile))
