@@ -2,9 +2,8 @@ package hardware
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"log"
-
+	"os"
 	"sync"
 
 	"github.com/jeefy/booty/pkg/config"
@@ -28,19 +27,33 @@ type BootyData struct {
 }
 
 var HostDB map[string]*Host
-var UnknownHosts map[string]*Host
+
+// UnknownHosts uses sync.Map for lock-free reads on the write-once-read-many
+// unknown-host lookup path. Keys are MAC address strings, values are *Host.
+var UnknownHosts sync.Map
+
 var fileMutex sync.Mutex
 
 func init() {
 	HostDB = make(map[string]*Host)
-	UnknownHosts = make(map[string]*Host)
+}
+
+// unknownHostsSnapshot returns a plain map copy of UnknownHosts for JSON
+// serialization and external consumers that expect map[string]*Host.
+func unknownHostsSnapshot() map[string]*Host {
+	m := make(map[string]*Host)
+	UnknownHosts.Range(func(key, value interface{}) bool {
+		m[key.(string)] = value.(*Host)
+		return true
+	})
+	return m
 }
 
 func GetData() []byte {
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
 
-	data, err := ioutil.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
+	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
 		log.Printf("Error reading hardware map: %s", err.Error())
 		return nil
@@ -54,7 +67,7 @@ func GetData() []byte {
 
 	bd := BootyData{
 		Hosts:        HostDB,
-		UnknownHosts: UnknownHosts,
+		UnknownHosts: unknownHostsSnapshot(),
 	}
 
 	output, err := json.Marshal(bd)
@@ -70,7 +83,7 @@ func GetMacAddress(mac string) *Host {
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
 
-	data, err := ioutil.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
+	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
 		log.Printf("Error reading hardware map: %s", err.Error())
 		return nil
@@ -81,11 +94,11 @@ func GetMacAddress(mac string) *Host {
 		return nil
 	}
 	if val, ok := HostDB[mac]; ok {
-		delete(UnknownHosts, mac)
+		UnknownHosts.Delete(mac)
 		return val
 	}
 
-	UnknownHosts[mac] = &Host{}
+	UnknownHosts.Store(mac, &Host{})
 	return nil
 }
 
@@ -93,7 +106,7 @@ func WriteMacAddress(mac string, host Host) *Host {
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
 
-	data, err := ioutil.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
+	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
 		log.Printf("Error reading hardware map: %s", err.Error())
 		return nil
@@ -109,13 +122,13 @@ func WriteMacAddress(mac string, host Host) *Host {
 		log.Printf("Error marshalling hardware map: %s", err.Error())
 		return nil
 	}
-	err = ioutil.WriteFile(viper.GetString(config.DataDir)+"/"+viper.GetString(config.HardwareMap), data, 0644)
+	err = os.WriteFile(viper.GetString(config.DataDir)+"/"+viper.GetString(config.HardwareMap), data, 0644)
 	if err != nil {
 		log.Printf("Error writing hardware map: %s", err.Error())
 		return nil
 	}
 
-	delete(UnknownHosts, mac)
+	UnknownHosts.Delete(mac)
 
 	return &host
 }
@@ -124,7 +137,7 @@ func RemoveMacAddress(mac string) {
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
 
-	data, err := ioutil.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
+	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
 		log.Printf("Error reading hardware map: %s", err.Error())
 		return
@@ -140,7 +153,7 @@ func RemoveMacAddress(mac string) {
 		log.Printf("Error marshalling hardware map: %s", err.Error())
 		return
 	}
-	err = ioutil.WriteFile(viper.GetString(config.DataDir)+"/"+viper.GetString(config.HardwareMap), data, 0644)
+	err = os.WriteFile(viper.GetString(config.DataDir)+"/"+viper.GetString(config.HardwareMap), data, 0644)
 	if err != nil {
 		log.Printf("Error writing hardware map: %s", err.Error())
 		return
