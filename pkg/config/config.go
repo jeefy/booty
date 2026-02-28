@@ -38,6 +38,9 @@ const (
 	JoinString            = "joinString"
 	Updating              = "updating"
 	TFTPBlockSize         = "tftpBlockSize"
+	DepsPxelinuxURL       = "depsPxelinuxURL"
+	DepsLdlinuxURL        = "depsLdlinuxURL"
+	DepsUndionlyURL       = "depsUndionlyURL"
 )
 
 func LoadConfig(cmd *cobra.Command) {
@@ -47,6 +50,13 @@ func LoadConfig(cmd *cobra.Command) {
 	viper.SetDefault(CoreOSURL, "https://builds.coreos.fedoraproject.org/prod/streams/%s/builds/%s/%s")
 	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
 	// https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt
+
+	viper.SetDefault(DepsPxelinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/pxelinux.0")
+	viper.SetDefault(DepsLdlinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
+	viper.SetDefault(DepsUndionlyURL, "https://raw.githubusercontent.com/jeefy/booty/main/undionly.kpxe")
+	viper.BindEnv(DepsPxelinuxURL, "DEPS_PXELINUX_URL")
+	viper.BindEnv(DepsLdlinuxURL, "DEPS_LDLINUX_URL")
+	viper.BindEnv(DepsUndionlyURL, "DEPS_UNDIONLY_URL")
 
 	if file, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(DataDir))); err == nil {
 		data, _ := godotenv.Parse(file)
@@ -195,7 +205,7 @@ func DownloadFileWithChecksumSHA512(url string, expectedSHA512 string) error {
 }
 
 func EnsureDeps() {
-	DownloadFile("http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/pxelinux.0")
-	DownloadFile("http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
-	DownloadFile("https://raw.githubusercontent.com/jeefy/booty/main/undionly.kpxe")
+	DownloadFile(viper.GetString(DepsPxelinuxURL))
+	DownloadFile(viper.GetString(DepsLdlinuxURL))
+	DownloadFile(viper.GetString(DepsUndionlyURL))
 }
