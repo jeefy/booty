@@ -1,9 +1,12 @@
 package config
 
 import (
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -34,6 +37,7 @@ const (
 	ServerHttpPort        = "serverHttpPort"
 	JoinString            = "joinString"
 	Updating              = "updating"
+	TFTPBlockSize         = "tftpBlockSize"
 )
 
 func LoadConfig(cmd *cobra.Command) {
@@ -48,10 +52,10 @@ func LoadConfig(cmd *cobra.Command) {
 		data, _ := godotenv.Parse(file)
 		if _, ok := data["FLATCAR_VERSION"]; !ok {
 			viper.Set(CurrentFlatcarVersion, data["FLATCAR_VERSION"])
-			log.Printf("Local version found: %s", data["FLATCAR_VERSION"])
+			slog.Info("Local version found", "version", data["FLATCAR_VERSION"])
 		}
 	} else {
-		log.Printf("Error retrieving existing local version: %s", err.Error())
+		slog.Error("Error retrieving existing local version", "error", err)
 	}
 
 	viper.BindEnv(IgnitionFile, "IGNITION_FILE")
@@ -62,14 +66,14 @@ func LoadConfig(cmd *cobra.Command) {
 }
 
 func DownloadFile(url string) error {
-	log.Printf("Downloading %s", url)
+	slog.Info("Downloading", "url", url)
 	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	filename := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
-	log.Printf("Creating %s", filename)
+	slog.Info("Creating", "filename", filename)
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -85,8 +89,108 @@ func DownloadFile(url string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Download completed for %s (%d)", url, fileInfo.Size())
+	slog.Info("Download completed", "url", url, "size_bytes", fileInfo.Size())
 
+	return nil
+}
+
+// DownloadFileWithChecksum downloads url to a temporary file, verifies its
+// SHA256 digest against expectedSHA256 (a lowercase hex string), and only
+// moves the file to its final destination (DataDir/basename(url)) when the
+// digest matches. The temporary file is always removed on failure.
+func DownloadFileWithChecksum(url string, expectedSHA256 string) error {
+	slog.Info("Downloading with checksum verification", "url", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	finalPath := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
+	tmpPath := finalPath + ".tmp"
+
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	h := sha256.New()
+	writer := io.MultiWriter(tmpFile, h)
+
+	_, err = io.Copy(writer, resp.Body)
+	if err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	actualSHA256 := hex.EncodeToString(h.Sum(nil))
+	if actualSHA256 != expectedSHA256 {
+		os.Remove(tmpPath)
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", url, expectedSHA256, actualSHA256)
+	}
+
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	slog.Info("Download and checksum verification completed", "url", url)
+	return nil
+}
+
+// DownloadFileWithChecksumSHA512 downloads url to a temporary file, verifies
+// its SHA512 digest against expectedSHA512 (a lowercase hex string), and only
+// moves the file to its final destination (DataDir/basename(url)) when the
+// digest matches. The temporary file is always removed on failure.
+func DownloadFileWithChecksumSHA512(url string, expectedSHA512 string) error {
+	slog.Info("Downloading with SHA512 checksum verification", "url", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	finalPath := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
+	tmpPath := finalPath + ".tmp"
+
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	h := sha512.New()
+	writer := io.MultiWriter(tmpFile, h)
+
+	_, err = io.Copy(writer, resp.Body)
+	if err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	actualSHA512 := hex.EncodeToString(h.Sum(nil))
+	if actualSHA512 != expectedSHA512 {
+		os.Remove(tmpPath)
+		return fmt.Errorf("SHA512 checksum mismatch for %s: expected %s, got %s", url, expectedSHA512, actualSHA512)
+	}
+
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	slog.Info("Download and SHA512 checksum verification completed", "url", url)
 	return nil
 }
 
