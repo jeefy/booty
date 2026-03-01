@@ -54,4 +54,17 @@ func init() {
 	echo "Hello from Booty!"
 	chain http://[[server]]/data/ublue.ipxe
 	boot`
+
+	PXEConfig["unknown.ipxe"] = `#!ipxe
+	menu Booty - Unknown Host (MAC: ${mac})
+	item --key b boot    Boot from local disk
+	item --key r reboot  Reboot
+	choose --default boot --timeout 30000 selected
+	goto ${selected}
+
+	:boot
+	exit
+
+	:reboot
+	reboot`
 }

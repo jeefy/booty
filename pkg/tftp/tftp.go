@@ -41,6 +41,9 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 					hardware.WriteMacAddress(macAddress, *host)
 				}
 			}
+		} else {
+			osToLoad = "unknown"
+			slog.Warn("Unknown host detected, serving interactive menu", "mac", macAddress)
 		}
 	}
 
