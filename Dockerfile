@@ -1,5 +1,5 @@
 ### Stage One
-FROM golang:1.19-alpine as build-golang
+FROM golang:1.24-alpine as build-golang
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY web/ .
 RUN npm run build
 
 ### Final Stage
-FROM gcr.io/distroless/base-debian10
+FROM gcr.io/distroless/static-debian12
 
 COPY --from=0 /app/bin/booty /
 COPY --from=1 /app/dist/ /web/dist/
