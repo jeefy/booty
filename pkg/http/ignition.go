@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"text/template"
@@ -25,35 +25,29 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	// Cool so, we want to have logic based around a recognized MAC address
 	// Therefore what we need to do is collect the MAC address
 
-	log.Printf("Ignition Request URI: %s", r.RequestURI)
+	slog.Info("Ignition request", "uri", r.RequestURI)
 
 	macAddress := ""
 
 	if r.URL.Query().Get("mac") == "" {
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
-			log.Printf("Error splitting user ip: %v is not IP:port", r.RemoteAddr)
+			slog.Error("Error splitting user ip", "remote_addr", r.RemoteAddr)
 		}
 		remoteIP := net.ParseIP(ip)
 
 		if hwAddr, _, err := arping.Ping(remoteIP); err != nil {
-			log.Printf("Error with ARP request: %s", err)
+			slog.Error("Error with ARP request", "error", err)
 		} else {
-			if viper.GetBool("debug") {
-				log.Printf("Mac address from ARP `%s`", macAddress)
-			}
+			slog.Debug("Mac address from ARP", "mac", macAddress)
 			macAddress = hwAddr.String()
 		}
 	} else {
 		macAddress = r.URL.Query().Get("mac")
-		if viper.GetBool("debug") {
-			log.Printf("Mac address url override `%s`", macAddress)
-		}
+		slog.Debug("Mac address url override", "mac", macAddress)
 	}
 
-	if viper.GetBool("debug") {
-		log.Printf("Using mac address `%s`", macAddress)
-	}
+	slog.Debug("Using mac address", "mac", macAddress)
 	host := hardware.GetMacAddress(macAddress)
 
 	var tpl bytes.Buffer
@@ -84,10 +78,10 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 			localImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), host.OSTreeImage)
 			digest, err := crane.Digest(localImage)
 			if err != nil {
-				log.Printf("Error getting %s from cache: %s", localImage, err)
+				slog.Error("Error getting image from cache", "image", localImage, "error", err)
 			}
 			if digest == "" {
-				log.Printf("Image (%s) not found in local cache yet...", localImage)
+				slog.Warn("Image not found in local cache yet", "image", localImage)
 			} else {
 				templateData.OSTreeImage = localImage
 			}
@@ -136,24 +130,22 @@ WantedBy=default.target
 		Pretty: true,
 	})
 	if err != nil {
-		errMsg := fmt.Sprintf("Error parsing coreos ignition: %s", err.Error())
-		log.Println(errMsg)
-		log.Printf("%s", tpl.Bytes())
+		slog.Error("Error parsing coreos ignition", "error", err)
+		slog.Error("Butane template contents", "template", string(tpl.Bytes()))
 		for _, entry := range report.Entries {
-			log.Printf("%s", entry.String())
+			slog.Error("Butane report entry", "entry", entry.String())
 		}
-		w.Write([]byte(errMsg))
+		w.Write([]byte(fmt.Sprintf("Error parsing coreos ignition: %s", err.Error())))
 		return
 	}
 	if len(report.Entries) > 0 {
-		errMsg := fmt.Sprintf("Problems parsing coreos ignition: %s", report.String())
-		log.Println(errMsg)
-		log.Printf("%s", tpl.Bytes())
+		slog.Warn("Problems parsing coreos ignition", "report", report.String())
+		slog.Warn("Butane template contents", "template", string(tpl.Bytes()))
 		for _, entry := range report.Entries {
-			log.Printf("%s", entry.String())
+			slog.Warn("Butane report entry", "entry", entry.String())
 		}
 		if report.IsFatal() {
-			w.Write([]byte(errMsg))
+			w.Write([]byte(fmt.Sprintf("Problems parsing coreos ignition: %s", report.String())))
 			return
 
 		}

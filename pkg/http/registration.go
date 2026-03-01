@@ -3,7 +3,7 @@ package http
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/jeefy/booty/pkg/config"
@@ -31,7 +31,7 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			err := versions.OSTreeImagePull(h.OSTreeImage)
 			if err != nil {
-				log.Printf("Error pulling %s: %s", ociImage, err.Error())
+				slog.Error("Error pulling OCI image", "image", ociImage, "error", err)
 			}
 		}()
 	}

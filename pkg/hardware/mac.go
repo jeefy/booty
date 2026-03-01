@@ -2,7 +2,7 @@ package hardware
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -55,13 +55,13 @@ func GetData() []byte {
 
 	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
-		log.Printf("Error reading hardware map: %s", err.Error())
+		slog.Error("Error reading hardware map", "error", err)
 		return nil
 	}
 
 	err = json.Unmarshal(data, &HostDB)
 	if err != nil {
-		log.Printf("Error unmarshalling hardware map: %s", err.Error())
+		slog.Error("Error unmarshalling hardware map", "error", err)
 		return nil
 	}
 
@@ -72,7 +72,7 @@ func GetData() []byte {
 
 	output, err := json.Marshal(bd)
 	if err != nil {
-		log.Printf("Error marshalling hardware map: %s", err.Error())
+		slog.Error("Error marshalling hardware map", "error", err)
 		return nil
 	}
 
@@ -85,12 +85,12 @@ func GetMacAddress(mac string) *Host {
 
 	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
-		log.Printf("Error reading hardware map: %s", err.Error())
+		slog.Error("Error reading hardware map", "error", err)
 		return nil
 	}
 	err = json.Unmarshal(data, &HostDB)
 	if err != nil {
-		log.Printf("Error unmarshalling hardware map: %s", err.Error())
+		slog.Error("Error unmarshalling hardware map", "error", err)
 		return nil
 	}
 	if val, ok := HostDB[mac]; ok {
@@ -108,23 +108,23 @@ func WriteMacAddress(mac string, host Host) *Host {
 
 	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
-		log.Printf("Error reading hardware map: %s", err.Error())
+		slog.Error("Error reading hardware map", "error", err)
 		return nil
 	}
 	err = json.Unmarshal(data, &HostDB)
 	if err != nil {
-		log.Printf("Error unmarshalling hardware map: %s", err.Error())
+		slog.Error("Error unmarshalling hardware map", "error", err)
 		return nil
 	}
 	HostDB[mac] = &host
 	data, err = json.Marshal(HostDB)
 	if err != nil {
-		log.Printf("Error marshalling hardware map: %s", err.Error())
+		slog.Error("Error marshalling hardware map", "error", err)
 		return nil
 	}
 	err = os.WriteFile(viper.GetString(config.DataDir)+"/"+viper.GetString(config.HardwareMap), data, 0644)
 	if err != nil {
-		log.Printf("Error writing hardware map: %s", err.Error())
+		slog.Error("Error writing hardware map", "error", err)
 		return nil
 	}
 
@@ -139,23 +139,23 @@ func RemoveMacAddress(mac string) {
 
 	data, err := os.ReadFile(viper.GetString(config.DataDir) + "/" + viper.GetString(config.HardwareMap))
 	if err != nil {
-		log.Printf("Error reading hardware map: %s", err.Error())
+		slog.Error("Error reading hardware map", "error", err)
 		return
 	}
 	err = json.Unmarshal(data, &HostDB)
 	if err != nil {
-		log.Printf("Error unmarshalling hardware map: %s", err.Error())
+		slog.Error("Error unmarshalling hardware map", "error", err)
 		return
 	}
 	delete(HostDB, mac)
 	data, err = json.Marshal(HostDB)
 	if err != nil {
-		log.Printf("Error marshalling hardware map: %s", err.Error())
+		slog.Error("Error marshalling hardware map", "error", err)
 		return
 	}
 	err = os.WriteFile(viper.GetString(config.DataDir)+"/"+viper.GetString(config.HardwareMap), data, 0644)
 	if err != nil {
-		log.Printf("Error writing hardware map: %s", err.Error())
+		slog.Error("Error writing hardware map", "error", err)
 		return
 	}
 }

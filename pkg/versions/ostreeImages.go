@@ -3,7 +3,7 @@ package versions
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,32 +21,38 @@ import (
 func EnsureOCIFolders() {
 	err := os.Mkdir(viper.GetString(config.DataDir)+"/registry/", 0755)
 	if err != nil && !os.IsExist(err) {
-		log.Fatalf("Error creating registry directory: %s", err.Error())
+		slog.Error("Error creating registry directory", "error", err)
+		os.Exit(1)
 	}
 	err = os.Mkdir(viper.GetString(config.DataDir)+"/registry/blobs/", 0755)
 	if err != nil && !os.IsExist(err) {
-		log.Fatalf("Error creating registry directory: %s", err.Error())
+		slog.Error("Error creating registry blobs directory", "error", err)
+		os.Exit(1)
 	}
 	err = os.Mkdir(viper.GetString(config.DataDir)+"/registry/blobs/sha256", 0755)
 	if err != nil && !os.IsExist(err) {
-		log.Fatalf("Error creating registry directory: %s", err.Error())
+		slog.Error("Error creating registry sha256 directory", "error", err)
+		os.Exit(1)
 	}
 	symSrc, err := filepath.Abs(viper.GetString(config.DataDir) + "/registry/blobs/sha256")
 	if err != nil {
-		log.Fatalf("Error creating registry symlink abs path: %s", err.Error())
+		slog.Error("Error creating registry symlink abs path", "error", err)
+		os.Exit(1)
 	}
 	err = os.Symlink(symSrc, viper.GetString(config.DataDir)+"/registry/sha256")
 	if err != nil && !os.IsExist(err) {
-		log.Fatalf("Error creating registry symlink: %s", err.Error())
+		slog.Error("Error creating registry symlink", "error", err)
+		os.Exit(1)
 	}
 }
 
 func StartOSTreeImageSync() {
-	log.Println("Starting CRON version check for OCI Images")
+	slog.Info("Starting CRON version check for OCI Images")
 	cron := gocron.NewScheduler(time.UTC)
 	_, err := cron.Cron(viper.GetString(config.UpdateSchedule)).Do(OSTreeImageSync)
 	if err != nil {
-		log.Fatalf("Error creating OSTreeImageSync cronjob: %s", err.Error())
+		slog.Error("Error creating OSTreeImageSync cronjob", "error", err)
+		os.Exit(1)
 	}
 	cron.StartAsync()
 }
@@ -57,7 +63,7 @@ func OSTreeImageSync() {
 	bootyData := hardware.BootyData{}
 	err := json.Unmarshal(hardware.GetData(), &bootyData)
 	if err != nil {
-		log.Printf("Error unmarshalling hardware map: %s", err.Error())
+		slog.Error("Error unmarshalling hardware map", "error", err)
 		return
 	}
 
@@ -67,10 +73,10 @@ func OSTreeImageSync() {
 			ociImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), host.OSTreeImage)
 			//err := crane.Copy(host.OSTreeImage, ociImage, opts...)
 			if err := OSTreeImagePull(host.OSTreeImage); err != nil {
-				log.Printf("Error copying %s: %s", ociImage, err.Error())
+				slog.Error("Error copying OCI image", "image", ociImage, "error", err)
 				continue
 			}
-			log.Printf("Done copying %s", ociImage)
+			slog.Info("Done copying OCI image", "image", ociImage)
 			pulled[host.OSTreeImage] = true
 		}
 	}
@@ -94,7 +100,7 @@ func OSTreeImagePull(src string, opts ...crane.Option) error {
 		return fmt.Errorf("fetching image %q: %w", srcRef, err)
 	}
 
-	log.Printf("Saving image %s", srcRef)
+	slog.Info("Saving image", "ref", srcRef.String())
 
 	err = crane.SaveOCI(img, viper.GetString(config.DataDir)+"/registry/")
 	if err != nil {
@@ -107,14 +113,14 @@ func OSTreeImagePull(src string, opts ...crane.Option) error {
 		return fmt.Errorf("error copying image %q: %w", srcRef, err)
 	}
 
-	log.Printf("Done saving image %s", srcRef)
+	slog.Info("Done saving image", "ref", srcRef.String())
 
 	digest, err := crane.Digest(localImage)
 	if err != nil {
-		log.Printf("Error getting %s from cache: %s", localImage, err)
+		slog.Error("Error getting image from cache", "image", localImage, "error", err)
 	}
 	if digest == "" {
-		log.Printf("Image (%s) not found in local cache yet...", localImage)
+		slog.Warn("Image not found in local cache yet", "image", localImage)
 	}
 
 	return nil

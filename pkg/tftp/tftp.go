@@ -3,7 +3,7 @@ package tftp
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -17,19 +17,16 @@ import (
 
 // readHandler is called when client starts file download from server
 func readHandler(filename string, rf io.ReaderFrom) error {
-	log.Printf("TFTP Get: %s\n", filename)
+	slog.Info("TFTP Get", "filename", filename)
 	raddr := rf.(tftp.OutgoingTransfer).RemoteAddr()
 	laddr := rf.(tftp.RequestPacketInfo).LocalIP()
-	if viper.GetBool("debug") {
-		log.Println("RRQ from", raddr.String(), "To ", laddr.String())
-		log.Println("")
-	}
+	slog.Debug("RRQ details", "from", raddr.String(), "to", laddr.String())
 
 	osToLoad := "flatcar"
 	menuDefault := "run-from-disk"
 
 	if hwAddr, _, err := arping.Ping(raddr.IP); err != nil {
-		log.Printf("Error with ARP request: %s", err)
+		slog.Error("Error with ARP request", "error", err)
 	} else {
 		macAddress := hwAddr.String()
 		host := hardware.GetMacAddress(macAddress)
@@ -63,10 +60,10 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 		r := strings.NewReader(toServe)
 		n, err := rf.ReadFrom(r)
 		if err != nil {
-			log.Printf("Error reading iPXE config: %v\n", err)
+			slog.Error("Error reading iPXE config", "error", err)
 			return err
 		}
-		log.Printf("%d bytes sent (%s)\n", n, filename)
+		slog.Info("TFTP sent", "bytes", n, "filename", filename)
 		return nil
 	}
 
@@ -74,10 +71,10 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 		r := strings.NewReader(strings.Replace(PXEConfig[osToLoad], "[[server]]", urlHost, -1))
 		n, err := rf.ReadFrom(r)
 		if err != nil {
-			log.Printf("Error reading PXE config: %v\n", err)
+			slog.Error("Error reading PXE config", "error", err)
 			return err
 		}
-		log.Printf("%d bytes sent (%s)\n", n, filename)
+		slog.Info("TFTP sent", "bytes", n, "filename", filename)
 		return nil
 	}
 	file, err := os.Open(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), filename))
@@ -88,13 +85,13 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("%d bytes sent (%s)\n", n, filename)
+	slog.Info("TFTP sent", "bytes", n, "filename", filename)
 	return nil
 }
 
 // writeHandler is called when client starts file upload to server
 func writeHandler(filename string, wt io.WriterTo) error {
-	log.Printf("TFTP writes are not supported: %s\n", filename)
+	slog.Warn("TFTP writes are not supported", "filename", filename)
 	return nil
 }
 
@@ -107,8 +104,9 @@ func StartTFTP() {
 	go func() {
 		err := s.ListenAndServe(":69") // blocks until s.Shutdown() is called
 		if err != nil {
-			log.Fatalf("TFTP Server error: %v\n", err)
+			slog.Error("TFTP Server error", "error", err)
+			os.Exit(1)
 		}
 	}()
-	log.Println("TFTP Server started")
+	slog.Info("TFTP Server started")
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -132,8 +132,6 @@ func init() {
 }
 
 func main() {
-	log.SetFlags(log.Flags() | log.Lshortfile)
-
 	if err := Cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -143,7 +141,7 @@ func main() {
 }
 
 func run(cmd *cobra.Command, argv []string) error {
-	log.Println("Starting Booty!")
+	slog.Info("Starting Booty!")
 	config.LoadConfig(cmd)
 	config.EnsureDeps()
 
