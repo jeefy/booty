@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ const (
 	CurrentFlatcarVersion = "currentFlatcarVersion"
 	RemoteFlatcarVersion  = "remoteFlatcarVersion"
 	FlatcarChannel        = "flatcarChannel"
+	FlatcarVersion        = "flatcarVersion"
 	CurrentCoreOSVersion  = "currentCoreOSVersion"
 	RemoteCoreOSVersion   = "remoteCoreOSVersion"
 	CoreOSChannel         = "coreOSChannel"
@@ -46,7 +48,7 @@ const (
 func LoadConfig(cmd *cobra.Command) {
 	viper.SetDefault(Debug, false)
 	viper.SetDefault(Updating, false)
-	viper.SetDefault(FlatcarURL, "https://%s.release.flatcar-linux.net/%s-usr/current")
+	viper.SetDefault(FlatcarURL, "https://%s.release.flatcar-linux.net/%s-usr/%s")
 	viper.SetDefault(CoreOSURL, "https://builds.coreos.fedoraproject.org/prod/streams/%s/builds/%s/%s")
 	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
 	// https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt
@@ -68,9 +70,21 @@ func LoadConfig(cmd *cobra.Command) {
 		slog.Error("Error retrieving existing local version", "error", err)
 	}
 
+	viper.BindEnv(FlatcarVersion, "FLATCAR_VERSION_PIN")
+
+	// Load a Flatcar version pin persisted via the Web UI, unless one was
+	// already supplied via the --flatcarVersion flag or FLATCAR_VERSION_PIN env.
+	if viper.GetString(FlatcarVersion) == "" {
+		if pin, err := os.ReadFile(FlatcarPinPath()); err == nil {
+			if v := strings.TrimSpace(string(pin)); v != "" {
+				viper.Set(FlatcarVersion, v)
+				slog.Info("Loaded persisted Flatcar version pin", "version", v)
+			}
+		}
+	}
+
 	viper.BindEnv(IgnitionFile, "IGNITION_FILE")
 	viper.SetDefault(IgnitionFile, "config/ignition.yaml")
-
 	viper.BindEnv(HardwareMap, "HARDWARE_MAP")
 	viper.SetDefault(HardwareMap, "hardware.json")
 }
@@ -82,6 +96,9 @@ func DownloadFile(url string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
+	}
 	filename := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
 	slog.Info("Creating", "filename", filename)
 
@@ -115,6 +132,10 @@ func DownloadFileWithChecksum(url string, expectedSHA256 string) error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
+	}
 
 	finalPath := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
 	tmpPath := finalPath + ".tmp"
@@ -166,6 +187,10 @@ func DownloadFileWithChecksumSHA512(url string, expectedSHA512 string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
+	}
+
 	finalPath := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
 	tmpPath := finalPath + ".tmp"
 
@@ -208,4 +233,27 @@ func EnsureDeps() {
 	DownloadFile(viper.GetString(DepsPxelinuxURL))
 	DownloadFile(viper.GetString(DepsLdlinuxURL))
 	DownloadFile(viper.GetString(DepsUndionlyURL))
+}
+
+// FlatcarPinPath returns the path to the file used to persist a Flatcar version
+// pin set via the Web UI across restarts.
+func FlatcarPinPath() string {
+	return fmt.Sprintf("%s/flatcar_pin.txt", viper.GetString(DataDir))
+}
+
+// SetFlatcarPin updates the in-memory Flatcar version pin and persists it to
+// disk so it survives restarts. An empty version clears the pin (returning the
+// server to tracking the latest version on the configured channel).
+func SetFlatcarPin(version string) error {
+	version = strings.TrimSpace(version)
+	viper.Set(FlatcarVersion, version)
+
+	if version == "" {
+		if err := os.Remove(FlatcarPinPath()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	return os.WriteFile(FlatcarPinPath(), []byte(version+"\n"), 0o644)
 }

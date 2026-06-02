@@ -51,46 +51,72 @@ func FlatcarVersionCheck() {
 		}
 	}
 
-	LoadRemoteFlatcarVersion()
-	if viper.GetString(config.RemoteFlatcarVersion) != viper.GetString(config.CurrentFlatcarVersion) {
-		viper.Set(config.Updating, true)
-		slog.Info("Remote flatcar version differs from local", "remote", viper.GetString(config.RemoteFlatcarVersion), "local", viper.GetString(config.CurrentFlatcarVersion))
-
-		// version.txt is small metadata; download without checksum verification.
-		if err := DownloadFlatcarFile("version.txt"); err != nil {
-			slog.Error("Error downloading version.txt", "error", err)
+	// Determine the version we want to be running. When a version is pinned,
+	// that is always the target. Otherwise track the channel's latest version.
+	var targetVersion string
+	if pinned := viper.GetString(config.FlatcarVersion); pinned != "" {
+		targetVersion = pinned
+		if viper.GetBool("debug") {
+			slog.Info("Flatcar version is pinned", "version", pinned)
 		}
-
-		// Download PXE initrd with SHA512 checksum verification.
-		pxeInitrd := "flatcar_production_pxe_image.cpio.gz"
-		if sum, err := LoadFlatcarDigest(pxeInitrd); err == nil {
-			if err := config.DownloadFileWithChecksumSHA512(fmt.Sprintf(RemoteFlatcarURL()+"/%s", pxeInitrd), sum); err != nil {
-				slog.Error("Error downloading file with checksum", "file", pxeInitrd, "error", err)
-			}
-		} else {
-			slog.Warn("Could not load digest, falling back to unverified download", "file", pxeInitrd, "error", err)
-			if err := DownloadFlatcarFile(pxeInitrd); err != nil {
-				slog.Error("Error downloading file", "file", pxeInitrd, "error", err)
-			}
-		}
-
-		// Download PXE kernel with SHA512 checksum verification.
-		pxeKernel := "flatcar_production_pxe.vmlinuz"
-		if sum, err := LoadFlatcarDigest(pxeKernel); err == nil {
-			if err := config.DownloadFileWithChecksumSHA512(fmt.Sprintf(RemoteFlatcarURL()+"/%s", pxeKernel), sum); err != nil {
-				slog.Error("Error downloading file with checksum", "file", pxeKernel, "error", err)
-			}
-		} else {
-			slog.Warn("Could not load digest, falling back to unverified download", "file", pxeKernel, "error", err)
-			if err := DownloadFlatcarFile(pxeKernel); err != nil {
-				slog.Error("Error downloading file", "file", pxeKernel, "error", err)
-			}
-		}
-
-		viper.Set(config.CurrentFlatcarVersion, viper.GetString(config.RemoteFlatcarVersion))
-		viper.Set(config.Updating, false)
+	} else {
+		LoadRemoteFlatcarVersion()
+		targetVersion = viper.GetString(config.RemoteFlatcarVersion)
 	}
 
+	if targetVersion == "" {
+		slog.Warn("Could not determine target Flatcar version, skipping update")
+		return
+	}
+
+	if targetVersion != viper.GetString(config.CurrentFlatcarVersion) {
+		viper.Set(config.Updating, true)
+		defer viper.Set(config.Updating, false)
+		slog.Info("Target flatcar version differs from local", "target", targetVersion, "local", viper.GetString(config.CurrentFlatcarVersion))
+
+		// Only advance the current version once all artifacts have been
+		// downloaded successfully. If any download fails (e.g. a 404 because
+		// the remote hasn't published every artifact yet), keep the existing
+		// version so we don't serve a half-updated release.
+		if err := downloadFlatcarArtifacts(); err != nil {
+			slog.Error("Flatcar artifact download failed, not advancing version", "target", targetVersion, "error", err)
+			return
+		}
+
+		viper.Set(config.CurrentFlatcarVersion, targetVersion)
+		slog.Info("Flatcar updated", "version", targetVersion)
+	}
+}
+
+// downloadFlatcarArtifacts downloads version.txt and the PXE kernel/initrd for
+// the currently targeted Flatcar release. It returns an error if any artifact
+// fails to download (including HTTP 404s), so callers can avoid advancing the
+// recorded version when a release is incomplete or unavailable.
+func downloadFlatcarArtifacts() error {
+	// version.txt is small metadata; download without checksum verification.
+	if err := DownloadFlatcarFile("version.txt"); err != nil {
+		return fmt.Errorf("version.txt: %w", err)
+	}
+
+	artifacts := []string{
+		"flatcar_production_pxe_image.cpio.gz", // initrd
+		"flatcar_production_pxe.vmlinuz",       // kernel
+	}
+
+	for _, artifact := range artifacts {
+		if sum, err := LoadFlatcarDigest(artifact); err == nil {
+			if err := config.DownloadFileWithChecksumSHA512(fmt.Sprintf(RemoteFlatcarURL()+"/%s", artifact), sum); err != nil {
+				return fmt.Errorf("%s: %w", artifact, err)
+			}
+		} else {
+			slog.Warn("Could not load digest, falling back to unverified download", "file", artifact, "error", err)
+			if err := DownloadFlatcarFile(artifact); err != nil {
+				return fmt.Errorf("%s: %w", artifact, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 func LoadRemoteFlatcarVersion() {
@@ -109,8 +135,18 @@ func LoadRemoteFlatcarVersion() {
 	}
 }
 
+// RemoteFlatcarURL builds the remote release directory URL for Flatcar. When a
+// specific version is pinned via config.FlatcarVersion, the URL points at that
+// version's directory; otherwise it tracks the channel's "current" release.
 func RemoteFlatcarURL() string {
-	return fmt.Sprintf(viper.GetString(config.FlatcarURL), viper.GetString(config.FlatcarChannel), viper.GetString(config.FlatcarArchitecture))
+	releaseDir := "current"
+	if pinned := viper.GetString(config.FlatcarVersion); pinned != "" {
+		releaseDir = pinned
+	}
+	return fmt.Sprintf(viper.GetString(config.FlatcarURL),
+		viper.GetString(config.FlatcarChannel),
+		viper.GetString(config.FlatcarArchitecture),
+		releaseDir)
 }
 
 func DownloadFlatcarFile(filename string) error {

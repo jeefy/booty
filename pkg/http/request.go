@@ -53,5 +53,5 @@ func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 
 func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(fmt.Sprintf(`{"flatcar":{"version":"%s"},"coreos":{"version":"%s"},"booty":{"version":"%s","timestamp":"%s"}}`, viper.GetString(config.CurrentFlatcarVersion), viper.GetString(config.CurrentCoreOSVersion), viper.GetString("version"), viper.GetString("timestamp"))))
+	w.Write([]byte(fmt.Sprintf(`{"flatcar":{"version":"%s","pinnedVersion":"%s"},"coreos":{"version":"%s"},"booty":{"version":"%s","timestamp":"%s"}}`, viper.GetString(config.CurrentFlatcarVersion), viper.GetString(config.FlatcarVersion), viper.GetString(config.CurrentCoreOSVersion), viper.GetString("version"), viper.GetString("timestamp"))))
 }

@@ -33,6 +33,7 @@ var args struct {
 	joinString          string
 	flatcarChannel      string
 	coreOSChannel       string
+	flatcarVersion      string
 }
 
 var (
@@ -87,6 +88,13 @@ func init() {
 		"flatcarChannel",
 		"stable",
 		"Flatcar channel to look for updates",
+	)
+
+	flags.StringVar(
+		&args.flatcarVersion,
+		"flatcarVersion",
+		"",
+		"Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel",
 	)
 
 	flags.StringVar(
