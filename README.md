@@ -1,21 +1,25 @@
 # Booty
 
-A simple iPXE server for booting Flatcar-Linux, CoreOS, and [Universal Blue](https://universal-blue.org) on BIOS and x86-64 UEFI machines.
+A simple iPXE server for booting Flatcar-Linux, Fedora CoreOS (including [Universal Blue](https://universal-blue.org) images) and [Bluefin Server](https://github.com/projectbluefin/server) on BIOS and x86-64 UEFI machines.
 
 ```
 > booty --help
 
-Easy iPXE server for Flatcar, CoreOS, and more
+Easy iPXE server for Flatcar, CoreOS, Bluefin Server, and more
 
 Usage:
   booty [flags]
   booty [command]
 
 Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
   init        Create a data directory with a starter Butane template and an empty hardware map
 
 Flags:
-      --autoRegister string            Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or ublue) instead of sending them to the brig; empty disables
+      --autoRegister string            Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables
+      --bluefinRepo string             GitHub repository whose installer-v* releases provide the Bluefin Server PXE kernel, initrd and DDI (default "projectbluefin/server")
+      --bluefinVersion string          Pin a specific Bluefin Server release (e.g. 26.08.0). When empty, tracks the newest installer-v* release
       --builtin string                 Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is (default "hostname,update,booted,sshkeys")
       --cniVersion string              containernetworking/plugins release installed by the kubeadm-worker profile (default "v1.1.1")
       --containerdDisk string          Block device the kubeadm-worker profile formats (ext4, wiped on every boot) and mounts at /var/lib/containerd, e.g. /dev/sda; empty keeps containerd on the root filesystem
@@ -24,13 +28,15 @@ Flags:
       --crictlVersion string           cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)
       --dataDir string                 Directory to store stateful data (default "/data")
       --debug                          Enable debug logging
-      --doInstallClearOn string        When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system) (default "ignition")
+      --doInstallClearOn string        When to clear a host's pending doInstall: 'ignition' (first Ignition fetch), 'booted' (only on POST /booted from the installed system) or 'next-boot' (Bluefin: the first /booty.ipxe fetch at least --installMinDuration after the install stanza was served; other OSes behave like 'booted') (default "ignition")
       --flatcarArchitecture string     Architecture to use for the Flatcar downloads (default "amd64")
       --flatcarChannel string          Flatcar channel to look for updates (default "stable")
       --flatcarVersion string          Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel
+      --githubToken string             GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed
   -h, --help                           help for booty
       --hostnameTemplate string        Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP (default "node-{{ .MACSuffix }}")
       --httpPort int                   Port to use for the HTTP server (default 8080)
+      --installMinDuration duration    Minimum time between serving a Bluefin install stanza and the re-PXE that counts as 'install finished' for --doInstallClearOn=next-boot; earlier re-PXEs keep doInstall (default 3m0s)
       --joinString string              The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
       --joinStringFile string          File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString
       --joinTokenTTL duration          Lifetime of bootstrap tokens minted with --kubeadmJoin=auto; expired ones are deleted on the --updateSchedule tick (default 1h0m0s)
@@ -49,7 +55,7 @@ Flags:
       --sshAuthorizedKeysFile string   File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin
       --tftpBlockSize int              TFTP block size to negotiate with clients (default 1468)
       --tftpPort int                   UDP port to use for the TFTP server (default 69)
-      --updateSchedule string          Cron schedule for the Flatcar/CoreOS version checks and OSTree image sync (default "*/5 * * * *")
+      --updateSchedule string          Cron schedule for the Flatcar/CoreOS/Bluefin version checks and OSTree image sync (default "*/5 * * * *")
       --webDir string                  Directory with the built Web UI, used when no UI is embedded in the binary (default "./web/dist")
 
 Use "booty [command] --help" for more information about a command.
@@ -70,12 +76,12 @@ booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behi
 
 ## Features
 
-* iPXE boot (BIOS and x86-64 UEFI) into the latest Flatcar-Linux or CoreOS
+* iPXE boot (BIOS and x86-64 UEFI) into the latest Flatcar-Linux or CoreOS, and UEFI installs of Bluefin Server
 * MAC address based hostnames
 * Automatic conversion of Butane YAML to Ignition JSON
   * Variable injection in Butane/Ignition
 * JSON "Hardware Database" (Containing boot-time config data)
-* Automatic updates retrieved from Flatcar-Linux and CoreOS
+* Automatic updates retrieved from Flatcar-Linux, CoreOS and the Bluefin Server releases
 * Automatic drain/reboot of nodes (in conjunction with [Kured](https://github.com/weaveworks/kured))
 * Web UI to add/edit/remove hosts
 * Builtin Ignition fragment (hostname, SSH keys, update timer, install-complete callback) merged into every host's config -- your Butane only carries what is specific to your fleet
@@ -85,6 +91,7 @@ booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behi
 * Unrecognized MAC addresses go into the brig (boot loop till the MAC is registered), or are registered automatically with `--autoRegister` (see [Auto-registration](#auto-registration))
 * `booty init` scaffolds a data directory with a commented starter Butane template and prints the DHCP settings
 * Support for different operating systems and ignition files per machine
+* Bluefin Server: unattended disk-image install with per-host hostname/SSH keys delivered as systemd credentials, no Butane needed (see [Bluefin Server](#bluefin-server))
 * **EXPERIMENTAL**: Support for per-ostree images per machine (in conjunction with [ignition rebase scripts](examples/bazzite.but))
   * Auto-caches OCI images used for hosts (and has a page listing cached artifacts)
   * When "Install" is set to Y, it auto-flips to N once the host fetches its Ignition config (i.e. the installer has started)
@@ -139,15 +146,17 @@ If Booty listens on a non-standard TFTP port (`--tftpPort`), UEFI firmware canno
 
 1. DHCP hands the machine `next-server` = Booty and `filename` = `undionly.kpxe` / `ipxe.efi` as above; the firmware fetches it over TFTP.
 2. The embedded script chains `booty.ipxe` over TFTP. That file is only a stub that chains to `http://<serverIP>/booty.ipxe?mac=${mac}` -- iPXE fills in its own MAC, so identification does not depend on ARP working across routers.
-3. `/booty.ipxe` looks the MAC up in the hardware database and renders the boot script for that host's OS (`flatcar`, `coreos` or `ublue`). Unregistered hosts get an interactive menu (boot from disk / reboot) and show up under "Unknown hosts" in the UI so you can register them with one click -- unless `--autoRegister` is set, in which case they are registered on the spot (see [Auto-registration](#auto-registration)).
-4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`. For a registered host that is a tiny wrapper whose `ignition.config.merge` points at two children: Booty's builtin fragment (`/ignition/builtin.json`) and the host's Butane template rendered to Ignition (`/ignition/user.json`; variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`). Ignition fetches and merges them itself, later entries winning, so your template overrides the builtin (and the `--profile` appended to it). The wrapper fetch records `booted`/`ip` for the host and, by default, clears a pending `doInstall`; the child fetches have no side effects. With `--doInstallClearOn=booted` the flag instead stays set until the installed system calls `POST http://<serverIP>/booted?mac=<mac>` (the builtin `booty-booted.service` does exactly that), so a failed install keeps the host in install mode. Add `&preview=1` (the UI does) to look at a config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
-5. Kernel/initrd/rootfs are served from `/data/`. Flatcar artifacts live in `data/flatcar/<version>/` behind symlinks at the old paths, so the kernel and initrd always come from the same release and updates are atomic.
+3. `/booty.ipxe` looks the MAC up in the hardware database and renders the boot script for that host's OS (`flatcar`, `coreos` or `bluefin`). Unregistered hosts get an interactive menu (boot from disk / reboot) and show up under "Unknown hosts" in the UI so you can register them with one click -- unless `--autoRegister` is set, in which case they are registered on the spot (see [Auto-registration](#auto-registration)).
+4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`. For a registered host that is a tiny wrapper whose `ignition.config.merge` points at two children: Booty's builtin fragment (`/ignition/builtin.json`) and the host's Butane template rendered to Ignition (`/ignition/user.json`; variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`). Ignition fetches and merges them itself, later entries winning, so your template overrides the builtin (and the `--profile` appended to it). The wrapper fetch records `booted`/`ip` for the host and, by default, clears a pending `doInstall`; the child fetches have no side effects. With `--doInstallClearOn=booted` the flag instead stays set until the installed system calls `POST http://<serverIP>/booted?mac=<mac>` (the builtin `booty-booted.service` does exactly that), so a failed install keeps the host in install mode. `--doInstallClearOn=next-boot` is for Bluefin Server, which never fetches Ignition; see [Bluefin Server](#bluefin-server). Add `&preview=1` (the UI does) to look at a config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
+5. Kernel/initrd/rootfs are served from `/data/`. Flatcar artifacts live in `data/flatcar/<version>/` behind symlinks at the old paths, so the kernel and initrd always come from the same release and updates are atomic. Bluefin Server releases live in `data/bluefin/<version>/` behind a `bluefin/current` symlink.
+
+Bluefin Server hosts skip step 4: there is no Ignition. The installer is booted from the iPXE menu, fetches the disk image and the host's [credentials bundle](#bluefin-server) from Booty, and the installed system PXEs again and is told to boot from disk.
 
 `/booty.ipxe` and `/ignition.json` fall back to an ARP lookup of the requesting IP when called without `?mac=`; the shipped scripts always pass it.
 
 ### Auto-registration
 
-By default an unknown MAC gets the menu and the brig until you register it (in the UI, or `POST /register`). With `--autoRegister=flatcar|coreos|ublue` Booty instead registers the host itself the first time it fetches `/booty.ipxe` or `/ignition.json`: it is stored with that OS, the requesting IP and a hostname rendered from `--hostnameTemplate`, logged as `Auto-registered unknown host`, and immediately served the real boot script and Ignition -- the machine never sees the brig and never appears under "Unknown hosts". Only the boot path does this; `/hosts`, `/ignition/user.json`, `/ignition/builtin.json` and `/update-check` still answer 404 for unregistered MACs and never create hosts.
+By default an unknown MAC gets the menu and the brig until you register it (in the UI, or `POST /register`). With `--autoRegister=flatcar|coreos|bluefin` Booty instead registers the host itself the first time it fetches `/booty.ipxe` or `/ignition.json`: it is stored with that OS, the requesting IP and a hostname rendered from `--hostnameTemplate`, logged as `Auto-registered unknown host`, and immediately served the real boot script and Ignition -- the machine never sees the brig and never appears under "Unknown hosts". Only the boot path does this; `/hosts`, `/ignition/user.json`, `/ignition/builtin.json` and `/update-check` still answer 404 for unregistered MACs and never create hosts.
 
 `--hostnameTemplate` is a Go `text/template` (default `node-{{ .MACSuffix }}`) with these fields:
 
@@ -160,7 +169,7 @@ By default an unknown MAC gets the menu and the brig until you register it (in t
 
 The result must be an RFC 1123 label or dotted name (`[a-z0-9-]`, no leading/trailing hyphen, at most 253 characters); Booty checks at startup that the template parses and renders a valid name for a dummy MAC, and rejects the flag otherwise. `/register` applies the same rule to a non-empty `hostname`. Hostnames are not required to be unique -- a template like `worker` registers every machine as `worker` with only a warning in the log -- so keep a MAC-derived field in it.
 
-**Trust model caveat.** Auto-registration turns "any device on the boot VLAN can PXE boot" into "any device on the boot VLAN becomes a registered host that receives your Ignition config" (including `--joinString` and the builtin SSH keys, which unregistered hosts can already read; see [Trust model](#trust-model)). For a kubeadm cluster this also means a stray or wrongly named machine joins as a Node; a hostname collision creates a duplicate Node object or hijacks an existing one. The brig is the safer default; turn auto-registration on when the boot network is closed and you want zero-touch provisioning. Auto-registered hosts start with `doInstall` unset, so for uBlue/CoreOS installs you still flip it in the UI.
+**Trust model caveat.** Auto-registration turns "any device on the boot VLAN can PXE boot" into "any device on the boot VLAN becomes a registered host that receives your Ignition config" (including `--joinString` and the builtin SSH keys, which unregistered hosts can already read; see [Trust model](#trust-model)). For a kubeadm cluster this also means a stray or wrongly named machine joins as a Node; a hostname collision creates a duplicate Node object or hijacks an existing one. The brig is the safer default; turn auto-registration on when the boot network is closed and you want zero-touch provisioning. Auto-registered hosts start with `doInstall` unset, so for CoreOS and Bluefin installs you still flip it in the UI.
 
 ## Composition
 
@@ -186,7 +195,7 @@ Every Booty deployment used to hand-write the same Butane boilerplate: `/etc/hos
 
 ## kubeadm worker profile
 
-`--profile=kubeadm-worker` turns a registered `flatcar` or `coreos` host into a stateless Kubernetes worker without any Kubernetes-specific Butane. Booty appends the profile to `/ignition/builtin.json` after the builtin pieces, so the merge order on the node is **builtin -> profile -> user** and your template still overrides anything by path or unit name. `ublue` hosts are skipped (logged at debug level): they are rpm-ostree desktops.
+`--profile=kubeadm-worker` turns a registered `flatcar` or `coreos` host into a stateless Kubernetes worker without any Kubernetes-specific Butane. Booty appends the profile to `/ignition/builtin.json` after the builtin pieces, so the merge order on the node is **builtin -> profile -> user** and your template still overrides anything by path or unit name. `bluefin` hosts are skipped (logged at debug level): Bluefin Server is provisioned through systemd credentials, not Ignition, and ships k0s itself.
 
 What the profile installs, all as inline files under `/opt/booty/` (0755, embedded as `data:` URLs -- nothing is fetched from Booty at run time) and a chain of enabled oneshot units, each `Requires=`/`After=` the previous one:
 
@@ -222,10 +231,53 @@ Flags: `--profile` (`""` or `kubeadm-worker`, validated at start-up), `--k8sVers
 `GET /update-check?mac=&os=&version=&image=&digest=` is what `booty-update-check` calls every 10 minutes. It answers `{"rebootRequired":bool,"running":"...","target":"...","reason":"..."}`:
 
 * Flatcar (`os=flatcar`, from `/etc/os-release`): `rebootRequired` when the reported `VERSION_ID` differs from the Flatcar release Booty serves. Booty answers `false` while it has not downloaded a release yet.
-* OSTree systems (`os=coreos`, uBlue images): `rpm-ostree status` supplies the running image reference and digest. If the host's registered `ostreeImage` is cached in Booty's registry, `rebootRequired` is set when the cached digest differs from the running one. Plain Fedora CoreOS without an image falls back to comparing `OSTREE_VERSION` with the CoreOS release Booty serves.
+* OSTree systems (`os=coreos`, including Universal Blue images): `rpm-ostree status` supplies the running image reference and digest. If the host's registered `ostreeImage` is cached in Booty's registry, `rebootRequired` is set when the cached digest differs from the running one. Plain Fedora CoreOS without an image falls back to comparing `OSTREE_VERSION` with the CoreOS release Booty serves.
+* Bluefin Server (`os=bluefin`, or a host registered as `bluefin`): always `rebootRequired:false` with the reason `bluefin updates itself via systemd-sysupdate; re-PXE only re-images`. The check is still recorded (`running`, `lastCheck`) so the fleet view shows what the node runs.
 * Booty never says `true` when it cannot determine the target; 400/404 answers make the client leave the reboot flag alone.
 
 Each check is recorded on the host (`running`, `lastCheck`, `rebootPending`, visible in `/booty.json`, `/hosts` and the UI), rewritten at most once a minute when nothing changed. `GET /info` gains `"fleet":{"hosts":N,"pendingReboots":N}` so you can see at a glance how many nodes are waiting on kured.
+
+## Bluefin Server
+
+[Bluefin Server](https://github.com/projectbluefin/server) is an image-based server OS (Flatcar LTS userland, systemd-boot/UKI, updates through systemd-sysupdate, k0s as a sysext). It is not installed through Ignition: a PXE-booted installer writes a signed disk image (DDI) to a disk and the machine reboots into it. Booty drives exactly that.
+
+**UEFI only.** The image is a UKI booted by systemd-boot, so the machine must PXE in UEFI mode. Point the DHCP `filename` for architecture `00:07`/`00:09` at `ipxe.efi` (or `snponly.efi`) as in [Booting](#booting-dhcp-and-the-ipxe-bootloaders), or use [ProxyDHCP](#zero-touch-dhcp-proxydhcp), which picks the bootloader per architecture. A host that reaches the Bluefin menu from BIOS iPXE is told so and dropped to the iPXE shell.
+
+### Artifacts
+
+Booty tracks the `installer-v*` releases of `--bluefinRepo` (default `projectbluefin/server`) through the GitHub releases API (`api.github.com`, unauthenticated: 60 requests/hour, Booty asks once per `--updateSchedule` tick; `--githubToken`/`BOOTY_GITHUBTOKEN` is sent as a bearer token if you share the address with other API clients). The newest published, non-prerelease release that carries a PXE kernel, initrd and `SHA256SUMS` wins; `--bluefinVersion=26.08.0` pins one (pinned versions are fetched directly, without the API). Older `bluefin-server-v*` tags are ignored.
+
+For the chosen release Booty downloads `SHA256SUMS`, then `bluefin-server-pxe-vmlinuz-<ver>`, `bluefin-server-pxe-initrd-<ver>.cpio.gz` and **one** `bluefin-server-ddi-*.raw.zst`, each verified against `SHA256SUMS`; a release may ship several DDIs (26.08.0 has a legacy `ddi-26.08.0` that is *not* in `SHA256SUMS` and the Flatcar-LTS-based `ddi-4593.2.5` that is), so Booty only considers DDIs listed in `SHA256SUMS`, prefers the one named after the release version and otherwise takes the last one listed -- the log line `Selected Bluefin artifacts` says which. Everything lands in `data/bluefin/<version>/` together with `SHA256SUMS` and a `manifest.json` (`version`, `vmlinuz`, `initrd`, `ddi`, `ddiSha256`); `data/bluefin/current` is repointed only after every file is on disk, older release directories are then pruned, and a manifest whose files went missing resets the version at start-up so the next tick re-downloads. About 0.9 GB per release. `/info` shows `"bluefin":{"version","pinnedVersion"}`, `/version.json` gains `bluefin` and `/version.txt` a `BLUEFIN_VERSION=` line.
+
+### How an install works
+
+Register the host with `os: bluefin`, optionally `installDisk: /dev/sda` (must start with `/dev/`, no whitespace or `..`; the installer picks the first writable disk when unset) and set `doInstall`. `/booty.ipxe` then renders a menu (5 s timeout, default `install` while `doInstall` is set, `run-from-disk` otherwise):
+
+```
+kernel http://<serverIP>/data/bluefin/current/bluefin-server-pxe-vmlinuz-26.08.0 systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended \
+  inst.ddi_url=http://<serverIP>/data/bluefin/current/bluefin-server-ddi-4593.2.5.raw.zst inst.ddi_sha256=<sha256 from SHA256SUMS> \
+  inst.target_disk=/dev/sda inst.creds_url=http://<serverIP>/creds/<mac>.tar inst.creds_sha256=<sha256 of that tar>
+initrd http://<serverIP>/data/bluefin/current/bluefin-server-pxe-initrd-26.08.0.cpio.gz
+```
+
+The installer downloads the DDI (plain HTTP is fine; `inst.ddi_sha256` is mandatory and verified by the installer), writes it to the disk and reboots. The firmware PXEs again; Booty must now answer "boot from disk", which the menu does (`exit` hands control back to the UEFI firmware, which continues with the disk). Until a release is cached the menu only offers *Boot from disk* / *iPXE shell* and prints `Bluefin artifacts not downloaded yet`.
+
+Clearing `doInstall` after a Bluefin install: `--doInstallClearOn=ignition` never fires (no Ignition fetch); `booted` works once the credentials bundle is applied (its `booty-booted.service` POSTs `/booted`); **`next-boot`** needs nothing on the node: Booty records `installServedAt` whenever it serves the install stanza, and the first `/booty.ipxe` fetch from that MAC at least `--installMinDuration` (default `3m`) later clears `doInstall` and serves *Boot from disk*. A re-PXE sooner than that means the installer crashed, so the host keeps installing (and the timer restarts). For `flatcar`/`coreos` hosts `next-boot` behaves like `booted`.
+
+### Credentials bundle
+
+Per-host provisioning uses [systemd credentials](https://systemd.io/CREDENTIALS/): `*.cred` files in the ESP's `/loader/credentials/` are handed to the booted UKI. Booty serves them as a tar at `GET /creds/<mac>.tar` (`application/x-tar`, 404 for unregistered MACs) with its digest at `GET /creds/<mac>.tar.sha256`. The tar is deterministic (fixed mtime, uid/gid 0, mode 0600, sorted names), so the `inst.creds_sha256` in the iPXE script always matches the bytes the installer downloads. The entries follow the same `--builtin` toggles as the Ignition fragment:
+
+* `firstboot.hostname.cred` (`hostname`) -- consumed by `bluefin-firstboot-credentials.service`.
+* `tmpfiles.extra.cred` -- `systemd-tmpfiles` rules: `/home/core/.ssh/authorized_keys` from `--sshAuthorizedKeys`/`--sshAuthorizedKeysFile` (`sshkeys`; the `core` user exists and SSH is key-only, so without this nobody can log in), `booty-booted.service` enabled in `multi-user.target` (`booted`), and `/opt/booty/update-check` plus `booty-update.service`/`.timer` (`update`) -- the same unit and script text the Ignition builtin ships.
+
+Networking is left to the OS default (DHCP). The bundle holds public keys and unit files only, nothing secret -- the same material `/ignition/builtin.json` already exposes to the boot VLAN (see [Trust model](#trust-model)).
+
+**Upstream dependency.** The Bluefin installer does not fetch credentials over the network yet; `inst.creds_url=`/`inst.creds_sha256=` are being proposed upstream (a tar of `*.cred` files unpacked into the new ESP's `/loader/credentials/`). Until that lands, installs complete but the node comes up with the default hostname and no SSH access, and only `--doInstallClearOn=next-boot` can clear `doInstall`. Booty already emits the arguments so nothing changes on your side once the installer supports them.
+
+### Updates
+
+Bluefin Server updates itself with systemd-sysupdate; Booty does not drive its reboots. `GET /update-check` from a `bluefin` host (or with `os=bluefin`) always answers `rebootRequired:false` with the reason `bluefin updates itself via systemd-sysupdate; re-PXE only re-images`, while still recording `running`/`lastCheck` for the fleet view. To re-image a host, set `doInstall` again and reboot it into PXE.
 
 ## Zero-touch DHCP (ProxyDHCP)
 
@@ -259,7 +311,7 @@ Booty is meant to run on a network you control. It has **no authentication**: an
 
 With `--kubeadmJoin=static` the join string is whatever you configured, typically a never-expiring token that grants node-join to anyone who reads it. Prefer `--kubeadmJoin=auto`: each real boot gets its own token that expires after `--joinTokenTTL` (1 h by default) and is deleted afterwards, so what leaks over the boot VLAN is worth at most one hour of node-join; previews never mint. Booty's own credential for that is its service account, scoped by the Roles in [examples/k8s.yaml](examples/k8s.yaml) to creating/listing/deleting Secrets in `kube-system` and reading `cluster-info`.
 
-What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files and the OCI blob store are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, hostnames, OS names, versions) are validated. `--autoRegister` widens this further; read [Auto-registration](#auto-registration) before turning it on.
+What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files and the OCI blob store are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, hostnames, OS names, versions, `installDisk`) are validated. The Bluefin [credentials bundle](#credentials-bundle) at `/creds/<mac>.tar` carries the same SSH public keys and units as `/ignition/builtin.json`, readable by anyone on the boot VLAN, and nothing secret. `--autoRegister` widens this further; read [Auto-registration](#auto-registration) before turning it on.
 
 ## Running as root / capabilities
 
