@@ -133,8 +133,11 @@ func TestBluefinIPXEAndCreds(t *testing.T) {
 		t.Fatalf("hostname credential: %q (entries %v)", names["firstboot.hostname.cred"], names)
 	}
 	rules := names["tmpfiles.extra.cred"]
-	if !strings.Contains(rules, "/home/core/.ssh/authorized_keys") || !strings.Contains(rules, "booty-booted.service") || !strings.Contains(rules, "/opt/booty/update-check") {
+	if !strings.Contains(rules, "/home/core/.ssh/authorized_keys") || !strings.Contains(rules, "/opt/booty/update-check") {
 		t.Fatalf("tmpfiles rules incomplete:\n%s", rules)
+	}
+	if !strings.Contains(names["systemd.extra-unit.booty-booted.service.cred"], "/booted?mac=") || !strings.Contains(names["systemd.unit-dropin.multi-user.target~booty.cred"], "Wants=booty-booted.service") {
+		t.Fatalf("booted unit must be delivered as systemd.extra-unit + drop-in (entries %v)", names)
 	}
 
 	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/creds/aa:bb:cc:dd:ee:99.tar", ""), http.StatusNotFound)

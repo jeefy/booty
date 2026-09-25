@@ -143,7 +143,7 @@ func Unit(name string, enabled bool, contents string) types.Unit {
 
 // BootedUnit calls POST /booted once the installed system is up. systemd
 // expands $VAR in ExecStart itself, hence $$ for everything meant for bash.
-// The Bluefin credentials bundle ships the same text as a plain unit file.
+// The Bluefin credentials bundle ships the same text as a systemd.extra-unit.* credential.
 func BootedUnit(server string) string {
 	return `[Unit]
 Description=Tell Booty this host finished installing (clears doInstall)

@@ -1,6 +1,6 @@
 // Package creds builds the systemd credentials bundle Booty serves to
 // Bluefin Server installs: a tar of *.cred files the installer unpacks into
-// the new ESP's /loader/credentials/, where systemd-boot passes them to the
+// the new ESP's /loader/credentials/, where systemd-stub hands them to the
 // booted UKI as encrypted system credentials. It carries the same hostname,
 // SSH keys and Booty units the Ignition builtin fragment does for
 // Flatcar/CoreOS, so the toggles are shared (--builtin).
@@ -29,9 +29,18 @@ const (
 	HostnameCredential = "firstboot.hostname"
 	TmpfilesCredential = "tmpfiles.extra"
 
+	// ExtraUnitPrefix and UnitDropinPrefix are the systemd-debug-generator(8)
+	// credentials that add a unit file, respectively a drop-in for one, to the
+	// booted system. Units written to /etc/systemd/system by tmpfiles.extra
+	// are not loaded (tmpfiles runs after the unit tree is read), and the
+	// generator ignores [Install], so each unit gets a Wants= drop-in on the
+	// target that would have enabled it.
+	ExtraUnitPrefix  = "systemd.extra-unit."
+	UnitDropinPrefix = "systemd.unit-dropin."
+	dropinName       = "booty"
+
 	credSuffix = ".cred"
 	credMode   = 0o600
-	unitDir    = "/etc/systemd/system"
 )
 
 // Input is everything the bundle depends on. Server is the host[:port]
@@ -99,24 +108,36 @@ func Credentials(in Input, f ign.Features) map[string]string {
 	if rules := TmpfilesRules(in, f); rules != "" {
 		out[TmpfilesCredential] = rules
 	}
+	wants := map[string][]string{}
+	addUnit := func(name, contents, wantedBy string) {
+		out[ExtraUnitPrefix+name] = contents
+		if wantedBy != "" {
+			wants[wantedBy] = append(wants[wantedBy], name)
+		}
+	}
+	if f[ign.FeatureBooted] {
+		addUnit(ign.BootedUnitName, ign.BootedUnit(in.Server), "multi-user.target")
+	}
+	if f[ign.FeatureUpdate] {
+		addUnit(ign.UpdateServiceName, ign.UpdateService, "")
+		addUnit(ign.UpdateTimerName, ign.UpdateTimer, "timers.target")
+	}
+	for target, units := range wants {
+		out[UnitDropinPrefix+target+"~"+dropinName] = "[Unit]\nWants=" + strings.Join(units, " ") + "\n"
+	}
 	return out
 }
 
 // TmpfilesRules renders the tmpfiles.extra credential: systemd-tmpfiles(5)
-// lines that write the SSH keys and Booty's units on first boot. "f~" takes
-// the file contents base64 encoded, "L+" replaces an existing symlink.
+// lines that write the SSH keys and the update-check script on first boot.
+// "f~" takes the file contents base64 encoded.
 func TmpfilesRules(in Input, f ign.Features) string {
 	var b strings.Builder
 	if f[ign.FeatureSSHKeys] && len(in.SSHKeys) > 0 {
 		b.WriteString("d /home/core/.ssh 0700 core core -\n")
 		writeFile(&b, "/home/core/.ssh/authorized_keys", "0600", "core", strings.Join(in.SSHKeys, "\n")+"\n")
 	}
-	if f[ign.FeatureBooted] {
-		writeUnit(&b, ign.BootedUnitName, ign.BootedUnit(in.Server), "multi-user.target")
-	}
 	if f[ign.FeatureUpdate] {
-		writeUnit(&b, ign.UpdateServiceName, ign.UpdateService, "")
-		writeUnit(&b, ign.UpdateTimerName, ign.UpdateTimer, "timers.target")
 		writeFile(&b, ign.UpdateCheckScriptPath, "0755", "root", ign.UpdateCheckScript(in.Server))
 	}
 	return b.String()
@@ -124,12 +145,4 @@ func TmpfilesRules(in Input, f ign.Features) string {
 
 func writeFile(b *strings.Builder, path, mode, owner, contents string) {
 	fmt.Fprintf(b, "f~ %s %s %s %s - %s\n", path, mode, owner, owner, base64.StdEncoding.EncodeToString([]byte(contents)))
-}
-
-func writeUnit(b *strings.Builder, name, contents, wantedBy string) {
-	path := unitDir + "/" + name
-	writeFile(b, path, "0644", "root", contents)
-	if wantedBy != "" {
-		fmt.Fprintf(b, "L+ %s/%s.wants/%s - - - - %s\n", unitDir, wantedBy, name, path)
-	}
 }
