@@ -42,6 +42,8 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.Builtin, config.DefaultBuiltin)
 	viper.Set(config.SSHAuthorizedKeysFl, "")
 	viper.Set(config.SSHAuthorizedKeys, []string{})
+	viper.Set(config.AutoRegister, "")
+	viper.Set(config.HostnameTemplate, config.DefaultHostnameTemplate)
 
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -152,6 +154,9 @@ func TestRegisterValidation(t *testing.T) {
 	}{
 		{"invalid mac", `{"mac":"nope","hostname":"x"}`},
 		{"bad os", `{"mac":"aa:bb:cc:dd:ee:01","os":"windows"}`},
+		{"bad hostname", `{"mac":"aa:bb:cc:dd:ee:01","hostname":"Bad_Name!"}`},
+		{"leading hyphen hostname", `{"mac":"aa:bb:cc:dd:ee:01","hostname":"-node"}`},
+		{"too long hostname", `{"mac":"aa:bb:cc:dd:ee:01","hostname":"` + strings.Repeat("a", 254) + `"}`},
 		{"traversal ignition", `{"mac":"aa:bb:cc:dd:ee:01","ignitionFile":"../../etc/passwd"}`},
 		{"absolute ignition", `{"mac":"aa:bb:cc:dd:ee:01","ignitionFile":"/etc/passwd"}`},
 		{"malformed json", `{"mac":`},
@@ -164,6 +169,96 @@ func TestRegisterValidation(t *testing.T) {
 	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/register", ""), http.StatusMethodNotAllowed)
 	if len(hardware.Snapshot().Hosts) != 0 {
 		t.Fatal("no host should have been registered")
+	}
+
+	for _, body := range []string{
+		`{"mac":"aa:bb:cc:dd:ee:01","hostname":"Node-1.Example.COM"}`,
+		`{"mac":"aa:bb:cc:dd:ee:02","hostname":""}`,
+		`{"mac":"aa:bb:cc:dd:ee:03"}`,
+	} {
+		if r := do(t, http.MethodPost, srv.URL+"/register", body); r.status != 200 {
+			t.Fatalf("register %s: %+v", body, r)
+		}
+	}
+}
+
+func TestAutoRegister(t *testing.T) {
+	srv, _ := newTestServer(t)
+	viper.Set(config.AutoRegister, "flatcar")
+
+	r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=AA:BB:CC:DD:EE:42", "")
+	if r.status != 200 || strings.Contains(r.body, "Unknown Host") || !strings.Contains(r.body, "flatcar_production_pxe.vmlinuz") {
+		t.Fatalf("auto-registered host must get the flatcar script: %+v", r)
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/booty.json", "")
+	var data hardware.BootyData
+	if err := json.Unmarshal([]byte(r.body), &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.UnknownHosts) != 0 {
+		t.Fatalf("auto-registered host must not be observed as unknown: %+v", data.UnknownHosts)
+	}
+	h := data.Hosts["aa:bb:cc:dd:ee:42"]
+	if h == nil || h.Hostname != "node-ddee42" || h.OS != "flatcar" || h.IP != "127.0.0.1" || h.DoInstall || h.Booted != "" {
+		t.Fatalf("unexpected auto-registered host %+v", h)
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:43", "")
+	if r.status != 200 || strings.Contains(r.body, "booty-brig-reboot.service") || !strings.Contains(r.body, "/ignition/user.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A43") {
+		t.Fatalf("auto-registered host must get the merge wrapper, not the brig: %+v", r)
+	}
+	h, _ = hardware.Get("aa:bb:cc:dd:ee:43")
+	if h == nil || h.Hostname != "node-ddee43" || h.Booted == "" {
+		t.Fatalf("ignition fetch must auto-register and record the boot: %+v", h)
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/ignition/user.json?mac=aa:bb:cc:dd:ee:44", "")
+	assertJSONError(t, r, http.StatusNotFound)
+	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/hosts?mac=aa:bb:cc:dd:ee:44", ""), http.StatusNotFound)
+	if _, ok := hardware.Get("aa:bb:cc:dd:ee:44"); ok {
+		t.Fatal("child and /hosts lookups must never auto-register")
+	}
+
+	viper.Set(config.HostnameTemplate, "pxe-{{ .MACFlat }}.lab")
+	do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:45", "")
+	if h, _ = hardware.Get("aa:bb:cc:dd:ee:45"); h == nil || h.Hostname != "pxe-aabbccddee45.lab" {
+		t.Fatalf("hostname template must be honoured: %+v", h)
+	}
+
+	viper.Set(config.HostnameTemplate, "static-name")
+	do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:46", "")
+	do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:47", "")
+	a, _ := hardware.Get("aa:bb:cc:dd:ee:46")
+	b, _ := hardware.Get("aa:bb:cc:dd:ee:47")
+	if a == nil || b == nil || a.Hostname != "static-name" || b.Hostname != "static-name" {
+		t.Fatalf("hostname collisions are warned about but still registered: %+v %+v", a, b)
+	}
+
+	viper.Set(config.HostnameTemplate, "{{ .Nope }}")
+	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:48", "")
+	if !strings.Contains(r.body, "Unknown Host") {
+		t.Fatalf("a broken template must fall back to the unknown-host menu: %+v", r)
+	}
+	if _, ok := hardware.Snapshot().UnknownHosts["aa:bb:cc:dd:ee:48"]; !ok {
+		t.Fatal("a broken template must still observe the unknown host")
+	}
+}
+
+func TestAutoRegisterOffKeepsBrig(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:42", "")
+	if !strings.Contains(r.body, "Unknown Host") {
+		t.Fatalf("without --autoRegister unknown hosts get the menu: %+v", r)
+	}
+	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:42", "")
+	if !strings.Contains(r.body, "booty-brig-reboot.service") {
+		t.Fatalf("without --autoRegister unknown hosts get the brig: %+v", r)
+	}
+	data := hardware.Snapshot()
+	if len(data.Hosts) != 0 || data.UnknownHosts["aa:bb:cc:dd:ee:42"] == nil || data.UnknownHosts["aa:bb:cc:dd:ee:42"].Count != 2 {
+		t.Fatalf("unknown host must be observed, not registered: %+v", data)
 	}
 }
 

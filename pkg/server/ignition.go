@@ -65,16 +65,56 @@ func identifyClient(r *http.Request) (mac string, ok bool) {
 	return hw.String(), true
 }
 
+// lookupHost resolves a booting client to a registered host. Unknown MACs
+// are auto-registered when --autoRegister is set, otherwise recorded as
+// unknown hosts. Only the boot path (/booty.ipxe, /ignition.json) calls it.
 func lookupHost(mac, ip string) *hardware.Host {
 	if mac == "" {
 		return nil
 	}
 	host, found := hardware.Get(mac)
-	if !found {
-		hardware.Observe(mac, ip)
-		slog.Warn("Unknown host detected", "mac", mac, "ip", ip)
+	if found {
+		return host
+	}
+	if host := autoRegister(mac, ip); host != nil {
+		return host
+	}
+	hardware.Observe(mac, ip)
+	slog.Warn("Unknown host detected", "mac", mac, "ip", ip)
+	return nil
+}
+
+func autoRegister(mac, ip string) *hardware.Host {
+	os := viper.GetString(config.AutoRegister)
+	if os == "" {
 		return nil
 	}
+	if !hardware.IsValidOS(os) {
+		slog.Error("Invalid --autoRegister value; not registering unknown host", "os", os, "mac", mac)
+		return nil
+	}
+	tmpl, err := hardware.ParseHostnameTemplate(viper.GetString(config.HostnameTemplate))
+	if err != nil {
+		slog.Error("Invalid --hostnameTemplate; not registering unknown host", "mac", mac, "error", err)
+		return nil
+	}
+	hostname, err := tmpl.Render(mac, ip)
+	if err != nil {
+		slog.Error("Hostname template did not render a valid hostname; not registering unknown host", "mac", mac, "error", err)
+		return nil
+	}
+	for otherMAC, other := range hardware.Snapshot().Hosts {
+		if other.Hostname == hostname && otherMAC != mac {
+			slog.Warn("Auto-registered hostname collides with an existing host", "hostname", hostname, "mac", mac, "existing", otherMAC)
+			break
+		}
+	}
+	host, err := hardware.Put(hardware.Host{MAC: mac, Hostname: hostname, IP: ip, OS: os})
+	if err != nil {
+		slog.Error("Auto-registering unknown host failed", "mac", mac, "error", err)
+		return nil
+	}
+	slog.Info("Auto-registered unknown host", "mac", mac, "ip", ip, "hostname", hostname, "os", os)
 	return host
 }
 

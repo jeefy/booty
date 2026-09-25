@@ -50,7 +50,13 @@ const (
 	ProxyDHCPPorts      = "proxyDHCPPorts"
 	Version             = "version"
 	Timestamp           = "timestamp"
+	AutoRegister        = "autoRegister"
+	HostnameTemplate    = "hostnameTemplate"
 )
+
+// DefaultHostnameTemplate names auto-registered hosts after the last three
+// bytes of their MAC.
+const DefaultHostnameTemplate = "node-{{ .MACSuffix }}"
 
 // BootFileNames are the iPXE binaries embedded in the Booty binary and served
 // at the root of the TFTP namespace and under /boot/ over HTTP:
@@ -144,6 +150,7 @@ func LoadConfig() {
 	// Test-only override of the two ProxyDHCP listen ports ("67,4011"), so
 	// the server can be exercised without root. Deliberately not a flag.
 	viper.SetDefault(ProxyDHCPPorts, "")
+	viper.SetDefault(HostnameTemplate, DefaultHostnameTemplate)
 }
 
 func bindEnv(key, env string) {

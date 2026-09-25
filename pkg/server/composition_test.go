@@ -13,6 +13,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	ign "github.com/jeefy/booty/pkg/ignition"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/spf13/viper"
 )
@@ -418,6 +419,24 @@ func TestUpdateCheckOSTree(t *testing.T) {
 	resp = get("mac=aa:bb:cc:dd:ee:02&os=haiku&version=1")
 	if resp.RebootRequired || !strings.Contains(resp.Reason, "unknown os") {
 		t.Fatalf("unknown os must fail closed: %+v", resp)
+	}
+}
+
+func TestStarterButaneRenders(t *testing.T) {
+	newTestServer(t)
+	host := &hardware.Host{MAC: "aa:bb:cc:dd:ee:01", Hostname: "n1"}
+	rendered, err := renderIgnition("starter", ign.StarterButane, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parseIgnition(t, string(rendered))
+	if !strings.Contains(string(rendered), `"version": "3.4.0"`) {
+		t.Fatalf("starter must translate to spec 3.4.0:\n%s", rendered)
+	}
+	for _, v := range []string{"{{ .Hostname }}", "{{ .ServerIP }}", "{{ .JoinString }}", "{{ .OSTreeImage }}"} {
+		if !strings.Contains(ign.StarterButane, v) {
+			t.Errorf("starter header must document %s", v)
+		}
 	}
 }
 
