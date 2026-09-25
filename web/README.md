@@ -1,68 +1,52 @@
-# booty
+# Booty web UI
 
-This template should help get you started developing with Vue 3 in Vite.
+Vue 3 + TypeScript + Vite single-page app served by the Go binary under `/ui/`
+(the server does `http.FileServer(http.Dir("./web/dist"))`, so `npm run build`
+output must exist before starting `booty`).
 
-## Recommended IDE Setup
+## Layout
 
-[VSCode](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur) + [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=Vue.vscode-typescript-vue-plugin).
+```
+src/
+  api.ts          typed fetch helpers (apiGet / apiPost) + ApiError from the JSON error envelope
+  types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, CachedImage)
+  utils/time.ts   relative / absolute time formatting for RFC3339 timestamps
+  components/     ErrorAlert, LoadingState, EmptyState, HostForm
+  views/          HomeView (status + Flatcar pin), HostsView, CacheView, AboutView
+  router/         hash-based routes (/, /hosts, /cache, /about)
+  assets/main.css design tokens (CSS variables) layered on top of Bootstrap 5
+```
 
-## Type Support for `.vue` Imports in TS
+Bootstrap CSS is imported from the npm package in `src/main.ts`; no Bootstrap
+JS is used (the navbar collapse is driven by Vue state).
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=Vue.vscode-typescript-vue-plugin) to make the TypeScript language service aware of `.vue` types.
-
-If the standalone TypeScript plugin doesn't feel fast enough to you, Volar has also implemented a [Take Over Mode](https://github.com/johnsoncodehk/volar/discussions/471#discussioncomment-1361669) that is more performant. You can enable it by the following steps:
-
-1. Disable the built-in TypeScript Extension
-    1) Run `Extensions: Show Built-in Extensions` from VSCode's command palette
-    2) Find `TypeScript and JavaScript Language Features`, right click and select `Disable (Workspace)`
-2. Reload the VSCode window by running `Developer: Reload Window` from the command palette.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vitejs.dev/config/).
-
-## Project Setup
+## Development
 
 ```sh
 npm install
+npm run dev          # http://localhost:5173/ui/
 ```
 
-### Compile and Hot-Reload for Development
+The dev server proxies every backend route (`/booty.json`, `/info`,
+`/flatcar/*`, `/registry`, `/register`, `/unregister`, `/hosts`,
+`/ignition.json`, `/healthz`, `/version.json`, `/data`) to a running Go
+server. It defaults to `http://localhost:8080`; override with
+`VITE_API_TARGET=http://host:port npm run dev`.
+
+## Checks
 
 ```sh
-npm run dev
+npm run lint         # ESLint 9 flat config: eslint-plugin-vue flat/recommended + TS + Prettier
+npm run type-check   # vue-tsc --build (views and tests are type-checked)
+npm run test:unit -- --run   # Vitest + jsdom + @vue/test-utils
+npm run format       # Prettier over src/
 ```
 
-### Type-Check, Compile and Minify for Production
+## Build
 
 ```sh
-npm run build
+npm run build        # type-check, then vite build -> dist/ (base path /ui/)
+npm run preview      # serve dist/ locally
 ```
 
-### Run Unit Tests with [Vitest](https://vitest.dev/)
-
-```sh
-npm run test:unit
-```
-
-### Run End-to-End Tests with [Cypress](https://www.cypress.io/)
-
-```sh
-npm run test:e2e:dev
-```
-
-This runs the end-to-end tests against the Vite development server.
-It is much faster than the production build.
-
-But it's still recommended to test the production build with `test:e2e` before deploying (e.g. in CI environments):
-
-```sh
-npm run build
-npm run test:e2e
-```
-
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-npm run lint
-```
+`dist/` is git-ignored and produced in the Docker image build.
