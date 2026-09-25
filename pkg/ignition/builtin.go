@@ -23,7 +23,10 @@ const (
 	FeatureSSHKeys  = "sshkeys"
 	FeatureNone     = "none"
 
-	UpdateCheckScriptPath = "/usr/local/bin/booty-update-check"
+	// /usr is a read-only partition on Flatcar (Ignition gets EROFS writing
+	// under it), so everything Booty installs lives under /opt like the
+	// kubeadm profile does. /opt is writable on Flatcar and FCOS alike.
+	UpdateCheckScriptPath = "/opt/booty/update-check"
 )
 
 var knownFeatures = map[string]bool{

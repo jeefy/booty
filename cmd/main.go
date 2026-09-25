@@ -75,7 +75,7 @@ func init() {
 	flags.String(config.Profile, "", "Node profile appended to the builtin Ignition fragment for flatcar/coreos hosts: '' or 'kubeadm-worker' (CNI plugins, kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot)")
 	flags.String(config.K8sVersion, config.DefaultK8sVersion, "Kubernetes release installed by the kubeadm-worker profile")
 	flags.String(config.CNIVersion, config.DefaultCNIVersion, "containernetworking/plugins release installed by the kubeadm-worker profile")
-	flags.String(config.CrictlVersion, "", "cri-tools release installed by the kubeadm-worker profile; defaults to --k8sVersion")
+	flags.String(config.CrictlVersion, "", "cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)")
 	flags.String(config.ContainerdDisk, "", "Block device the kubeadm-worker profile formats (ext4, wiped on every boot) and mounts at /var/lib/containerd, e.g. /dev/sda; empty keeps containerd on the root filesystem")
 	flags.String(config.KubeletUnitsURL, config.DefaultKubeletUnitsURL, "Base URL the kubeadm-worker profile fetches kubelet/kubelet.service and kubeadm/10-kubeadm.conf from (pin or mirror it)")
 

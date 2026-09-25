@@ -94,7 +94,7 @@ func TestIgnitionChildren(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"path":"/etc/hostname"`, `data:,n1%0A`,
-		`"path":"/usr/local/bin/booty-update-check"`,
+		`"path":"/opt/booty/update-check"`,
 		`"name":"booty-update.timer"`, `"name":"booty-update.service"`, `"name":"booty-booted.service"`,
 		`http://192.168.1.10:8080/booted?mac=$$MAC`,
 		`ssh-ed25519 AAAAone test1`, `ssh-ed25519 AAAAtwo test2`, `ssh-rsa BBBB inline`,
@@ -165,7 +165,7 @@ func TestIgnitionPreviewParts(t *testing.T) {
 	if hostnameCount != 1 {
 		t.Fatalf("/etc/hostname should be merged into one entry, got %d", hostnameCount)
 	}
-	for _, want := range []string{"/etc/motd", "/usr/local/bin/booty-update-check", "booty-booted.service", "booty-update.service"} {
+	for _, want := range []string{"/etc/motd", "/opt/booty/update-check", "booty-booted.service", "booty-update.service"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("merged config missing %s", want)
 		}
