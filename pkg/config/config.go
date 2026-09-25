@@ -38,6 +38,15 @@ const (
 	ServerIP            = "serverIP"
 	ServerHttpPort      = "serverHttpPort"
 	JoinString          = "joinString"
+	JoinStringFile      = "joinStringFile"
+	KubeadmJoin         = "kubeadmJoin"
+	JoinTokenTTL        = "joinTokenTTL"
+	Profile             = "profile"
+	K8sVersion          = "k8sVersion"
+	CNIVersion          = "cniVersion"
+	CrictlVersion       = "crictlVersion"
+	ContainerdDisk      = "containerdDisk"
+	KubeletUnitsURL     = "kubeletUnitsURL"
 	OCIGC               = "ociGC"
 	OCIGCEmpty          = "ociGCEmpty"
 	DoInstallClearOn    = "doInstallClearOn"
@@ -97,6 +106,44 @@ func ValidateDoInstallClearOn(v string) error {
 	return fmt.Errorf("invalid --%s %q: must be %q or %q", DoInstallClearOn, v, ClearOnIgnition, ClearOnBooted)
 }
 
+// Values for KubeadmJoin: hand out --joinString/--joinStringFile as-is, or
+// mint a short-lived bootstrap token per boot through the Kubernetes API.
+const (
+	KubeadmJoinStatic = "static"
+	KubeadmJoinAuto   = "auto"
+)
+
+// ValidateKubeadmJoin rejects anything but the two known modes.
+func ValidateKubeadmJoin(v string) error {
+	switch v {
+	case KubeadmJoinStatic, KubeadmJoinAuto:
+		return nil
+	}
+	return fmt.Errorf("invalid --%s %q: must be %q or %q", KubeadmJoin, v, KubeadmJoinStatic, KubeadmJoinAuto)
+}
+
+// Defaults for the kubeadm-worker profile.
+const (
+	DefaultK8sVersion      = "v1.34.3"
+	DefaultCNIVersion      = "v1.1.1"
+	DefaultKubeletUnitsURL = "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest"
+	DefaultJoinTokenTTL    = time.Hour
+)
+
+// StaticJoinString resolves the static kubeadm join string: the contents of
+// --joinStringFile (trimmed, re-read on every call so a rotated Secret is
+// picked up) win over --joinString.
+func StaticJoinString() (string, error) {
+	if file := viper.GetString(JoinStringFile); file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("reading --%s: %w", JoinStringFile, err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return strings.TrimSpace(viper.GetString(JoinString)), nil
+}
+
 // MetadataClient is used for small metadata fetches (version.txt, streams
 // JSON, DIGESTS files). It has a short overall timeout.
 var MetadataClient = &http.Client{Timeout: 30 * time.Second}
@@ -151,6 +198,11 @@ func LoadConfig() {
 	// the server can be exercised without root. Deliberately not a flag.
 	viper.SetDefault(ProxyDHCPPorts, "")
 	viper.SetDefault(HostnameTemplate, DefaultHostnameTemplate)
+	viper.SetDefault(KubeadmJoin, KubeadmJoinStatic)
+	viper.SetDefault(JoinTokenTTL, DefaultJoinTokenTTL)
+	viper.SetDefault(K8sVersion, DefaultK8sVersion)
+	viper.SetDefault(CNIVersion, DefaultCNIVersion)
+	viper.SetDefault(KubeletUnitsURL, DefaultKubeletUnitsURL)
 }
 
 func bindEnv(key, env string) {

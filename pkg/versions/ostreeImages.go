@@ -318,31 +318,35 @@ func deleteUnreferencedBlobs(dir string, referenced map[string]bool) (deleted, k
 	return deleted, kept, errors.Join(errs...)
 }
 
-// StartScheduler runs the Flatcar, CoreOS and OSTree checks on schedule.
-// Every job is a singleton: a tick that arrives while the previous run is
-// still executing is dropped.
-func StartScheduler(schedule string) (gocron.Scheduler, error) {
+// Job is an extra periodic task run on the same cron schedule as the
+// version checks.
+type Job struct {
+	Name string
+	Fn   func()
+}
+
+// StartScheduler runs the Flatcar, CoreOS and OSTree checks, plus any extra
+// jobs, on schedule. Every job is a singleton: a tick that arrives while the
+// previous run is still executing is dropped.
+func StartScheduler(schedule string, extra ...Job) (gocron.Scheduler, error) {
 	s, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, err
 	}
-	jobs := []struct {
-		name string
-		fn   func()
-	}{
+	jobs := append([]Job{
 		{"flatcar", FlatcarVersionCheck},
 		{"coreos", CoreOSVersionCheck},
 		{"ostree", OSTreeImageSync},
-	}
+	}, extra...)
 	for _, job := range jobs {
 		_, err := s.NewJob(
 			gocron.CronJob(schedule, false),
-			gocron.NewTask(job.fn),
-			gocron.WithName(job.name),
+			gocron.NewTask(job.Fn),
+			gocron.WithName(job.Name),
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("scheduling %s check with %q: %w", job.name, schedule, err)
+			return nil, fmt.Errorf("scheduling %s check with %q: %w", job.Name, schedule, err)
 		}
 	}
 	s.Start()

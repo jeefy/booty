@@ -1,7 +1,23 @@
 # Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
-# Only the ucore/k8s specific pieces remain here.
+# Only the ucore/k8s specific pieces remain here. uCore hosts are registered as os=ublue, so the
+# kubeadm-worker profile does not apply; this template installs the Kubernetes packages with
+# rpm-ostree and carries its own join script.
 variant: flatcar
 version: 1.1.0
+
+storage:
+  files:
+    - path: /opt/bin/join.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          modprobe br_netfilter
+          sysctl net.bridge.bridge-nf-call-iptables=1
+          sysctl net.ipv4.ip_forward=1
+          export PATH=/opt/bin/:$PATH
+          kubeadm reset -f || true
+          exec ${JOIN_STRING}
 
 systemd:
   units:       
@@ -81,8 +97,6 @@ systemd:
       Type=oneshot
       # This is bad and I feel bad
       ExecStart=/bin/bash -c 'mkdir -p /opt/bin/cni'
-      ExecStart=/bin/bash -c 'wget http://{{ .ServerIP }}/data/config/join.sh -O /opt/bin/join.sh'
-      ExecStart=/bin/bash -c 'chmod +x /opt/bin/join.sh'
       ExecStart=/bin/bash -c 'wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service -O /etc/systemd/system/containerd.service'
       ExecStart=rpm-ostree install kubernetes-kubeadm kubernetes-node crictl conntrack
       ExecStart=rpm-ostree apply-live

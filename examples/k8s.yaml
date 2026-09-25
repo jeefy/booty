@@ -1,160 +1,107 @@
+# Booty on the control-plane node of the cluster it PXE-boots workers for.
+#
+# hostNetwork so TFTP (69/UDP) and HTTP (80/TCP) are reachable from the boot
+# VLAN and the ARP fallback works. --profile=kubeadm-worker embeds the whole
+# worker setup; --kubeadmJoin=auto mints a short-lived bootstrap token per
+# boot through the API (RBAC below), so no join Secret is needed.
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: booty
+  namespace: kube-system
+---
+# Bootstrap tokens live in kube-system: create per boot, list/delete expired ones.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: booty-bootstrap-tokens
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "list", "delete", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: booty-bootstrap-tokens
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: booty
+    namespace: kube-system
+roleRef:
+  kind: Role
+  name: booty-bootstrap-tokens
+  apiGroup: rbac.authorization.k8s.io
+---
+# cluster-info carries the external API endpoint and CA for the discovery hash.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: booty-cluster-info
+  namespace: kube-public
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cluster-info"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: booty-cluster-info
+  namespace: kube-public
+subjects:
+  - kind: ServiceAccount
+    name: booty
+    namespace: kube-system
+roleRef:
+  kind: Role
+  name: booty-cluster-info
+  apiGroup: rbac.authorization.k8s.io
+---
+# Site-specific Butane only; hostname, SSH keys, update timer and the whole
+# kubeadm worker setup come from Booty itself.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: booty-config
+  namespace: kube-system
 data:
-  # Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
   ignition.yaml: |
     variant: flatcar
     version: 1.1.0
     storage:
-      filesystems:
-        - device: /dev/sda
-          format: ext4
-          path: /var/lib/containerd
-          wipe_filesystem: true
-          label: ssd
       files:
-        - path: /opt/cni.sh
+        - path: /etc/systemd/resolved.conf.d/booty.conf
+          mode: 0644
           contents:
-            source: http://192.168.50.20/data/config/cni.sh
-          mode: 0775
-        - path: /opt/systemd.sh
-          contents:
-            source: http://192.168.50.20/data/config/systemd.sh
-          mode: 0775
-        - path: /opt/kube-tools.sh
-          contents:
-            source: http://192.168.50.20/data/config/kube-tools.sh
-          mode: 0775
-        - path: /opt/join.sh
-          contents:
-            source: http://192.168.50.20/data/config/join.sh
-          mode: 0775
-    systemd:
-      units:
-        - name: var-lib-containerd.mount
-          enabled: true
-          contents: |
-            [Unit]
-            Description=Mount ephemeral to /var/lib/containerd
-            Before=local-fs.target
-            [Mount]
-            What=/dev/disk/by-label/ssd
-            Where=/var/lib/containerd
-            Type=ext4
-            [Install]
-            WantedBy=local-fs.target        
-        - enabled: true
-          name: containerd.service
-          dropins:
-            - name: 10-wait-containerd.conf
-              contents: |
-                [Unit]
-                After=var-lib-containerd.mount
-                Requires=var-lib-containerd.mount 
-        - enabled: true
-          name: cni-install.service
-          contents: |
-            [Install]
-            WantedBy=multi-user.target
-
-            [Unit]
-            Description=k8s installation script
-            Wants=network-online.target
-            After=network.target network-online.target
-
-            [Service]
-            Type=oneshot
-            ExecStart=/opt/cni.sh
-        - enabled: true
-          name: kube-tools-install.service
-          contents: |
-            [Install]
-            WantedBy=multi-user.target
-
-            [Unit]
-            Description=k8s installation script
-            Requires=cni-install.service
-            After=cni-install.service
-
-            [Service]
-            Type=oneshot
-            ExecStart=/opt/kube-tools.sh
-        - enabled: true
-          name: systemd-k8s-setup.service
-          contents: |
-            [Install]
-            WantedBy=multi-user.target
-
-            [Unit]
-            Description=k8s installation script
-            Requires=kube-tools-install.service
-            After=kube-tools-install.service
-
-            [Service]
-            Type=oneshot
-            ExecStart=/opt/systemd.sh
-        - enabled: true
-          name: k8s-join.service
-          contents: |
-            [Install]
-            WantedBy=multi-user.target
-
-            [Unit]
-            Description=k8s join script
-            Requires=systemd-k8s-setup.service
-            After=systemd-k8s-setup.service
-
-            [Service]
-            Environment="JOIN_STRING={{ .JoinString }}"
-            Type=oneshot
-            ExecStart=/bin/bash -c 'PATH=/opt/bin:$PATH exec /opt/join.sh'
-  cni.sh: |
-    #!/bin/bash
-    CNI_VERSION="v1.1.1"
-    mkdir -p /opt/cni/bin
-    curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-amd64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
-    echo "CNI driver installed";
-  join.sh: |
-    #!/bin/bash
-    sysctl net.bridge.bridge-nf-call-iptables=1
-    /opt/bin/${JOIN_STRING}
-
-  kube-tools.sh: |
-    #!/bin/bash
-    RELEASE="$(curl -sSL https://cdn.dl.k8s.io/release/stable.txt)"
-    mkdir -p /opt/bin
-    cd /opt/bin
-    curl -L --remote-name-all https://storage.googleapis.com/kubernetes-release/release/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}
-    chmod +x {kubeadm,kubelet,kubectl}
-    VERSION="v1.22.0"
-    wget https://github.com/kubernetes-incubator/cri-tools/releases/download/$VERSION/crictl-$VERSION-linux-amd64.tar.gz
-    sudo tar zxvf crictl-$VERSION-linux-amd64.tar.gz -C /opt/bin
-    rm -f crictl-$VERSION-linux-amd64.tar.gz
-    echo "Kube Tools installed.";
-  systemd.sh: |
-    #!/bin/bash
-    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest/kubelet/kubelet.service" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service
-    mkdir -p /etc/systemd/system/kubelet.service.d
-    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest/kubeadm/10-kubeadm.conf" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-
-    echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd" > /etc/default/kubelet
-
-    systemctl enable kubelet && systemctl start kubelet
-    echo "Kubelet started";
+            inline: |
+              [Resolve]
+              DNS=192.168.1.1
+---
+# SSH public keys for the 'core' user, one per line (--sshAuthorizedKeysFile).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: booty-ssh-keys
+  namespace: kube-system
+type: Opaque
+stringData:
+  authorized_keys: |
+    ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: booty
+  namespace: kube-system
   labels:
     app: booty
 spec:
   replicas: 1
-  nodeSelector:
-    node-role.kubernetes.io/control-plane: ""
   strategy:
     type: Recreate
   selector:
@@ -165,93 +112,131 @@ spec:
       labels:
         app: booty
     spec:
+      serviceAccountName: booty
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
       containers:
-      - args:
-        - --dataDir
-        - /data
-        - --serverIP
-        - YOUR IP ADDRESS HERE
-        - --httpPort
-        - "80"
-        - --debug
-        - --joinString
-        - YOUR JOIN STRING HERE
-        - --flatcarChannel
-        - beta
-        - --coreOSChannel
-        - testing
-        image: ghcr.io/jeefy/booty:main
-        imagePullPolicy: Always
-        name: booty
-        ports:
-        - containerPort: 69
-          hostPort: 69
-          protocol: TCP
-        - containerPort: 80
-          hostPort: 80
-          protocol: TCP
-        resources:
-          limits:
-            cpu: "1"
-            memory: 2Gi
-          requests:
-            cpu: 500m
-            memory: 1Gi
+        - name: booty
+          image: ghcr.io/jeefy/booty:main
+          imagePullPolicy: Always
+          args:
+            - --dataDir=/data
+            - --httpPort=80
+            # The address booting machines reach Booty on: the node IP with
+            # hostNetwork, or the MetalLB VIP below if you route through it.
+            - --serverIP=192.168.1.10
+            - --profile=kubeadm-worker
+            - --kubeadmJoin=auto
+            # - --containerdDisk=/dev/sda   # wipe+mount an ephemeral disk at /var/lib/containerd
+            # - --k8sVersion=v1.34.3
+            # - --cniVersion=v1.1.1
+            - --sshAuthorizedKeysFile=/etc/booty/ssh/authorized_keys
+          ports:
+            - name: tftp
+              containerPort: 69
+              protocol: UDP
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE", "NET_RAW"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: booty-config
+              mountPath: /data/config
+              readOnly: true
+            - name: booty-ssh-keys
+              mountPath: /etc/booty/ssh
+              readOnly: true
+            - name: booty-data
+              mountPath: /data
       volumes:
-      - name: booty-config
-        configMap:
-          name: booty-config
-      - name: booty-data
-        persistentVolumeClaim:
-          claimName: booty-data
+        - name: booty-config
+          configMap:
+            name: booty-config
+        - name: booty-ssh-keys
+          secret:
+            secretName: booty-ssh-keys
+        - name: booty-data
+          persistentVolumeClaim:
+            claimName: booty-data
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: booty-data
+  namespace: kube-system
 spec:
   accessModes:
-  - ReadWriteOnce
+    - ReadWriteOnce
   resources:
     requests:
       storage: 10Gi
 ---
+# Optional: a stable VIP in front of the pod (MetalLB). Both Services share
+# one IP; set --serverIP to it.
 apiVersion: v1
 kind: Service
 metadata:
-  annotations:
-    metallb.universe.tf/allow-shared-ip: booty-svc # If you have a metallb setup, you need this to attach two services to the same IP
+  name: booty-tcp
+  namespace: kube-system
   labels:
     app: booty
-  name: booty-tcp
+  annotations:
+    metallb.universe.tf/allow-shared-ip: booty-svc
 spec:
+  type: LoadBalancer
+  loadBalancerIP: 192.168.50.20
   externalTrafficPolicy: Local
-  ports:
-  - name: http
-    port: 80
-    protocol: TCP
-    targetPort: 8080
   selector:
     app: booty
-  type: LoadBalancer
-  loadBalancerIP: 192.168.50.20 # This should be the IP of the service your hosts can connect to
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 80
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  annotations:
-    metallb.universe.tf/allow-shared-ip: booty-svc # If you have a metallb setup, you need this to attach two services to the same IP
+  name: booty-udp
+  namespace: kube-system
   labels:
     app: booty
-  name: booty-udp
+  annotations:
+    metallb.universe.tf/allow-shared-ip: booty-svc
 spec:
+  type: LoadBalancer
+  loadBalancerIP: 192.168.50.20
   externalTrafficPolicy: Local
-  ports:
-  - name: tftp
-    port: 69
-    protocol: UDP
-    targetPort: 69
   selector:
     app: booty
-  type: LoadBalancer
-  loadBalancerIP: 192.168.50.20 # This should be the IP of the service your hosts can connect to
+  ports:
+    - name: tftp
+      port: 69
+      protocol: UDP
+      targetPort: 69

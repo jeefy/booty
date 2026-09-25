@@ -17,6 +17,8 @@ import (
 	"github.com/jeefy/booty/pkg/dhcp"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/ignition"
+	"github.com/jeefy/booty/pkg/kubeadm"
+	"github.com/jeefy/booty/pkg/profile"
 	"github.com/jeefy/booty/pkg/server"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/tftp"
@@ -67,6 +69,15 @@ func init() {
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
 	flags.String(config.AutoRegister, "", "Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or ublue) instead of sending them to the brig; empty disables")
 	flags.String(config.HostnameTemplate, config.DefaultHostnameTemplate, "Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP")
+	flags.String(config.JoinStringFile, "", "File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString")
+	flags.String(config.KubeadmJoin, config.KubeadmJoinStatic, "Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot; in-cluster only)")
+	flags.Duration(config.JoinTokenTTL, config.DefaultJoinTokenTTL, "Lifetime of bootstrap tokens minted with --kubeadmJoin=auto; expired ones are deleted on the --updateSchedule tick")
+	flags.String(config.Profile, "", "Node profile appended to the builtin Ignition fragment for flatcar/coreos hosts: '' or 'kubeadm-worker' (CNI plugins, kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot)")
+	flags.String(config.K8sVersion, config.DefaultK8sVersion, "Kubernetes release installed by the kubeadm-worker profile")
+	flags.String(config.CNIVersion, config.DefaultCNIVersion, "containernetworking/plugins release installed by the kubeadm-worker profile")
+	flags.String(config.CrictlVersion, "", "cri-tools release installed by the kubeadm-worker profile; defaults to --k8sVersion")
+	flags.String(config.ContainerdDisk, "", "Block device the kubeadm-worker profile formats (ext4, wiped on every boot) and mounts at /var/lib/containerd, e.g. /dev/sda; empty keeps containerd on the root filesystem")
+	flags.String(config.KubeletUnitsURL, config.DefaultKubeletUnitsURL, "Base URL the kubeadm-worker profile fetches kubelet/kubelet.service and kubeadm/10-kubeadm.conf from (pin or mirror it)")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
@@ -108,15 +119,41 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return err
 	}
+	if err := profile.Validate(viper.GetString(config.Profile)); err != nil {
+		return err
+	}
+	if err := config.ValidateKubeadmJoin(viper.GetString(config.KubeadmJoin)); err != nil {
+		return err
+	}
+	if viper.GetDuration(config.JoinTokenTTL) <= 0 {
+		return fmt.Errorf("--%s must be positive, got %s", config.JoinTokenTTL, viper.GetDuration(config.JoinTokenTTL))
+	}
 	if err := config.ResolveServerAddress(); err != nil {
 		return err
 	}
-	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin))
+	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin), "profile", viper.GetString(config.Profile), "kubeadmJoin", viper.GetString(config.KubeadmJoin))
 	if !builtin.Enabled() {
 		slog.Info("Builtin Ignition fragment disabled; serving user configs as-is")
 	}
 	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" {
 		slog.Warn("Auto-registration enabled: any unknown MAC that boots becomes a registered host", "os", autoOS, "hostnameTemplate", viper.GetString(config.HostnameTemplate))
+	}
+	if p := viper.GetString(config.Profile); p != "" && !builtin.Enabled() {
+		slog.Warn("--profile has no effect with --builtin=none", "profile", p)
+	}
+	var minter *kubeadm.Minter
+	if viper.GetString(config.KubeadmJoin) == config.KubeadmJoinAuto {
+		kubeCfg := kubeadm.InClusterConfig()
+		minter = kubeadm.New(kubeCfg, viper.GetDuration(config.JoinTokenTTL))
+		if kubeCfg.APIServer == "" {
+			slog.Warn("--kubeadmJoin=auto but not running in a cluster; join tokens cannot be minted and workers will boot without joining")
+		} else {
+			slog.Info("Minting kubeadm join tokens through the Kubernetes API", "apiServer", kubeCfg.APIServer, "ttl", minter.TTL())
+		}
+	} else if file := viper.GetString(config.JoinStringFile); file != "" {
+		if _, err := config.StaticJoinString(); err != nil {
+			slog.Warn("Join string file is not readable; hosts will get an empty JOIN_STRING until it is", "file", file, "error", err)
+		}
 	}
 	if keysFile := viper.GetString(config.SSHAuthorizedKeysFl); keysFile != "" {
 		if _, err := ignition.LoadSSHKeys(keysFile, nil); err != nil {
@@ -164,7 +201,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("embedded web ui: %w", err)
 	}
-	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles}, errCh)
+	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles, Minter: minter}, errCh)
 	if err != nil {
 		tftpServer.Shutdown(5 * time.Second)
 		return err
@@ -193,7 +230,11 @@ func run(cmd *cobra.Command, argv []string) error {
 		versions.OSTreeImageSync()
 	}()
 
-	scheduler, err := versions.StartScheduler(viper.GetString(config.UpdateSchedule))
+	var extraJobs []versions.Job
+	if minter != nil {
+		extraJobs = append(extraJobs, versions.Job{Name: "kubeadm-token-cleanup", Fn: func() { cleanupJoinTokens(ctx, minter) }})
+	}
+	scheduler, err := versions.StartScheduler(viper.GetString(config.UpdateSchedule), extraJobs...)
 	if err != nil {
 		slog.Error("Scheduler failed to start; periodic checks disabled", "error", err)
 	}
@@ -255,6 +296,15 @@ func startProxyDHCP(errCh chan<- error) (*dhcp.Server, error) {
 		Port67:   port67,
 		Port4011: port4011,
 	}, errCh)
+}
+
+func cleanupJoinTokens(ctx context.Context, minter *kubeadm.Minter) {
+	deleted, err := minter.Cleanup(ctx)
+	if err != nil {
+		slog.Warn("Expired kubeadm token cleanup incomplete", "deleted", deleted, "error", err)
+		return
+	}
+	slog.Debug("Expired kubeadm token cleanup done", "deleted", deleted)
 }
 
 func configureLogging(debug bool) {

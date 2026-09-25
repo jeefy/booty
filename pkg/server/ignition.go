@@ -288,12 +288,6 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := renderUserIgnition(mac, host)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
-		return
-	}
-
 	features := builtinFeatures()
 	preview := isPreview(r)
 	part := ignitionPart(r.URL.Query().Get("part"))
@@ -302,6 +296,13 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		recordBoot(mac, ip, host)
 	} else {
 		slog.Debug("Ignition preview; not recording boot", "mac", mac, "ip", ip, "part", part)
+	}
+	joinString := resolveJoinString(r.Context(), w, mac, host, !preview)
+
+	user, err := renderUserIgnition(mac, host, joinString)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
+		return
 	}
 
 	if !features.Enabled() {
@@ -321,9 +322,9 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	case partUser:
 		writeRawJSON(w, user)
 	case partBuiltin:
-		writeJSON(w, http.StatusOK, builtinFragment(host, features))
+		writeJSON(w, http.StatusOK, builtinFragment(host, features, joinString))
 	case partMerged:
-		builtin, err := json.Marshal(builtinFragment(host, features))
+		builtin, err := json.Marshal(builtinFragment(host, features, joinString))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to encode builtin fragment")
 			return
@@ -349,7 +350,7 @@ func handleIgnitionUserRequest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	user, err := renderUserIgnition(mac, host)
+	user, err := renderUserIgnition(mac, host, resolveJoinString(r.Context(), w, mac, host, true))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
 		return
@@ -362,19 +363,22 @@ func handleIgnitionBuiltinRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	_, host, ok := identifyRegisteredClient(w, r)
+	mac, host, ok := identifyRegisteredClient(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, builtinFragment(host, builtinFeatures()))
+	writeJSON(w, http.StatusOK, builtinFragment(host, builtinFeatures(), resolveJoinString(r.Context(), w, mac, host, true)))
 }
 
-func builtinFragment(host *hardware.Host, features ign.Features) ignTypes.Config {
+// builtinFragment is the /ignition/builtin.json child: Booty's builtin
+// pieces followed by the selected --profile.
+func builtinFragment(host *hardware.Host, features ign.Features, joinString string) ignTypes.Config {
 	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
-	return ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, features)
+	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, features)
+	return appendProfile(cfg, host, joinString)
 }
 
 type mergeSource struct {
@@ -432,13 +436,13 @@ func mergePreview(builtin, user []byte) ([]byte, error) {
 	return json.MarshalIndent(v3_5.Merge(parent, child), "", "  ")
 }
 
-func renderUserIgnition(mac string, host *hardware.Host) ([]byte, error) {
+func renderUserIgnition(mac string, host *hardware.Host, joinString string) ([]byte, error) {
 	name, src, err := loadIgnitionTemplate(host)
 	if err != nil {
 		slog.Error("Reading ignition template failed", "mac", mac, "file", name, "error", err)
 		return nil, err
 	}
-	rendered, err := renderIgnition(name, src, host)
+	rendered, err := renderIgnition(name, src, host, joinString)
 	if err != nil {
 		slog.Error("Rendering ignition failed", "mac", mac, "file", name, "error", err)
 		return nil, err
@@ -446,7 +450,7 @@ func renderUserIgnition(mac string, host *hardware.Host) ([]byte, error) {
 	return rendered, nil
 }
 
-func renderIgnition(name, src string, host *hardware.Host) ([]byte, error) {
+func renderIgnition(name, src string, host *hardware.Host, joinString string) ([]byte, error) {
 	t, err := template.New(name).Parse(src)
 	if err != nil {
 		return nil, fmt.Errorf("parsing template: %w", err)
@@ -458,7 +462,7 @@ func renderIgnition(name, src string, host *hardware.Host) ([]byte, error) {
 		OSTreeImage string
 		Hostname    string
 	}{
-		JoinString:  viper.GetString(config.JoinString),
+		JoinString:  joinString,
 		ServerIP:    config.ClientRegistry(),
 		Hostname:    host.Hostname,
 		OSTreeImage: resolveOSTreeImage(host),

@@ -14,6 +14,7 @@ require (
 	github.com/pin/tftp/v3 v3.2.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -54,6 +55,5 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )

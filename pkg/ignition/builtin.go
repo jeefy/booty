@@ -83,7 +83,7 @@ func Fragment(in Input, f Features) types.Config {
 	cfg.Ignition.Version = types.MaxVersion.String()
 
 	if f[FeatureHostname] && in.Hostname != "" {
-		cfg.Storage.Files = append(cfg.Storage.Files, inlineFile("/etc/hostname", in.Hostname+"\n", 0o644))
+		cfg.Storage.Files = append(cfg.Storage.Files, InlineFile("/etc/hostname", in.Hostname+"\n", 0o644))
 	}
 	if f[FeatureSSHKeys] && len(in.SSHKeys) > 0 {
 		user := types.PasswdUser{Name: "core"}
@@ -93,34 +93,40 @@ func Fragment(in Input, f Features) types.Config {
 		cfg.Passwd.Users = append(cfg.Passwd.Users, user)
 	}
 	if f[FeatureBooted] {
-		cfg.Systemd.Units = append(cfg.Systemd.Units, unit("booty-booted.service", true, bootedUnit(in.Server)))
+		cfg.Systemd.Units = append(cfg.Systemd.Units, Unit("booty-booted.service", true, bootedUnit(in.Server)))
 	}
 	if f[FeatureUpdate] {
-		cfg.Storage.Files = append(cfg.Storage.Files, inlineFile(UpdateCheckScriptPath, UpdateCheckScript(in.Server), 0o755))
+		cfg.Storage.Files = append(cfg.Storage.Files, InlineFile(UpdateCheckScriptPath, UpdateCheckScript(in.Server), 0o755))
 		cfg.Systemd.Units = append(cfg.Systemd.Units,
-			unit("booty-update.service", false, updateService),
-			unit("booty-update.timer", true, updateTimer),
+			Unit("booty-update.service", false, updateService),
+			Unit("booty-update.timer", true, updateTimer),
 		)
 	}
 	return cfg
 }
 
-func inlineFile(path, contents string, mode int) types.File {
-	src := dataURL(contents)
+// InlineFile is a file whose contents are embedded as a data: URL, so the
+// node needs no extra HTTP fetch at run time.
+func InlineFile(path, contents string, mode int) types.File {
+	src := DataURL(contents)
 	return types.File{
 		Node:          types.Node{Path: path},
 		FileEmbedded1: types.FileEmbedded1{Contents: types.Resource{Source: &src}, Mode: &mode},
 	}
 }
 
-func dataURL(s string) string {
+// DataURL encodes s as a data: URL, percent-encoded when short and base64
+// otherwise.
+func DataURL(s string) string {
 	if len(s) < 128 {
 		return "data:," + url.PathEscape(s)
 	}
 	return "data:text/plain;charset=utf-8;base64," + base64.StdEncoding.EncodeToString([]byte(s))
 }
 
-func unit(name string, enabled bool, contents string) types.Unit {
+// Unit builds a systemd unit with inline contents; Enabled is only set when
+// true so disabled units leave the field untouched on merge.
+func Unit(name string, enabled bool, contents string) types.Unit {
 	u := types.Unit{Name: name, Contents: &contents}
 	if enabled {
 		u.Enabled = &enabled
