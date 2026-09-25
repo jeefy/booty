@@ -103,8 +103,8 @@ func referencedImages() []string {
 //
 // ggcr's in-process registry keeps manifests in memory only, so after a
 // restart the local catalog is empty even though the blobs are still on
-// disk. The startup pre-sync re-copies the manifests (blobs are skipped via
-// HEAD) which is what makes cached images resolvable again.
+// disk. ReplayStoredManifests restores the catalog from DataDir/registry/
+// manifests first; this pre-sync then only re-copies what changed upstream.
 func OSTreeImageSync() {
 	if !state.OSTreeSyncMu.TryLock() {
 		slog.Info("OSTree image sync already in progress, skipping")
@@ -148,16 +148,36 @@ func OSTreeImageSync() {
 		slog.Error("Could not compute referenced blobs; skipping blob GC", "error", err)
 		return
 	}
-	deleted, kept, err := deleteUnreferencedBlobs(filepath.Join(RegistryBlobDir(), "sha256"), referenced)
+	if !gcBlobs(filepath.Join(RegistryBlobDir(), "sha256"), referenced, viper.GetBool(config.OCIGCEmpty)) {
+		return
+	}
+	if pruned, err := PruneStoredManifests(ManifestStoreDir(), images); err != nil {
+		slog.Warn("Pruning stored manifests failed", "error", err)
+	} else if pruned > 0 {
+		slog.Info("Pruned stored manifests for unreferenced images", "pruned", pruned)
+	}
+}
+
+// gcBlobs is the pure GC step: an empty referenced set means every blob on
+// disk would go, which is only acceptable when the operator opted in via
+// --ociGCEmpty. It reports whether GC ran.
+func gcBlobs(dir string, referenced map[string]bool, allowEmpty bool) bool {
+	if len(referenced) == 0 && !allowEmpty {
+		slog.Warn("no ostree images referenced; refusing to wipe the blob cache (set --ociGCEmpty to allow)")
+		return false
+	}
+	deleted, kept, err := deleteUnreferencedBlobs(dir, referenced)
 	if err != nil {
 		slog.Error("Blob GC failed", "error", err)
 	}
-	slog.Info("OCI blob GC complete", "images", len(images), "referenced", len(referenced), "kept", kept, "deleted", deleted)
+	slog.Info("OCI blob GC complete", "referenced", len(referenced), "kept", kept, "deleted", deleted)
+	return true
 }
 
 // OSTreeImagePull mirrors src into the local registry with a single copy,
 // skipping when the local digest already matches upstream. It reports
-// whether a copy happened.
+// whether a copy happened. After a copy the manifest is persisted to disk so
+// it can be replayed into the in-memory registry on the next start.
 func OSTreeImagePull(ctx context.Context, src string, opts ...crane.Option) (bool, error) {
 	if _, err := name.ParseReference(src); err != nil {
 		return false, fmt.Errorf("parsing reference %q: %w", src, err)
@@ -179,6 +199,9 @@ func OSTreeImagePull(ctx context.Context, src string, opts ...crane.Option) (boo
 	copyOpts := append(RemoteOptions(ctx, opts...), crane.Insecure)
 	if err := crane.Copy(src, local, copyOpts...); err != nil {
 		return false, fmt.Errorf("copying %q to local registry: %w", src, err)
+	}
+	if err := StoreManifests(ctx, ManifestStoreDir(), config.LocalRegistry(), src); err != nil {
+		slog.Warn("Could not persist manifest for restart replay", "image", src, "error", err)
 	}
 	return true, nil
 }
