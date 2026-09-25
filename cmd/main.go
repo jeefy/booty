@@ -14,7 +14,7 @@ import (
 	booty "github.com/jeefy/booty"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
-	bootyHTTP "github.com/jeefy/booty/pkg/http"
+	"github.com/jeefy/booty/pkg/server"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/tftp"
 	"github.com/jeefy/booty/pkg/versions"
@@ -52,6 +52,7 @@ func init() {
 	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
 	flags.String(config.ServerIP, "127.0.0.1", "IP address that clients can connect to")
 	flags.Int(config.ServerHttpPort, 80, "Alternative HTTP port to use for clients")
+	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
 
 	if err := viper.BindPFlags(flags); err != nil {
@@ -118,7 +119,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("embedded web ui: %w", err)
 	}
-	httpServer, err := bootyHTTP.Start(bootyHTTP.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir)}, errCh)
+	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir)}, errCh)
 	if err != nil {
 		tftpServer.Shutdown(5 * time.Second)
 		return err
@@ -146,7 +147,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 
 	if scheduler != nil {
-		scheduler.Stop()
+		if err := scheduler.Shutdown(); err != nil {
+			slog.Warn("Scheduler shutdown failed", "error", err)
+		}
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
