@@ -53,6 +53,18 @@ const (
 	credMode     = 0o600
 	unitDir      = "/etc/systemd/system"
 	hostnamePath = "/etc/hostname"
+
+	// firstBootHook is the unit whose start pulls Booty's units in on the
+	// very first boot. Bluefin Server's k0s-first-boot.service (every boot,
+	// WantedBy=multi-user.target) ends with "systemctl daemon-reload" and
+	// "systemctl enable --now k0scontroller.service". The reload makes the
+	// units tmpfiles wrote visible, but multi-user.target's job graph was
+	// computed before tmpfiles ran, so the .wants/ symlinks alone leave them
+	// loaded and enabled yet never started until the next boot. The
+	// k0scontroller job is enqueued after the reload, so a Wants= drop-in on
+	// it starts them. From the second boot on the symlinks suffice and the
+	// drop-in is redundant (the units are already active).
+	firstBootHook = "k0scontroller.service"
 )
 
 // hostnameUnit applies /etc/hostname to the running kernel. PID 1 only
@@ -150,15 +162,16 @@ func Credentials(in Input, f ign.Features) map[string]string {
 // "L+" replaces an existing symlink.
 //
 // Units land in /etc/systemd/system with the .wants/ symlink systemctl
-// enable would create. PID 1 has read the unit tree before tmpfiles runs,
-// so on the first boot they are only picked up by the daemon-reload the
-// image's k0s-first-boot.service issues (observed before multi-user.target
-// is reached); every later boot loads them from /etc like any other unit.
+// enable would create, plus a Wants= drop-in on firstBootHook so they also
+// start on the first boot; every later boot loads them from /etc like any
+// other unit.
 func TmpfilesRules(in Input, f ign.Features) string {
 	var b strings.Builder
+	var units []string
 	if hasHostname(in, f) {
 		fmt.Fprintf(&b, "f+ %s 0644 root root - %s\n", hostnamePath, in.Hostname)
 		writeUnit(&b, HostnameUnitName, hostnameUnit, "sysinit.target")
+		units = append(units, HostnameUnitName)
 	}
 	if f[ign.FeatureSSHKeys] && len(in.SSHKeys) > 0 {
 		b.WriteString("d /home/core/.ssh 0700 core core -\n")
@@ -166,11 +179,18 @@ func TmpfilesRules(in Input, f ign.Features) string {
 	}
 	if f[ign.FeatureBooted] {
 		writeUnit(&b, ign.BootedUnitName, ign.BootedUnit(in.Server), "multi-user.target")
+		units = append(units, ign.BootedUnitName)
 	}
 	if f[ign.FeatureUpdate] {
 		writeUnit(&b, ign.UpdateServiceName, ign.UpdateService, "")
 		writeUnit(&b, ign.UpdateTimerName, ign.UpdateTimer, "timers.target")
 		writeFile(&b, ign.UpdateCheckScriptPath, "0755", "root", ign.UpdateCheckScript(in.Server))
+		units = append(units, ign.UpdateTimerName)
+	}
+	if len(units) > 0 {
+		dir := unitDir + "/" + firstBootHook + ".d"
+		fmt.Fprintf(&b, "d %s 0755 root root -\n", dir)
+		writeFile(&b, dir+"/booty.conf", "0644", "root", "[Unit]\nWants="+strings.Join(units, " ")+"\n")
 	}
 	return b.String()
 }

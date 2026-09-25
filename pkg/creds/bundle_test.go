@@ -101,7 +101,9 @@ func TestBundleIsDeterministicAndComplete(t *testing.T) {
 		"f~ /etc/systemd/system/booty-update.service 0644 root root - " + b64(ign.UpdateService) + "\n" +
 		"f~ /etc/systemd/system/booty-update.timer 0644 root root - " + b64(ign.UpdateTimer) + "\n" +
 		"L+ /etc/systemd/system/timers.target.wants/booty-update.timer - - - - /etc/systemd/system/booty-update.timer\n" +
-		"f~ /opt/booty/update-check 0755 root root - " + b64(ign.UpdateCheckScript(in.Server)) + "\n"
+		"f~ /opt/booty/update-check 0755 root root - " + b64(ign.UpdateCheckScript(in.Server)) + "\n" +
+		"d /etc/systemd/system/k0scontroller.service.d 0755 root root -\n" +
+		"f~ /etc/systemd/system/k0scontroller.service.d/booty.conf 0644 root root - " + b64("[Unit]\nWants=booty-hostname.service booty-booted.service booty-update.timer\n") + "\n"
 	if tf.body != want {
 		t.Fatalf("tmpfiles rules:\n%s\nwant:\n%s", tf.body, want)
 	}
@@ -128,11 +130,11 @@ func TestBundleHonoursFeatures(t *testing.T) {
 		noRules  []string
 	}{
 		{"hostname", in, []string{hostname, tmpfiles}, []string{"/etc/hostname", "booty-hostname.service"}, []string{"authorized_keys", "booty-booted", "booty-update"}},
-		{"sshkeys", in, []string{tmpfiles}, []string{"authorized_keys"}, []string{"/etc/hostname", "booty-hostname", "booty-booted", "booty-update"}},
+		{"sshkeys", in, []string{tmpfiles}, []string{"authorized_keys"}, []string{"/etc/hostname", "booty-hostname", "booty-booted", "booty-update", "k0scontroller"}},
 		{"sshkeys", Input{Hostname: "x"}, nil, nil, nil},
 		{"hostname", Input{Server: "s"}, nil, nil, nil},
 		{"none", in, nil, nil, nil},
-		{"booted", Input{Server: "s"}, []string{tmpfiles}, []string{"booty-booted.service"}, []string{"/etc/hostname", "authorized_keys", "booty-update"}},
+		{"booted", Input{Server: "s"}, []string{tmpfiles}, []string{"booty-booted.service", "k0scontroller.service.d/booty.conf"}, []string{"/etc/hostname", "authorized_keys", "booty-update"}},
 		{"update", Input{Server: "s"}, []string{tmpfiles}, []string{"booty-update.service", "booty-update.timer", "/opt/booty/update-check"}, []string{"/etc/hostname", "authorized_keys", "booty-booted"}},
 	}
 	for _, tc := range tests {
