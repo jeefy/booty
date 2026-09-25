@@ -71,17 +71,18 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Host registered", "mac", saved.MAC, "hostname", saved.Hostname, "os", saved.OS)
 
 	if saved.OSTreeImage != "" {
-		image := saved.OSTreeImage
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-			defer cancel()
-			if _, err := versions.OSTreeImagePull(ctx, image); err != nil {
-				slog.Error("Error pulling OCI image", "image", image, "error", err)
-			}
-		}()
+		go pullImage(saved.OSTreeImage)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "host": saved})
+}
+
+var pullImage = func(image string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if _, err := versions.OSTreeImagePull(ctx, image); err != nil {
+		slog.Error("Error pulling OCI image", "image", image, "error", err)
+	}
 }
 
 func handleUnregistrationRequest(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +119,45 @@ func handleDataRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, hardware.Snapshot())
+}
+
+// handleBootedRequest is the install-complete callback POSTed by the
+// installed system (see examples/*.but). It is the only place doInstall is
+// cleared when --doInstallClearOn=booted.
+func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	raw := r.URL.Query().Get("mac")
+	if raw == "" {
+		writeError(w, http.StatusBadRequest, "mac query parameter is required")
+		return
+	}
+	mac, err := hardware.NormalizeMAC(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ip := remoteIP(r)
+	host, err := hardware.Update(mac, func(h *hardware.Host) {
+		h.Booted = time.Now().UTC().Format(time.RFC3339)
+		if ip != "" {
+			h.IP = ip
+		}
+		h.DoInstall = false
+	})
+	switch {
+	case errors.Is(err, hardware.ErrNotFound):
+		writeError(w, http.StatusNotFound, "host not registered")
+		return
+	case err != nil:
+		slog.Error("Recording install completion failed", "mac", mac, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update host")
+		return
+	}
+	slog.Info("Host reported install complete", "mac", mac, "ip", ip)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "host": host})
 }
 
 func handleHostsRequest(w http.ResponseWriter, r *http.Request) {

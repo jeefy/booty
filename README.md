@@ -15,12 +15,15 @@ Flags:
       --coreOSChannel string         CoreOS channel to look for updates (default "stable")
       --dataDir string               Directory to store stateful data (default "/data")
       --debug                        Enable debug logging
+      --doInstallClearOn string      When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system) (default "ignition")
       --flatcarArchitecture string   Architecture to use for the Flatcar downloads (default "amd64")
       --flatcarChannel string        Flatcar channel to look for updates (default "stable")
       --flatcarVersion string        Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel
   -h, --help                         help for booty
       --httpPort int                 Port to use for the HTTP server (default 8080)
       --joinString string            The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
+      --ociGC                        Delete unreferenced OCI blobs from the local registry after a fully successful image sync (default true)
+      --ociGCEmpty                   Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image
       --serverHttpPort int           Alternative HTTP port to use for clients (default 80)
       --serverIP string              IP address that clients can connect to (default "127.0.0.1")
       --tftpBlockSize int            TFTP block size to negotiate with clients (default 1468)
@@ -54,7 +57,7 @@ Every flag can also be set through the environment as `BOOTY_<FLAGNAME>` (upper-
 1. DHCP hands the machine `next-server` = Booty and `filename` = `undionly.kpxe` (iPXE) or `pxelinux.0` (legacy PXE).
 2. iPXE fetches `booty.ipxe` over TFTP. That file is only a stub that chains to `http://<serverIP>/booty.ipxe?mac=${mac}` -- iPXE fills in its own MAC, so identification does not depend on ARP working across routers.
 3. `/booty.ipxe` looks the MAC up in the hardware database and renders the boot script for that host's OS (`flatcar`, `coreos` or `ublue`). Unregistered hosts get an interactive menu (boot from disk / reboot) and show up under "Unknown hosts" in the UI so you can register them with one click.
-4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`; Booty renders the host's Butane template (variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`) and translates it to Ignition, records `booted`/`ip` for the host and clears a pending `doInstall`. Add `&preview=1` (the UI does) to look at a rendered config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
+4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`; Booty renders the host's Butane template (variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`) and translates it to Ignition, records `booted`/`ip` for the host and, by default, clears a pending `doInstall`. With `--doInstallClearOn=booted` the flag instead stays set until the installed system calls `POST http://<serverIP>/booted?mac=<mac>` (see the `booty-booted.service` unit in [examples/ucore.but](examples/ucore.but)), so a failed install keeps the host in install mode. Add `&preview=1` (the UI does) to look at a rendered config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
 5. Kernel/initrd/rootfs are served from `/data/`. Flatcar artifacts live in `data/flatcar/<version>/` behind symlinks at the old paths, so the kernel and initrd always come from the same release and updates are atomic.
 
 Legacy PXE clients ask for `pxelinux.cfg/01-<mac>` before `pxelinux.cfg/default`; Booty uses that MAC the same way.

@@ -37,6 +37,7 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.HttpPort, 18099)
 	viper.Set(config.CoreOSChannel, "stable")
 	viper.Set(config.CoreOSArchitecture, "x86_64")
+	viper.Set(config.DoInstallClearOn, config.ClearOnIgnition)
 
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -63,12 +64,13 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 		t.Fatalf("hardware.Load: %v", err)
 	}
 
-	origARP, origDigest := arpLookup, digestLookup
+	origARP, origDigest, origPull := arpLookup, digestLookup, pullImage
 	arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
 		return net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0xaa, 0xaa}, nil
 	}
 	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
-	t.Cleanup(func() { arpLookup, digestLookup = origARP, origDigest })
+	pullImage = func(string) {}
+	t.Cleanup(func() { arpLookup, digestLookup, pullImage = origARP, origDigest, origPull })
 
 	srv := httptest.NewServer(NewHandler(Options{WebDir: dir}))
 	t.Cleanup(srv.Close)
@@ -290,6 +292,61 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	if _, ok := hardware.Snapshot().UnknownHosts["02:00:00:00:aa:aa"]; !ok {
 		t.Fatal("ARP-identified unknown host should be observed")
 	}
+}
+
+func TestBootedEndpointValidation(t *testing.T) {
+	srv, _ := newTestServer(t)
+	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/booted?mac=aa:bb:cc:dd:ee:01", ""), http.StatusMethodNotAllowed)
+	assertJSONError(t, do(t, http.MethodPost, srv.URL+"/booted", ""), http.StatusBadRequest)
+	assertJSONError(t, do(t, http.MethodPost, srv.URL+"/booted?mac=not-a-mac", ""), http.StatusBadRequest)
+	assertJSONError(t, do(t, http.MethodPost, srv.URL+"/booted?mac=aa:bb:cc:dd:ee:01", ""), http.StatusNotFound)
+	if len(hardware.Snapshot().UnknownHosts) != 0 {
+		t.Fatal("/booted must not create unknownHosts entries")
+	}
+}
+
+func TestDoInstallClearOnBooted(t *testing.T) {
+	srv, _ := newTestServer(t)
+	viper.Set(config.DoInstallClearOn, config.ClearOnBooted)
+
+	r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"aa:bb:cc:dd:ee:02","hostname":"n2","os":"ublue","doInstall":true}`)
+	if r.status != 200 {
+		t.Fatalf("register: %+v", r)
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:02", "")
+	if r.status != 200 {
+		t.Fatalf("ignition: %+v", r)
+	}
+	h, _ := hardware.Get("aa:bb:cc:dd:ee:02")
+	if !h.DoInstall {
+		t.Fatal("ignition fetch must leave doInstall set when clearing on booted")
+	}
+	if h.Booted == "" || h.IP != "127.0.0.1" {
+		t.Fatalf("ignition fetch must still stamp booted/ip, got %+v", h)
+	}
+	firstBoot := h.Booted
+
+	r = do(t, http.MethodPost, srv.URL+"/booted?mac=AA-BB-CC-DD-EE-02", "")
+	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") {
+		t.Fatalf("booted: %+v", r)
+	}
+	var resp struct {
+		Status string        `json:"status"`
+		Host   hardware.Host `json:"host"`
+	}
+	if err := json.Unmarshal([]byte(r.body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "ok" || resp.Host.MAC != "aa:bb:cc:dd:ee:02" || resp.Host.DoInstall {
+		t.Fatalf("unexpected booted response %+v", resp)
+	}
+	h, _ = hardware.Get("aa:bb:cc:dd:ee:02")
+	if h.DoInstall || h.Booted == "" || h.Booted < firstBoot || h.IP != "127.0.0.1" {
+		t.Fatalf("POST /booted must clear doInstall and stamp booted/ip, got %+v", h)
+	}
+
+	assertJSONError(t, do(t, http.MethodPost, srv.URL+"/booted?mac=aa:bb:cc:dd:ee:99", ""), http.StatusNotFound)
 }
 
 func TestIgnitionBadTemplateIs500(t *testing.T) {
