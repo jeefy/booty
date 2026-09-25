@@ -99,6 +99,7 @@ func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch str
 			hashAlgo = crypto.SHA256
 		}
 		if err := config.Download(ctx, config.DownloadClient, base+"/"+file, config.DataPath(file), hashAlgo, sha); err != nil {
+			removeOldCoreOSArtifacts(version, arch)
 			return fmt.Errorf("%s: %w", file, err)
 		}
 	}
