@@ -10,15 +10,52 @@ const RouterLinkStub = {
 
 type Handlers = Record<string, (init?: RequestInit) => Response>
 
+const DIGEST = 'sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210'
+
+const fleetHosts = {
+  'aa:bb:cc:dd:ee:01': {
+    mac: 'aa:bb:cc:dd:ee:01',
+    hostname: 'alpha',
+    ip: '10.0.0.1',
+    booted: '2026-09-24T10:00:00Z',
+    os: 'flatcar',
+    running: '3760.2.0',
+    lastCheck: '2026-09-24T11:30:00Z',
+    rebootPending: true
+  },
+  'aa:bb:cc:dd:ee:02': {
+    mac: 'aa:bb:cc:dd:ee:02',
+    hostname: 'bravo',
+    ip: '10.0.0.2',
+    booted: '',
+    os: 'ublue',
+    ostreeImage: 'ghcr.io/ublue-os/bazzite:stable',
+    running: `ghcr.io/ublue-os/bazzite@${DIGEST}`,
+    lastCheck: '2026-09-24T11:45:00Z',
+    rebootPending: true
+  },
+  'aa:bb:cc:dd:ee:03': {
+    mac: 'aa:bb:cc:dd:ee:03',
+    hostname: 'charlie',
+    ip: '10.0.0.3',
+    booted: '2026-09-24T10:00:00Z',
+    os: 'coreos',
+    running: '40.20240101.3.0',
+    lastCheck: '2026-09-24T11:50:00Z',
+    rebootPending: false
+  }
+}
+
+const baseInfo = {
+  flatcar: { version: '3815.2.0', pinnedVersion: '' },
+  coreos: { version: '40.20240101.3.0' },
+  booty: { version: 'v0.9.0', timestamp: '2026-09-01T00:00:00Z' }
+}
+
 function mountHome(overrides: Handlers = {}) {
   const handlers: Handlers = {
     '/booty.json': () => jsonResponse({ hosts: { a: {} }, unknownHosts: {} }),
-    '/info': () =>
-      jsonResponse({
-        flatcar: { version: '3815.2.0', pinnedVersion: '' },
-        coreos: { version: '40.20240101.3.0' },
-        booty: { version: 'v0.9.0', timestamp: '2026-09-01T00:00:00Z' }
-      }),
+    '/info': () => jsonResponse(baseInfo),
     '/flatcar/pin': (init) => {
       if (init?.method === 'POST') {
         const { version } = requestBody<{ version: string }>(init)
@@ -103,6 +140,77 @@ describe('HomeView', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="error-message"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('v1')
+  })
+
+  it('renders the fleet card from /info.fleet with the pending-reboot list and highlight', async () => {
+    const { wrapper } = mountHome({
+      '/booty.json': () => jsonResponse({ hosts: fleetHosts, unknownHosts: {} }),
+      '/info': () => jsonResponse({ ...baseInfo, fleet: { hosts: 3, pendingReboots: 2 } })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="fleet-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.classes()).toContain('fleet-panel--alert')
+    expect(card.find('[data-testid="fleet-hosts"]').text()).toBe('3')
+    const pending = card.find('[data-testid="fleet-pending"]')
+    expect(pending.text()).toBe('2')
+    expect(pending.classes()).toContain('fleet-pending')
+    expect(card.text()).toContain('Reported by /info')
+
+    const rows = card.findAll('[data-testid="fleet-list"] tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.text()).toContain('alpha')
+    expect(rows[0]!.text()).toContain('3760.2.0')
+    expect(rows[0]!.text()).toContain('3815.2.0')
+    expect(rows[1]!.text()).toContain('bravo')
+    expect(rows[1]!.text()).toContain('ghcr.io/ublue-os/bazzite@fedcba987654')
+    expect(rows[1]!.text()).toContain('ghcr.io/ublue-os/bazzite:stable')
+    expect(card.text()).not.toContain('charlie')
+  })
+
+  it('derives fleet counts from /booty.json when /info has no fleet block', async () => {
+    const { wrapper } = mountHome({
+      '/booty.json': () => jsonResponse({ hosts: fleetHosts, unknownHosts: {} })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="fleet-card"]')
+    expect(card.find('[data-testid="fleet-hosts"]').text()).toBe('3')
+    expect(card.find('[data-testid="fleet-pending"]').text()).toBe('2')
+    expect(card.classes()).toContain('fleet-panel--alert')
+    expect(card.text()).toContain('Derived from host records')
+    expect(card.findAll('[data-testid="fleet-list"] tbody tr')).toHaveLength(2)
+  })
+
+  it('does not highlight the fleet card when nothing is pending', async () => {
+    const { wrapper } = mountHome({
+      '/info': () => jsonResponse({ ...baseInfo, fleet: { hosts: 1, pendingReboots: 0 } })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="fleet-card"]')
+    expect(card.classes()).not.toContain('fleet-panel--alert')
+    expect(card.find('[data-testid="fleet-pending"]').text()).toBe('0')
+    expect(card.find('[data-testid="fleet-pending"]').classes()).not.toContain('fleet-pending')
+    expect(card.find('[data-testid="fleet-list"]').exists()).toBe(false)
+    expect(card.find('[data-testid="fleet-empty"]').exists()).toBe(true)
+  })
+
+  it('refreshes the fleet card on the 30s poll', async () => {
+    const { wrapper, handlers } = mountHome({
+      '/info': () => jsonResponse({ ...baseInfo, fleet: { hosts: 1, pendingReboots: 0 } })
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="fleet-pending"]').text()).toBe('0')
+
+    handlers['/booty.json'] = () => jsonResponse({ hosts: fleetHosts, unknownHosts: {} })
+    handlers['/info'] = () => jsonResponse({ ...baseInfo, fleet: { hosts: 3, pendingReboots: 2 } })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="fleet-pending"]').text()).toBe('2')
+    expect(wrapper.findAll('[data-testid="fleet-list"] tbody tr')).toHaveLength(2)
   })
 
   it('polls every 30s and stops after unmount', async () => {

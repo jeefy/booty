@@ -13,6 +13,15 @@ export interface Host {
   os?: HostOS | ''
   ostreeImage?: string
   doInstall?: boolean
+  /**
+   * Version the host last reported, or `image@digest` for ostree hosts.
+   * "" if the host has never checked in.
+   */
+  running: string
+  /** RFC3339 timestamp of the last check-in, or "" if never. */
+  lastCheck: string
+  /** True when the server has a newer version/image than the host is running. */
+  rebootPending: boolean
 }
 
 export interface UnknownHost {
@@ -28,10 +37,16 @@ export interface BootyData {
   unknownHosts: Record<string, UnknownHost>
 }
 
+export interface FleetInfo {
+  hosts?: number
+  pendingReboots?: number
+}
+
 export interface Info {
   flatcar?: { version?: string; pinnedVersion?: string }
   coreos?: { version?: string }
   booty?: { version?: string; timestamp?: string }
+  fleet?: FleetInfo
 }
 
 export interface PinState {
@@ -61,9 +76,30 @@ export interface StatusResponse {
   status: string
 }
 
-export function normalizeBootyData(raw: Partial<BootyData> | null | undefined): BootyData {
+export function normalizeHost(raw: Partial<Host>, fallbackMac = ''): Host {
   return {
-    hosts: raw?.hosts ?? {},
+    ...raw,
+    mac: raw.mac ?? fallbackMac,
+    hostname: raw.hostname ?? '',
+    ip: raw.ip ?? '',
+    booted: raw.booted ?? '',
+    running: raw.running ?? '',
+    lastCheck: raw.lastCheck ?? '',
+    rebootPending: raw.rebootPending ?? false
+  }
+}
+
+export type RawBootyData = Partial<Omit<BootyData, 'hosts'>> & {
+  hosts?: Record<string, Partial<Host>>
+}
+
+export function normalizeBootyData(raw: RawBootyData | null | undefined): BootyData {
+  const hosts: Record<string, Host> = {}
+  for (const [mac, host] of Object.entries(raw?.hosts ?? {})) {
+    hosts[mac] = normalizeHost(host ?? {}, mac)
+  }
+  return {
+    hosts,
     unknownHosts: raw?.unknownHosts ?? {}
   }
 }
