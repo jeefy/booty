@@ -25,6 +25,9 @@ Flags:
       --joinString string              The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
       --ociGC                          Delete unreferenced OCI blobs from the local registry after a fully successful image sync (default true)
       --ociGCEmpty                     Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image
+      --proxyDHCP                      EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename
+      --proxyDHCPListen string         IP or interface name the ProxyDHCP server binds to (default all interfaces)
+      --proxyDHCPRelay                 Answer relayed PXE requests (giaddr set) on the ProxyDHCP server
       --serverHttpPort int             HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort
       --serverIP string                IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)
       --sshAuthorizedKeys strings      SSH public key added to the 'core' user by the sshkeys builtin (repeatable)
@@ -145,6 +148,32 @@ Every Booty deployment used to hand-write the same Butane boilerplate: `/etc/hos
 
 Each check is recorded on the host (`running`, `lastCheck`, `rebootPending`, visible in `/booty.json`, `/hosts` and the UI), rewritten at most once a minute when nothing changed. `GET /info` gains `"fleet":{"hosts":N,"pendingReboots":N}` so you can see at a glance how many nodes are waiting on kured.
 
+## Zero-touch DHCP (ProxyDHCP)
+
+**EXPERIMENTAL -- not yet exercised in production.**
+
+Normally step 1 above needs the network's DHCP server to hand out `next-server` and `filename`. With `--proxyDHCP` Booty instead acts as a *ProxyDHCP* server (PXE 2.1 spec section 2.2, the model used by pixiecore and netboot.xyz): the existing DHCP server keeps assigning addresses untouched, and Booty only adds the boot information.
+
+1. The PXE firmware broadcasts a DHCPDISCOVER with option 60 `PXEClient` and option 93 (client architecture, RFC 4578).
+2. Booty answers on UDP 67 with a DHCPOFFER that offers **no address** (`yiaddr` 0.0.0.0) but carries `siaddr` = `--serverIP` and PXE vendor options (option 43: discovery control, a boot-server list containing only Booty, a one-entry "Booty" menu with a zero-timeout prompt). The real DHCP server's OFFER supplies the address.
+3. After it has its address the client sends a DHCPREQUEST to Booty on UDP **4011**; Booty replies with a DHCPACK naming the boot file (in both the `file` field and option 67) and option 66 = `--serverIP`.
+4. The client fetches that file over TFTP from Booty and the normal flow continues.
+
+Booty only answers packets that carry `PXEClient` in option 60 *and* an architecture in option 93; everything else (ordinary DHCP clients, Booty's own replies, requests whose server identifier names another server) is ignored. Relayed requests (`giaddr` set) are ignored unless `--proxyDHCPRelay` is given -- relayed PXE is rare and easy to get wrong, so it is opt-in. A DHCP server that *also* sets `next-server`/`filename` can coexist with ProxyDHCP: both answer and the client uses whichever boot information it picks, which is fine as long as both point at Booty.
+
+| Option 93 architecture | Boot file sent |
+|---|---|
+| 0 x86 BIOS | `undionly.kpxe` |
+| 6 x86 UEFI (32-bit) | `ipxe.efi` (Booty only ships x86-64; logged as a warning) |
+| 7, 9 x86-64 UEFI | `ipxe.efi` |
+| 11 ARM64 UEFI | `ipxe-arm64.efi` (not shipped -- logged as a warning, the boot will fail) |
+| anything else | `undionly.kpxe` (logged as a warning) |
+| user class `iPXE` (any arch) | `booty.ipxe` |
+
+The last row is iPXE's own second-stage DHCP: once `undionly.kpxe`/`ipxe.efi` is running it repeats DHCP with user class `iPXE`. Handing it another iPXE binary would loop, so Booty gives it the `booty.ipxe` stub instead. iPXE resolves a bare filename against `tftp://${next-server}/`, and `${next-server}` falls back to the `siaddr` of the ProxyDHCP reply when the real DHCP server's `siaddr` is empty (iPXE keeps ProxyDHCP settings in a lower-priority `proxydhcp` settings block that is consulted whenever the primary DHCP settings lack a value), so this resolves to Booty. If your iPXE build has an embedded script the filename is ignored and the embedded script runs instead.
+
+Ports 67 and 4011 are privileged, so the container needs `--network=host`/`hostNetwork: true` and `CAP_NET_BIND_SERVICE` (already granted in the examples above). `--proxyDHCPListen` takes an IPv4 address or an interface name; prefer the interface name on multi-homed hosts, because a socket bound to a unicast address does not receive the broadcast DHCPDISCOVERs on Linux. Only iPXE's `ipxe.efi` needs to be present in `--dataDir` for UEFI clients; `undionly.kpxe` and `booty.ipxe` are built in. For tests without root the two ports can be overridden with the environment variable `BOOTY_PROXYDHCPPORTS=1067,5011` (test-only, not a flag).
+
 ## Trust model
 
 Booty is meant to run on a network you control. It has **no authentication**: anyone who can reach the HTTP port can register hosts, read any registered host's rendered Ignition (including a `--joinString` kubeadm token and the builtin SSH keys) via `/ignition.json?mac=` or `/ignition/user.json?mac=`, and download boot artifacts. This is inherent to PXE -- the booting machine has no credentials yet -- so treat the boot VLAN like you treat your DHCP server.
@@ -153,7 +182,7 @@ What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` 
 
 ## Running as root / capabilities
 
-Binding UDP 69 needs `CAP_NET_BIND_SERVICE`; the ARP fallback used when `/booty.ipxe` or `/ignition.json` is called without `?mac=` needs `CAP_NET_RAW`. The container image runs as root for that reason -- drop everything else:
+Binding UDP 69 needs `CAP_NET_BIND_SERVICE` (as do UDP 67 and 4011 for `--proxyDHCP`); the ARP fallback used when a client does not supply its MAC needs `CAP_NET_RAW`. The container image runs as root for that reason -- drop everything else:
 
 ```
 docker run --rm --network=host \
