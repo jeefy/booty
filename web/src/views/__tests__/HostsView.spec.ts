@@ -14,6 +14,7 @@ const hostA: Host = {
   ignitionFile: 'alpha.yaml',
   os: 'flatcar',
   ostreeImage: '',
+  installDisk: '',
   doInstall: false,
   running: '3815.2.0',
   lastCheck: '2026-09-24T11:30:00Z',
@@ -26,10 +27,11 @@ const hostB: Host = {
   ip: '10.0.0.2',
   booted: '',
   ignitionFile: '',
-  os: 'ublue',
-  ostreeImage: 'ghcr.io/ublue-os/bazzite:stable',
+  os: 'bluefin',
+  ostreeImage: 'ghcr.io/projectbluefin/bluefin:stable',
+  installDisk: '/dev/sda',
   doInstall: true,
-  running: `ghcr.io/ublue-os/bazzite@${DIGEST}`,
+  running: `ghcr.io/projectbluefin/bluefin@${DIGEST}`,
   lastCheck: '2026-09-24T11:45:00Z',
   rebootPending: true
 }
@@ -40,6 +42,7 @@ const hostC: Host = {
   ip: '',
   booted: '',
   os: 'coreos',
+  installDisk: '',
   running: '',
   lastCheck: '',
   rebootPending: false
@@ -138,8 +141,8 @@ describe('HostsView', () => {
 
     const cell = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-running"]')
     const [image, digest] = cell.findAll('.mono')
-    expect(image!.text()).toBe('ghcr.io/ublue-os/bazzite')
-    expect(image!.attributes('title')).toBe(`ghcr.io/ublue-os/bazzite@${DIGEST}`)
+    expect(image!.text()).toBe('ghcr.io/projectbluefin/bluefin')
+    expect(image!.attributes('title')).toBe(`ghcr.io/projectbluefin/bluefin@${DIGEST}`)
     expect(digest!.text()).toBe('@0123456789ab')
     expect(digest!.attributes('title')).toBe(DIGEST)
     expect(cell.text()).not.toContain(DIGEST)
@@ -177,8 +180,49 @@ describe('HostsView', () => {
 
     const bravo = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-config"]')
     expect(bravo.text()).toContain('default ignition')
-    expect(bravo.text()).toContain('ghcr.io/ublue-os/bazzite:stable')
+    expect(bravo.text()).toContain('ghcr.io/projectbluefin/bluefin:stable')
     expect(bravo.text()).toContain('Install')
+  })
+
+  it('shows the install disk in the host cell only when one is set', async () => {
+    const { wrapper } = mountWithData()
+    await flushPromises()
+
+    const alpha = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-config"]')
+    expect(alpha.find('[data-testid="host-install-disk"]').exists()).toBe(false)
+    expect(alpha.text()).not.toContain('disk')
+
+    const bravo = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-config"]')
+    const disk = bravo.find('[data-testid="host-install-disk"]')
+    expect(disk.exists()).toBe(true)
+    expect(disk.text()).toBe('disk /dev/sda')
+    expect(disk.classes()).toContain('mono')
+    expect(disk.attributes('title')).toContain('/dev/sda')
+    expect(wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"]').text()).toContain('bluefin')
+  })
+
+  it('sends installDisk to /register when editing a bluefin host', async () => {
+    const { wrapper, handlers, calls } = mountWithData()
+    handlers['/register'] = (init) => jsonResponse({ status: 'ok', host: requestBody(init) })
+    await flushPromises()
+
+    await wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-action="edit"]').trigger('click')
+    const editRow = wrapper.find('tr[data-mac-edit="aa:bb:cc:dd:ee:02"]')
+    const disk = editRow.find('input[id^="disk-"]')
+    expect((disk.element as HTMLInputElement).value).toBe('/dev/sda')
+    await disk.setValue('/dev/nvme0n1')
+    await editRow.find('form').trigger('submit')
+    await flushPromises()
+
+    const register = calls.find((c) => c.url === '/register')
+    expect(requestBody<Host>(register!.init)).toMatchObject({
+      mac: 'aa:bb:cc:dd:ee:02',
+      os: 'bluefin',
+      installDisk: '/dev/nvme0n1'
+    })
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-install-disk"]').text()
+    ).toBe('disk /dev/nvme0n1')
   })
 
   it('treats hosts from an old server without fleet fields as Unknown', async () => {

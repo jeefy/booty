@@ -61,6 +61,19 @@ const (
 	Timestamp           = "timestamp"
 	AutoRegister        = "autoRegister"
 	HostnameTemplate    = "hostnameTemplate"
+	BluefinRepo         = "bluefinRepo"
+	BluefinVersion      = "bluefinVersion"
+	GithubToken         = "githubToken"
+	InstallMinDuration  = "installMinDuration"
+)
+
+// Bluefin Server defaults: the GitHub repository whose installer-v* releases
+// carry the PXE kernel, initrd and DDI, and how long after serving the
+// install stanza a re-PXE counts as "the install finished" for
+// --doInstallClearOn=next-boot.
+const (
+	DefaultBluefinRepo        = "projectbluefin/server"
+	DefaultInstallMinDuration = 3 * time.Minute
 )
 
 // DefaultHostnameTemplate names auto-registered hosts after the last three
@@ -91,19 +104,22 @@ const DefaultIgnitionFile = "config/ignition.yaml"
 const DefaultBuiltin = "hostname,update,booted,sshkeys"
 
 // Values for DoInstallClearOn: clear a host's pending doInstall when it
-// fetches its Ignition config, or only once it POSTs /booted.
+// fetches its Ignition config, only once it POSTs /booted, or (Bluefin) on
+// the first /booty.ipxe fetch at least InstallMinDuration after the install
+// stanza was served.
 const (
 	ClearOnIgnition = "ignition"
 	ClearOnBooted   = "booted"
+	ClearOnNextBoot = "next-boot"
 )
 
-// ValidateDoInstallClearOn rejects anything but the two known modes.
+// ValidateDoInstallClearOn rejects anything but the known modes.
 func ValidateDoInstallClearOn(v string) error {
 	switch v {
-	case ClearOnIgnition, ClearOnBooted:
+	case ClearOnIgnition, ClearOnBooted, ClearOnNextBoot:
 		return nil
 	}
-	return fmt.Errorf("invalid --%s %q: must be %q or %q", DoInstallClearOn, v, ClearOnIgnition, ClearOnBooted)
+	return fmt.Errorf("invalid --%s %q: must be %q, %q or %q", DoInstallClearOn, v, ClearOnIgnition, ClearOnBooted, ClearOnNextBoot)
 }
 
 // Values for KubeadmJoin: hand out --joinString/--joinStringFile as-is, or
@@ -203,6 +219,10 @@ func LoadConfig() {
 	viper.SetDefault(K8sVersion, DefaultK8sVersion)
 	viper.SetDefault(CNIVersion, DefaultCNIVersion)
 	viper.SetDefault(KubeletUnitsURL, DefaultKubeletUnitsURL)
+	viper.SetDefault(BluefinRepo, DefaultBluefinRepo)
+	viper.SetDefault(BluefinVersion, "")
+	viper.SetDefault(GithubToken, "")
+	viper.SetDefault(InstallMinDuration, DefaultInstallMinDuration)
 }
 
 func bindEnv(key, env string) {
@@ -255,6 +275,19 @@ func DataPath(elem ...string) string {
 // pin set via the Web UI across restarts.
 func FlatcarPinPath() string {
 	return DataPath(FlatcarPinFile)
+}
+
+// Bluefin releases live in DataDir/bluefin/<version>/ with a relative
+// "current" symlink to the served one; manifest.json inside names the files.
+const (
+	BluefinDir          = "bluefin"
+	BluefinCurrentLink  = "current"
+	BluefinManifestFile = "manifest.json"
+)
+
+// BluefinCurrentManifestPath is DataDir/bluefin/current/manifest.json.
+func BluefinCurrentManifestPath() string {
+	return DataPath(BluefinDir, BluefinCurrentLink, BluefinManifestFile)
 }
 
 // EffectiveServerHttpPort is the port booting clients use to reach Booty:

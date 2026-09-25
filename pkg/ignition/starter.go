@@ -18,7 +18,7 @@ const StarterButane = `# Booty starter Butane template (rendered to Ignition for
 #   {{ .Hostname }}     hostname from the hardware database
 #   {{ .ServerIP }}     Booty's client-facing address, e.g. 192.168.1.10:8080
 #   {{ .JoinString }}   --joinString (kubeadm join ...)
-#   {{ .OSTreeImage }}  the host's ostreeImage (uBlue/CoreOS rebase)
+#   {{ .OSTreeImage }}  the host's ostreeImage (CoreOS / Universal Blue rebase)
 #
 # Butane reference: https://coreos.github.io/butane/config-fcos-v1_5/
 variant: fcos

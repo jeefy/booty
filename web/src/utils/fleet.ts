@@ -54,11 +54,18 @@ export function targetVersion(host: Host, info: Info): string {
   switch (host.os) {
     case 'coreos':
       return info.coreos?.version || ''
-    case 'ublue':
-      return host.ostreeImage || ''
+    case 'bluefin':
+      return bluefinVersion(info)
     default:
       return info.flatcar?.pinnedVersion || info.flatcar?.version || ''
   }
+}
+
+const BLUEFIN_NOT_DOWNLOADED = '0.0.0'
+
+export function bluefinVersion(info: Info): string {
+  const version = info.bluefin?.version || ''
+  return version === BLUEFIN_NOT_DOWNLOADED ? '' : version
 }
 
 export interface FleetSummary {

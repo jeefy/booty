@@ -355,7 +355,7 @@ func TestUpdateCheckOSTree(t *testing.T) {
 	srv, _ := newTestServer(t)
 	state.SetCurrentCoreOSVersion("")
 	t.Cleanup(func() { state.SetCurrentCoreOSVersion("") })
-	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:01","hostname":"n1","os":"ublue","ostreeImage":"ghcr.io/ublue-os/bazzite:stable"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:01","hostname":"n1","os":"coreos","ostreeImage":"ghcr.io/ublue-os/bazzite:stable"}`)
 	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:02","hostname":"n2","os":"coreos"}`)
 
 	get := func(query string) updateCheckResponse {

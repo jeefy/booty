@@ -103,6 +103,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/info", handleInfoRequest)
 	mux.HandleFunc("/flatcar/pin", handleFlatcarPinRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
+	mux.HandleFunc(credsPathPrefix, handleCredsRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/boot/", http.StripPrefix("/boot/", bootHandler{files: o.BootFiles}))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
@@ -142,7 +143,7 @@ func Start(o Options, errCh chan<- error) (*http.Server, error) {
 }
 
 func logRequest(handler http.Handler) http.Handler {
-	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/v2/", "/update-check"}
+	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/creds/", "/v2/", "/update-check"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		level := slog.LevelInfo
 		for _, prefix := range quiet {

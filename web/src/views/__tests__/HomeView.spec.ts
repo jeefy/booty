@@ -28,9 +28,9 @@ const fleetHosts = {
     hostname: 'bravo',
     ip: '10.0.0.2',
     booted: '',
-    os: 'ublue',
-    ostreeImage: 'ghcr.io/ublue-os/bazzite:stable',
-    running: `ghcr.io/ublue-os/bazzite@${DIGEST}`,
+    os: 'bluefin',
+    ostreeImage: 'ghcr.io/projectbluefin/bluefin:stable',
+    running: `ghcr.io/projectbluefin/bluefin@${DIGEST}`,
     lastCheck: '2026-09-24T11:45:00Z',
     rebootPending: true
   },
@@ -49,6 +49,7 @@ const fleetHosts = {
 const baseInfo = {
   flatcar: { version: '3815.2.0', pinnedVersion: '' },
   coreos: { version: '40.20240101.3.0' },
+  bluefin: { version: '42.20260901', pinnedVersion: '' },
   booty: { version: 'v0.9.0', timestamp: '2026-09-01T00:00:00Z' }
 }
 
@@ -93,9 +94,45 @@ describe('HomeView', () => {
     const text = wrapper.text()
     expect(text).toContain('3815.2.0')
     expect(text).toContain('40.20240101.3.0')
+    expect(text).toContain('42.20260901')
     expect(text).toContain('v0.9.0')
     expect(text).toContain('Tracking latest')
     expect(text).toContain('No version pinned')
+  })
+
+  it('renders the Bluefin stat as tracking latest, pinned, or not downloaded', async () => {
+    const { wrapper, handlers } = mountHome()
+    await flushPromises()
+    let stat = wrapper.find('[data-testid="bluefin-stat"]')
+    expect(stat.find('.stat-value').text()).toBe('42.20260901')
+    expect(stat.find('.stat-value').attributes('title')).toBeUndefined()
+    expect(stat.text()).toContain('Tracking latest')
+
+    handlers['/info'] = () =>
+      jsonResponse({ ...baseInfo, bluefin: { version: '42.20260901', pinnedVersion: '42.20260901' } })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+    stat = wrapper.find('[data-testid="bluefin-stat"]')
+    expect(stat.text()).toContain('Pinned')
+    expect(stat.text()).toContain('42.20260901')
+
+    handlers['/info'] = () => jsonResponse({ ...baseInfo, bluefin: { version: '0.0.0', pinnedVersion: '' } })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+    stat = wrapper.find('[data-testid="bluefin-stat"]')
+    expect(stat.find('.stat-value').text()).toBe('—')
+    expect(stat.find('.stat-value').attributes('title')).toBe('not downloaded yet')
+    expect(stat.text()).toContain('Not downloaded yet')
+  })
+
+  it('renders a dash for Bluefin on servers without a bluefin block', async () => {
+    const { flatcar, coreos, booty } = baseInfo
+    const { wrapper } = mountHome({ '/info': () => jsonResponse({ flatcar, coreos, booty }) })
+    await flushPromises()
+    const stat = wrapper.find('[data-testid="bluefin-stat"]')
+    expect(stat.exists()).toBe(true)
+    expect(stat.find('.stat-value').text()).toBe('—')
+    expect(stat.find('.stat-value').attributes('title')).toBe('not downloaded yet')
   })
 
   it('shows the server error when pinning an invalid version and keeps the input', async () => {
@@ -164,8 +201,8 @@ describe('HomeView', () => {
     expect(rows[0]!.text()).toContain('3760.2.0')
     expect(rows[0]!.text()).toContain('3815.2.0')
     expect(rows[1]!.text()).toContain('bravo')
-    expect(rows[1]!.text()).toContain('ghcr.io/ublue-os/bazzite@fedcba987654')
-    expect(rows[1]!.text()).toContain('ghcr.io/ublue-os/bazzite:stable')
+    expect(rows[1]!.text()).toContain('ghcr.io/projectbluefin/bluefin@fedcba987654')
+    expect(rows[1]!.text()).toContain('42.20260901')
     expect(card.text()).not.toContain('charlie')
   })
 

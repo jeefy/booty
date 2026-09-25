@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBootyData, normalizeHost } from '@/types'
+import { OS_OPTIONS, acceptsInstallDisk, normalizeBootyData, normalizeHost } from '@/types'
 
 describe('normalizeHost', () => {
   it('fills the fleet fields with empty defaults when an old server omits them', () => {
@@ -9,6 +9,7 @@ describe('normalizeHost', () => {
       hostname: 'alpha',
       ip: '',
       booted: '',
+      installDisk: '',
       running: '',
       lastCheck: '',
       rebootPending: false
@@ -26,6 +27,29 @@ describe('normalizeHost', () => {
     expect(host.lastCheck).toBe('2026-09-24T11:30:00Z')
     expect(host.rebootPending).toBe(true)
   })
+
+  it('normalises a missing installDisk to "" and keeps a set one', () => {
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01' }).installDisk).toBe('')
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01', installDisk: '/dev/sda' }).installDisk).toBe(
+      '/dev/sda'
+    )
+  })
+})
+
+describe('acceptsInstallDisk', () => {
+  it('is true for bluefin and coreos only', () => {
+    expect(acceptsInstallDisk('bluefin')).toBe(true)
+    expect(acceptsInstallDisk('coreos')).toBe(true)
+    expect(acceptsInstallDisk('flatcar')).toBe(false)
+    expect(acceptsInstallDisk('')).toBe(false)
+    expect(acceptsInstallDisk(undefined)).toBe(false)
+  })
+})
+
+describe('OS_OPTIONS', () => {
+  it('lists flatcar, coreos and bluefin', () => {
+    expect([...OS_OPTIONS]).toEqual(['flatcar', 'coreos', 'bluefin'])
+  })
 })
 
 describe('normalizeBootyData', () => {
@@ -37,6 +61,7 @@ describe('normalizeBootyData', () => {
       hostname: '',
       ip: '',
       booted: '',
+      installDisk: '',
       running: '',
       lastCheck: '',
       rebootPending: false

@@ -125,3 +125,38 @@ func TestSetFlatcarPinPersistsAndClears(t *testing.T) {
 		t.Fatalf("clearing twice must be idempotent: %v", err)
 	}
 }
+
+func TestInitReadsBluefinManifestAndPin(t *testing.T) {
+	dir := setup(t)
+	Init()
+	if CurrentBluefinVersion() != "" || BluefinPin() != "" {
+		t.Fatalf("no manifest: version=%q pin=%q", CurrentBluefinVersion(), BluefinPin())
+	}
+
+	rel := filepath.Join(dir, "bluefin", "26.08.0")
+	if err := os.MkdirAll(rel, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rel, "manifest.json"), []byte(`{"version":"26.08.0","vmlinuz":"k"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("26.08.0", filepath.Join(dir, "bluefin", "current")); err != nil {
+		t.Fatal(err)
+	}
+	viper.Set(config.BluefinVersion, " 26.08.0 ")
+	s = runtimeState{}
+	Init()
+	if got := CurrentBluefinVersion(); got != "26.08.0" {
+		t.Fatalf("CurrentBluefinVersion=%q", got)
+	}
+	if got := BluefinPin(); got != "26.08.0" {
+		t.Fatalf("BluefinPin=%q", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(rel, "manifest.json"), []byte(`not json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadLocalBluefinVersion(); got != "" {
+		t.Fatalf("unparseable manifest should yield \"\", got %q", got)
+	}
+}

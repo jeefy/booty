@@ -9,7 +9,13 @@ import {
   type PinState,
   type RawBootyData
 } from '@/types'
-import { fleetSummary, pendingHosts, splitRunning, targetVersion } from '@/utils/fleet'
+import {
+  bluefinVersion,
+  fleetSummary,
+  pendingHosts,
+  splitRunning,
+  targetVersion
+} from '@/utils/fleet'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 
@@ -31,6 +37,10 @@ const hostCount = computed(() => Object.keys(hostData.value.hosts).length)
 const unknownCount = computed(() => Object.keys(hostData.value.unknownHosts).length)
 const flatcarVersion = computed(() => info.value.flatcar?.version || '')
 const coreosVersion = computed(() => info.value.coreos?.version || '')
+const bluefin = computed(() => ({
+  version: bluefinVersion(info.value),
+  pinnedVersion: info.value.bluefin?.pinnedVersion || ''
+}))
 const bootyVersion = computed(() => info.value.booty?.version || '')
 const fleet = computed(() => fleetSummary(hostData.value, info.value))
 const pending = computed(() =>
@@ -128,6 +138,20 @@ onUnmounted(() => {
           <div class="stat-label">CoreOS</div>
           <div class="stat-value">{{ coreosVersion || '—' }}</div>
           <div class="stat-hint">{{ coreosVersion ? 'Tracking latest' : 'Not polled yet' }}</div>
+        </div>
+        <div class="panel stat" data-testid="bluefin-stat">
+          <div class="stat-label">Bluefin</div>
+          <div class="stat-value" :title="bluefin.version ? undefined : 'not downloaded yet'">
+            {{ bluefin.version || '—' }}
+          </div>
+          <div class="stat-hint">
+            <template v-if="bluefin.pinnedVersion">
+              <span class="badge text-bg-warning">Pinned</span>
+              <span class="mono ms-1">{{ bluefin.pinnedVersion }}</span>
+            </template>
+            <span v-else-if="bluefin.version" class="badge text-bg-success">Tracking latest</span>
+            <span v-else>Not downloaded yet</span>
+          </div>
         </div>
         <div class="panel stat">
           <div class="stat-label">Hosts</div>

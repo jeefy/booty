@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -16,17 +17,19 @@ import (
 )
 
 type Host struct {
-	MAC           string `json:"mac"`
-	Hostname      string `json:"hostname"`
-	IP            string `json:"ip"`
-	Booted        string `json:"booted"`
-	IgnitionFile  string `json:"ignitionFile,omitempty"`
-	OS            string `json:"os,omitempty"`
-	OSTreeImage   string `json:"ostreeImage,omitempty"`
-	DoInstall     bool   `json:"doInstall,omitempty"`
-	Running       string `json:"running"`
-	LastCheck     string `json:"lastCheck"`
-	RebootPending bool   `json:"rebootPending"`
+	MAC             string `json:"mac"`
+	Hostname        string `json:"hostname"`
+	IP              string `json:"ip"`
+	Booted          string `json:"booted"`
+	IgnitionFile    string `json:"ignitionFile,omitempty"`
+	OS              string `json:"os,omitempty"`
+	OSTreeImage     string `json:"ostreeImage,omitempty"`
+	InstallDisk     string `json:"installDisk,omitempty"`
+	DoInstall       bool   `json:"doInstall,omitempty"`
+	InstallServedAt string `json:"installServedAt,omitempty"`
+	Running         string `json:"running"`
+	LastCheck       string `json:"lastCheck"`
+	RebootPending   bool   `json:"rebootPending"`
 }
 
 type UnknownHost struct {
@@ -45,15 +48,40 @@ type BootyData struct {
 const MaxUnknownHosts = 512
 
 var (
-	ErrNotFound   = errors.New("host not registered")
-	ErrInvalidMAC = errors.New("invalid MAC address")
-	ErrNoDatabase = errors.New("hardware database not loaded")
+	ErrNotFound       = errors.New("host not registered")
+	ErrInvalidMAC     = errors.New("invalid MAC address")
+	ErrNoDatabase     = errors.New("hardware database not loaded")
+	ErrInvalidInstall = errors.New("invalid installDisk")
 )
 
-var validOS = map[string]bool{"flatcar": true, "coreos": true, "ublue": true}
+// ValidOSNames are the operating systems a host can be registered with.
+var ValidOSNames = []string{"flatcar", "coreos", "bluefin"}
 
 func IsValidOS(os string) bool {
-	return validOS[os]
+	return slices.Contains(ValidOSNames, os)
+}
+
+// ValidOSList renders ValidOSNames for error messages.
+func ValidOSList() string {
+	return strings.Join(ValidOSNames, ", ")
+}
+
+// ValidateInstallDisk accepts an empty value or an absolute /dev path
+// without whitespace or ".." segments; it ends up verbatim on a kernel
+// command line.
+func ValidateInstallDisk(disk string) error {
+	if disk == "" {
+		return nil
+	}
+	switch {
+	case !strings.HasPrefix(disk, "/dev/"), len(disk) == len("/dev/"):
+		return fmt.Errorf("%w %q: must start with /dev/", ErrInvalidInstall, disk)
+	case strings.ContainsAny(disk, " \t\r\n\x00"):
+		return fmt.Errorf("%w %q: must not contain whitespace", ErrInvalidInstall, disk)
+	case strings.Contains(disk, ".."):
+		return fmt.Errorf("%w %q: must not contain '..'", ErrInvalidInstall, disk)
+	}
+	return nil
 }
 
 // NormalizeMAC parses s with net.ParseMAC and returns the canonical

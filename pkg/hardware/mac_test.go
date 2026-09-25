@@ -265,3 +265,32 @@ func TestMarkBooted(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestIsValidOS(t *testing.T) {
+	for _, ok := range []string{"flatcar", "coreos", "bluefin"} {
+		if !IsValidOS(ok) {
+			t.Errorf("%q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "ublue", "Flatcar", "windows"} {
+		if IsValidOS(bad) {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+	if ValidOSList() != "flatcar, coreos, bluefin" {
+		t.Fatalf("ValidOSList=%q", ValidOSList())
+	}
+}
+
+func TestValidateInstallDisk(t *testing.T) {
+	for _, ok := range []string{"", "/dev/sda", "/dev/nvme0n1", "/dev/disk/by-id/wwn-0x5000c500a1b2c3d4"} {
+		if err := ValidateInstallDisk(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"/dev/", "sda", "/etc/passwd", "/dev/sda inst.foo=1", "/dev/sda\tx", "/dev/../etc/passwd", "/dev/sda\n", "/dev/x\x00y"} {
+		if err := ValidateInstallDisk(bad); !errors.Is(err, ErrInvalidInstall) {
+			t.Errorf("%q should be rejected, got %v", bad, err)
+		}
+	}
+}

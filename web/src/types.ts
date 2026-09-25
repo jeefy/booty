@@ -1,7 +1,13 @@
 /** Wire types for the Booty HTTP API. Keep in sync with the Go structs in pkg/. */
 
-export const OS_OPTIONS = ['flatcar', 'coreos', 'ublue'] as const
+export const OS_OPTIONS = ['flatcar', 'coreos', 'bluefin'] as const
 export type HostOS = (typeof OS_OPTIONS)[number]
+
+export const INSTALL_DISK_OS: readonly HostOS[] = ['bluefin', 'coreos']
+
+export function acceptsInstallDisk(os: HostOS | '' | undefined): boolean {
+  return Boolean(os) && INSTALL_DISK_OS.includes(os as HostOS)
+}
 
 export interface Host {
   mac: string
@@ -12,6 +18,11 @@ export interface Host {
   ignitionFile?: string
   os?: HostOS | ''
   ostreeImage?: string
+  /**
+   * Target disk for the installer (e.g. `/dev/sda`); "" lets the installer
+   * pick the first writable disk. Only meaningful for bluefin and coreos.
+   */
+  installDisk: string
   doInstall?: boolean
   /**
    * Version the host last reported, or `image@digest` for ostree hosts.
@@ -45,6 +56,7 @@ export interface FleetInfo {
 export interface Info {
   flatcar?: { version?: string; pinnedVersion?: string }
   coreos?: { version?: string }
+  bluefin?: { version?: string; pinnedVersion?: string }
   booty?: { version?: string; timestamp?: string }
   fleet?: FleetInfo
 }
@@ -83,6 +95,7 @@ export function normalizeHost(raw: Partial<Host>, fallbackMac = ''): Host {
     hostname: raw.hostname ?? '',
     ip: raw.ip ?? '',
     booted: raw.booted ?? '',
+    installDisk: raw.installDisk ?? '',
     running: raw.running ?? '',
     lastCheck: raw.lastCheck ?? '',
     rebootPending: raw.rebootPending ?? false

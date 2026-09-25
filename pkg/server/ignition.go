@@ -145,7 +145,8 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid mac address")
 		return
 	}
-	host := lookupHost(mac, remoteIP(r))
+	now := time.Now()
+	host := applyNextBootClear(mac, lookupHost(mac, remoteIP(r)), now)
 
 	vars := tftp.TemplateVars{
 		Server:        config.ServerHostPort(),
@@ -155,7 +156,16 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		CoreOSVersion: state.CurrentCoreOSVersion(),
 		OSTreeImage:   resolveOSTreeImage(host),
 	}
+	if host != nil {
+		vars.Hostname = host.Hostname
+	}
 	os := tftp.OSForHost(host)
+	if os == "bluefin" {
+		vars.Bluefin = bluefinVars(mac, host)
+		if vars.Bluefin.Vmlinuz != "" {
+			recordInstallServed(mac, host, now)
+		}
+	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
 }
@@ -538,7 +548,7 @@ func recordBoot(mac, ip string, host *hardware.Host) {
 }
 
 func clearDoInstall(mac, trigger string) {
-	if _, err := hardware.Update(mac, func(h *hardware.Host) { h.DoInstall = false }); err != nil {
+	if _, err := hardware.Update(mac, func(h *hardware.Host) { h.DoInstall, h.InstallServedAt = false, "" }); err != nil {
 		slog.Error("Could not clear doInstall", "mac", mac, "error", err)
 		return
 	}

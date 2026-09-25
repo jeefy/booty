@@ -30,7 +30,7 @@ func TestKubeadmWorkerProfileStatic(t *testing.T) {
 	viper.Set(config.ContainerdDisk, "/dev/sda")
 	viper.Set(config.JoinString, "kubeadm join 10.0.0.1:6443 --token t.s --discovery-token-ca-cert-hash sha256:abc")
 	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:01","hostname":"w1","os":"flatcar"}`)
-	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:02","hostname":"desk","os":"ublue"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:02","hostname":"desk","os":"bluefin"}`)
 
 	r := do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:01&preview=1&part=merged", "")
 	if r.status != 200 {
@@ -86,7 +86,7 @@ func TestKubeadmWorkerProfileStatic(t *testing.T) {
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac=aa:bb:cc:dd:ee:02", "")
 	if r.status != 200 || strings.Contains(r.body, "booty-k8s-join") || strings.Contains(r.body, "/opt/booty/kube-tools.sh") || !strings.Contains(r.body, "booty-booted.service") {
-		t.Fatalf("ublue hosts must not get the profile: %+v", r)
+		t.Fatalf("bluefin hosts must not get the profile: %+v", r)
 	}
 
 	viper.Set(config.Profile, "")
@@ -190,7 +190,7 @@ func TestKubeadmJoinAuto(t *testing.T) {
 	viper.Set(config.KubeadmJoin, config.KubeadmJoinAuto)
 	viper.Set(config.JoinString, "kubeadm join static:6443 --token a.b")
 	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:01","hostname":"w1","os":"flatcar"}`)
-	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:02","hostname":"desk","os":"ublue"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:02","hostname":"desk","os":"bluefin"}`)
 
 	r := do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:01&preview=1&part=builtin", "")
 	if r.status != 200 || !strings.Contains(r.body, `JOIN_STRING=\"`) || api.posts.Load() != 0 {
@@ -228,7 +228,7 @@ func TestKubeadmJoinAuto(t *testing.T) {
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac=aa:bb:cc:dd:ee:02", "")
 	if r.status != 200 || api.posts.Load() != 1 || strings.Contains(r.body, "JOIN_STRING") {
-		t.Fatalf("ublue host must not mint or get the profile: posts=%d %+v", api.posts.Load(), r)
+		t.Fatalf("bluefin host must not mint or get the profile: posts=%d %+v", api.posts.Load(), r)
 	}
 
 	setJoinMinter(kubeadm.New(kubeadm.KubeConfig{APIServer: srv.URL, TokenFile: "/nonexistent", CAFile: ""}, time.Hour))

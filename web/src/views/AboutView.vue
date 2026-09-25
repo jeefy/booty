@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { apiGet, errorMessage } from '@/api'
 import type { Health, Info } from '@/types'
 import { formatAbsolute, formatRelative } from '@/utils/time'
+import { bluefinVersion } from '@/utils/fleet'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 
@@ -97,6 +98,17 @@ onMounted(() => {
             {{ info.coreos?.version ? 'Tracking latest' : 'Not polled yet' }}
           </div>
         </div>
+        <div v-if="info.bluefin" class="panel stat" data-testid="about-bluefin">
+          <div class="stat-label">Bluefin</div>
+          <div class="stat-value">{{ bluefinVersion(info) || '—' }}</div>
+          <div class="stat-hint">
+            <template v-if="info.bluefin.pinnedVersion">
+              Pinned to <span class="mono">{{ info.bluefin.pinnedVersion }}</span>
+            </template>
+            <template v-else-if="bluefinVersion(info)">Tracking latest</template>
+            <template v-else>Not downloaded yet</template>
+          </div>
+        </div>
       </div>
 
       <p v-if="info.fleet" class="small text-secondary mt-3 mb-0" data-testid="about-fleet">
@@ -107,9 +119,9 @@ onMounted(() => {
       <div class="section-title">Project</div>
       <div class="panel p-3 fade-in">
         <p class="mb-2">
-          Booty is a small (i)PXE boot server for Flatcar Linux, Fedora CoreOS and Universal Blue
-          images. It serves boot files over TFTP/HTTP, renders Butane/Ignition configs per MAC
-          address, and keeps a local cache of upstream releases and OCI images.
+          Booty is a small (i)PXE boot server for Flatcar Linux, Fedora CoreOS and Bluefin. It
+          serves boot files over TFTP/HTTP, renders Butane/Ignition configs per MAC address, and
+          keeps a local cache of upstream releases and OCI images.
         </p>
         <p class="mb-0 small text-secondary">
           Issues and pull requests are welcome at

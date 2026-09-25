@@ -77,18 +77,20 @@ func TestNoProfileIsEmpty(t *testing.T) {
 	}
 }
 
-func TestSkipsUblue(t *testing.T) {
-	cfg, err := Fragment(&hardware.Host{MAC: "aa:bb:cc:dd:ee:01", OS: "ublue"}, Options{Profile: KubeadmWorker, JoinString: "kubeadm join x"})
+func TestSkipsBluefin(t *testing.T) {
+	cfg, err := Fragment(&hardware.Host{MAC: "aa:bb:cc:dd:ee:01", OS: "bluefin"}, Options{Profile: KubeadmWorker, JoinString: "kubeadm join x"})
 	if err != nil || len(cfg.Storage.Files)+len(cfg.Systemd.Units)+len(cfg.Storage.Filesystems) != 0 {
-		t.Fatalf("ublue hosts must not get the profile: %+v err=%v", cfg, err)
+		t.Fatalf("bluefin hosts must not get the profile: %+v err=%v", cfg, err)
 	}
 	for _, os := range []string{"", "flatcar", "coreos"} {
 		if !AppliesTo(os) {
 			t.Errorf("profile should apply to %q", os)
 		}
 	}
-	if AppliesTo("ublue") {
-		t.Error("profile must not apply to ublue")
+	for _, os := range []string{"bluefin", "ublue"} {
+		if AppliesTo(os) {
+			t.Errorf("profile must not apply to %q", os)
+		}
 	}
 }
 

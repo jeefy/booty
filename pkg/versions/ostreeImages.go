@@ -325,7 +325,7 @@ type Job struct {
 	Fn   func()
 }
 
-// StartScheduler runs the Flatcar, CoreOS and OSTree checks, plus any extra
+// StartScheduler runs the Flatcar, CoreOS, Bluefin and OSTree checks, plus any extra
 // jobs, on schedule. Every job is a singleton: a tick that arrives while the
 // previous run is still executing is dropped.
 func StartScheduler(schedule string, extra ...Job) (gocron.Scheduler, error) {
@@ -336,6 +336,7 @@ func StartScheduler(schedule string, extra ...Job) (gocron.Scheduler, error) {
 	jobs := append([]Job{
 		{"flatcar", FlatcarVersionCheck},
 		{"coreos", CoreOSVersionCheck},
+		{"bluefin", BluefinVersionCheck},
 		{"ostree", OSTreeImageSync},
 	}, extra...)
 	for _, job := range jobs {
