@@ -1,9 +1,14 @@
 // Package creds builds the systemd credentials bundle Booty serves to
 // Bluefin Server installs: a tar of *.cred files the installer unpacks into
 // the new ESP's /loader/credentials/, where systemd-boot passes them to the
-// booted UKI. It carries the same hostname, SSH keys and Booty units the
-// Ignition builtin fragment does for Flatcar/CoreOS, so the toggles are
-// shared (--builtin).
+// booted UKI as encrypted system credentials. It carries the same hostname,
+// SSH keys and Booty units the Ignition builtin fragment does for
+// Flatcar/CoreOS, so the toggles are shared (--builtin).
+//
+// Every credential is encrypted with the systemd "null" key (see Encrypt):
+// systemd only imports /loader/credentials/*.cred through
+// /run/credentials/@encrypted, and plaintext files there fail with
+// "Failed to set up credentials: Invalid argument".
 package creds
 
 import (
@@ -37,10 +42,11 @@ type Input struct {
 	SSHKeys  []string
 }
 
-// Bundle returns the tar of credentials for in, restricted to the enabled
-// features. The output is byte-for-byte deterministic (fixed mtime, uid/gid
-// 0, mode 0600, sorted names, USTAR) so Sum of it can be embedded in the
-// iPXE script before the installer downloads the same bytes.
+// Bundle returns the tar of encrypted credentials for in, restricted to the
+// enabled features. The output is byte-for-byte deterministic (fixed mtime,
+// uid/gid 0, mode 0600, sorted names, USTAR, deterministic IVs) so Sum of it
+// can be embedded in the iPXE script before the installer downloads the
+// same bytes.
 func Bundle(in Input, f ign.Features) ([]byte, error) {
 	files := Credentials(in, f)
 	names := make([]string, 0, len(files))
@@ -52,7 +58,10 @@ func Bundle(in Input, f ign.Features) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, name := range names {
-		body := []byte(files[name])
+		body, err := Encrypt(name, []byte(files[name]))
+		if err != nil {
+			return nil, fmt.Errorf("credential %s: %w", name, err)
+		}
 		hdr := &tar.Header{
 			Typeflag: tar.TypeReg,
 			Name:     name + credSuffix,
@@ -80,7 +89,8 @@ func Sum(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Credentials maps credential names (without .cred) to their contents.
+// Credentials maps credential names (without .cred) to their plaintext
+// contents; Bundle encrypts them.
 func Credentials(in Input, f ign.Features) map[string]string {
 	out := map[string]string{}
 	if f[ign.FeatureHostname] && in.Hostname != "" {

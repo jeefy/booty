@@ -41,7 +41,14 @@ func entries(t *testing.T, data []byte) map[string]entry {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out[hdr.Name] = entry{hdr: hdr, body: string(body)}
+		if !bytes.HasPrefix(body, []byte("BYRp2vb1")) {
+			t.Fatalf("%s is not a base64 null-key credential: %q", hdr.Name, body)
+		}
+		plain, err := Decrypt(strings.TrimSuffix(hdr.Name, credSuffix), body)
+		if err != nil {
+			t.Fatalf("%s: %v", hdr.Name, err)
+		}
+		out[hdr.Name] = entry{hdr: hdr, body: string(plain)}
 	}
 }
 

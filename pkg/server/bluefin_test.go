@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/creds"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/versions"
@@ -122,7 +123,11 @@ func TestBluefinIPXEAndCreds(t *testing.T) {
 			t.Fatal(err)
 		}
 		content, _ := io.ReadAll(tr)
-		names[hdr.Name] = string(content)
+		plain, err := creds.Decrypt(strings.TrimSuffix(hdr.Name, ".cred"), content)
+		if err != nil {
+			t.Fatalf("%s must be a null-key encrypted credential named after the file: %v", hdr.Name, err)
+		}
+		names[hdr.Name] = string(plain)
 	}
 	if names["firstboot.hostname.cred"] != "srv1\n" {
 		t.Fatalf("hostname credential: %q (entries %v)", names["firstboot.hostname.cred"], names)
