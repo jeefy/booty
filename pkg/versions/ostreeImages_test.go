@@ -70,3 +70,34 @@ func TestDeleteUnreferencedBlobsEmptySetDeletesEverything(t *testing.T) {
 		t.Fatalf("deleted=%d kept=%d err=%v", deleted, kept, err)
 	}
 }
+
+func TestGCBlobsRefusesEmptySetUnlessAllowed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "orphan"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if ran := gcBlobs(dir, map[string]bool{}, false); ran {
+		t.Fatal("GC must not run with an empty referenced set and ociGCEmpty=false")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orphan")); err != nil {
+		t.Fatalf("blob must survive the refused GC: %v", err)
+	}
+
+	if ran := gcBlobs(dir, map[string]bool{"other": true}, false); !ran {
+		t.Fatal("GC must run when at least one blob is referenced")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orphan")); !os.IsNotExist(err) {
+		t.Fatalf("unreferenced blob should be gone, stat err=%v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "orphan2"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ran := gcBlobs(dir, map[string]bool{}, true); !ran {
+		t.Fatal("GC must run with an empty set when ociGCEmpty=true")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orphan2")); !os.IsNotExist(err) {
+		t.Fatalf("opt-in wipe should delete everything, stat err=%v", err)
+	}
+}

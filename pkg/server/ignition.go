@@ -261,9 +261,17 @@ func recordBoot(mac, ip string, host *hardware.Host) {
 	if !host.DoInstall {
 		return
 	}
+	if viper.GetString(config.DoInstallClearOn) != config.ClearOnIgnition {
+		slog.Debug("Leaving doInstall set until POST /booted", "mac", mac)
+		return
+	}
+	clearDoInstall(mac, "ignition fetch")
+}
+
+func clearDoInstall(mac, trigger string) {
 	if _, err := hardware.Update(mac, func(h *hardware.Host) { h.DoInstall = false }); err != nil {
 		slog.Error("Could not clear doInstall", "mac", mac, "error", err)
 		return
 	}
-	slog.Info("Cleared doInstall after ignition fetch", "mac", mac)
+	slog.Info("Cleared doInstall", "mac", mac, "trigger", trigger)
 }

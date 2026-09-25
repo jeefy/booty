@@ -86,6 +86,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/version.txt", handleVersionRequest)
 	mux.HandleFunc("/version.json", handleVersionRequest)
 	mux.HandleFunc("/hosts", handleHostsRequest)
+	mux.HandleFunc("/booted", handleBootedRequest)
 	mux.HandleFunc("/register", handleRegistrationRequest)
 	mux.HandleFunc("/unregister", handleUnregistrationRequest)
 	mux.HandleFunc("/booty.json", handleDataRequest)

@@ -53,6 +53,8 @@ func init() {
 	flags.String(config.ServerIP, "127.0.0.1", "IP address that clients can connect to")
 	flags.Int(config.ServerHttpPort, 80, "Alternative HTTP port to use for clients")
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
+	flags.Bool(config.OCIGCEmpty, false, "Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image")
+	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system)")
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
 
 	if err := viper.BindPFlags(flags); err != nil {
@@ -81,6 +83,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	configureLogging(viper.GetBool(config.Debug))
 	slog.Info("Starting Booty!", "version", viper.GetString(config.Version))
 	config.LoadConfig()
+	if err := config.ValidateDoInstallClearOn(viper.GetString(config.DoInstallClearOn)); err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -90,15 +95,13 @@ func run(cmd *cobra.Command, argv []string) error {
 		return fmt.Errorf("creating data dir %s: %w", dataDir, err)
 	}
 	state.Init()
+	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {
 		return err
 	}
 	if err := config.EnsureFile(config.DataPath("undionly.kpxe"), booty.UndionlyKPXE, 0o644); err != nil {
 		slog.Warn("Could not write undionly.kpxe to data dir", "error", err)
 	}
-	depsCtx, cancelDeps := context.WithTimeout(ctx, 2*time.Minute)
-	config.EnsureDeps(depsCtx)
-	cancelDeps()
 	if err := versions.EnsureOCIFolders(); err != nil {
 		slog.Warn("Could not prepare OCI registry folders", "error", err)
 	}
@@ -127,9 +130,16 @@ func run(cmd *cobra.Command, argv []string) error {
 	close(ready)
 
 	go func() {
+		depsCtx, cancelDeps := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancelDeps()
+		config.EnsureDeps(depsCtx)
+	}()
+
+	go func() {
 		versions.FlatcarVersionCheck()
 		versions.CoreOSVersionCheck()
 		<-ready
+		versions.ReplayStoredManifests(ctx, "http://"+config.LocalRegistry())
 		versions.OSTreeImageSync()
 	}()
 
