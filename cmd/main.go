@@ -14,6 +14,7 @@ import (
 	booty "github.com/jeefy/booty"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/ignition"
 	"github.com/jeefy/booty/pkg/server"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/tftp"
@@ -50,8 +51,11 @@ func init() {
 	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates")
 	flags.String(config.FlatcarVersion, "", "Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel")
 	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
-	flags.String(config.ServerIP, "127.0.0.1", "IP address that clients can connect to")
-	flags.Int(config.ServerHttpPort, 80, "Alternative HTTP port to use for clients")
+	flags.String(config.ServerIP, "", "IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)")
+	flags.Int(config.ServerHttpPort, 0, "HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort")
+	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is")
+	flags.String(config.SSHAuthorizedKeysFl, "", "File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin")
+	flags.StringSlice(config.SSHAuthorizedKeys, nil, "SSH public key added to the 'core' user by the sshkeys builtin (repeatable)")
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
 	flags.Bool(config.OCIGCEmpty, false, "Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image")
 	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system)")
@@ -86,6 +90,22 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err := config.ValidateDoInstallClearOn(viper.GetString(config.DoInstallClearOn)); err != nil {
 		return err
 	}
+	builtin, err := ignition.ParseFeatures(viper.GetString(config.Builtin))
+	if err != nil {
+		return err
+	}
+	if err := config.ResolveServerAddress(); err != nil {
+		return err
+	}
+	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin))
+	if !builtin.Enabled() {
+		slog.Info("Builtin Ignition fragment disabled; serving user configs as-is")
+	}
+	if keysFile := viper.GetString(config.SSHAuthorizedKeysFl); keysFile != "" {
+		if _, err := ignition.LoadSSHKeys(keysFile, nil); err != nil {
+			slog.Warn("SSH authorized keys file is not readable; sshkeys builtin will have no file keys", "file", keysFile, "error", err)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -98,6 +118,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {
 		return err
+	}
+	if server.DefaultTemplateInUse() {
+		slog.Info("No Butane template found; serving the embedded default", "path", config.DataPath(config.DefaultIgnitionFile))
 	}
 	if err := config.EnsureFile(config.DataPath("undionly.kpxe"), booty.UndionlyKPXE, 0o644); err != nil {
 		slog.Warn("Could not write undionly.kpxe to data dir", "error", err)
