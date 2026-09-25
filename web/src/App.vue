@@ -1,60 +1,92 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { ref, watch } from 'vue'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 
+const navOpen = ref(false)
+const route = useRoute()
+
+watch(
+  () => route.fullPath,
+  () => {
+    navOpen.value = false
+  }
+)
 </script>
 
 <template>
-  <nav class="navbar navbar-expand-md navbar-dark fixed-top bg-dark">
-    <a class="navbar-brand" href="#">Booty</a>
-    <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarCollapse" aria-controls="navbarCollapse" aria-expanded="false" aria-label="Toggle navigation">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navbarCollapse">
-      <div class="collapse navbar-collapse" id="navbarSupportedContent">
-        <div class="navbar-nav mr-auto">
-          <router-link class="nav-link" to="/">Home</router-link>
-        </div>
-        <div class="navbar-nav mr-auto">
-          <router-link class="nav-link" to="/hosts">Hosts</router-link>
-        </div>
-        <div class="navbar-nav mr-auto">
-          <router-link class="nav-link" to="/cache">OCI Cache</router-link>
-        </div>
-        <div class="navbar-nav mr-auto">
-          <router-link class="nav-link" to="/about">About</router-link>
-        </div>
+  <nav class="navbar navbar-expand-md navbar-dark fixed-top app-navbar">
+    <div class="container">
+      <RouterLink class="navbar-brand" to="/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        Booty
+      </RouterLink>
+      <button
+        class="navbar-toggler"
+        type="button"
+        aria-controls="navbarMain"
+        :aria-expanded="navOpen"
+        aria-label="Toggle navigation"
+        @click="navOpen = !navOpen"
+      >
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div id="navbarMain" class="collapse navbar-collapse" :class="{ show: navOpen }">
+        <ul class="navbar-nav me-auto mb-2 mb-md-0">
+          <li class="nav-item">
+            <RouterLink class="nav-link" to="/">Home</RouterLink>
+          </li>
+          <li class="nav-item">
+            <RouterLink class="nav-link" to="/hosts">Hosts</RouterLink>
+          </li>
+          <li class="nav-item">
+            <RouterLink class="nav-link" to="/cache">OCI Cache</RouterLink>
+          </li>
+          <li class="nav-item">
+            <RouterLink class="nav-link" to="/about">About</RouterLink>
+          </li>
+        </ul>
+        <a
+          class="nav-link small text-secondary"
+          href="https://github.com/jeefy/booty/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
       </div>
-      <!--
-      <form class="d-flex">
-        <input class="form-control me-2" type="search" placeholder="Search" aria-label="Search">
-        <button class="btn btn-outline-success" type="submit">Search</button>
-      </form>
-      -->
     </div>
   </nav>
 
-  <main role="main" class="container">
-    <div class="jumbotron">
-      <h1>Booty is up and running!</h1>
-      <RouterView />
-    </div>
+  <main class="container">
+    <RouterView />
   </main>
 </template>
 
-<style>
-/* Show it is fixed to the top */
-body {
-  min-height: 75rem;
-  padding-top: 4.5rem;
+<style scoped>
+.app-navbar {
+  min-height: var(--booty-nav-height);
+  background-color: var(--booty-nav-bg);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-main.container {
-  margin-top: 5rem;
+
+.navbar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--booty-space-2);
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
-div#app > nav.navbar {
-  padding-left: 1rem;
+
+.brand-mark {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  background: var(--booty-accent);
+  transform: rotate(45deg);
 }
-#navbarCollapse > form {
-  display: inline;
-  width: 200;
+
+.nav-link.router-link-exact-active {
+  color: #fff;
+  box-shadow: inset 0 -2px 0 var(--booty-accent);
 }
 </style>
