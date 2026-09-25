@@ -35,6 +35,11 @@ func validateHost(h *hardware.Host) error {
 		return err
 	}
 	h.MAC = mac
+	if h.Hostname != "" {
+		if err := hardware.ValidateHostname(h.Hostname); err != nil {
+			return err
+		}
+	}
 	if h.OS != "" && !hardware.IsValidOS(h.OS) {
 		return fmt.Errorf("invalid os %q: must be one of flatcar, coreos, ublue", h.OS)
 	}
