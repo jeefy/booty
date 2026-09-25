@@ -1,7 +1,6 @@
 package versions
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,74 +14,66 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/state"
 	"github.com/spf13/viper"
 )
 
-func EnsureOCIFolders() {
-	err := os.Mkdir(viper.GetString(config.DataDir)+"/registry/", 0755)
-	if err != nil && !os.IsExist(err) {
-		slog.Error("Error creating registry directory", "error", err)
-		os.Exit(1)
-	}
-	err = os.Mkdir(viper.GetString(config.DataDir)+"/registry/blobs/", 0755)
-	if err != nil && !os.IsExist(err) {
-		slog.Error("Error creating registry blobs directory", "error", err)
-		os.Exit(1)
-	}
-	err = os.Mkdir(viper.GetString(config.DataDir)+"/registry/blobs/sha256", 0755)
-	if err != nil && !os.IsExist(err) {
-		slog.Error("Error creating registry sha256 directory", "error", err)
-		os.Exit(1)
-	}
-	symSrc, err := filepath.Abs(viper.GetString(config.DataDir) + "/registry/blobs/sha256")
-	if err != nil {
-		slog.Error("Error creating registry symlink abs path", "error", err)
-		os.Exit(1)
-	}
-	err = os.Symlink(symSrc, viper.GetString(config.DataDir)+"/registry/sha256")
-	if err != nil && !os.IsExist(err) {
-		slog.Error("Error creating registry symlink", "error", err)
-		os.Exit(1)
-	}
-}
-
-func StartOSTreeImageSync() {
-	slog.Info("Starting CRON version check for OCI Images")
-	cron := gocron.NewScheduler(time.UTC)
-	_, err := cron.Cron(viper.GetString(config.UpdateSchedule)).Do(OSTreeImageSync)
-	if err != nil {
-		slog.Error("Error creating OSTreeImageSync cronjob", "error", err)
-		os.Exit(1)
-	}
-	cron.StartAsync()
-}
-
-func OSTreeImageSync() {
-	EnsureOCIFolders()
-	pulled := make(map[string]bool)
-	bootyData := hardware.BootyData{}
-	err := json.Unmarshal(hardware.GetData(), &bootyData)
-	if err != nil {
-		slog.Error("Error unmarshalling hardware map", "error", err)
-		return
-	}
-
-	for _, host := range bootyData.Hosts {
-		_, ok := pulled[host.OSTreeImage]
-		if host.OSTreeImage != "" && !ok {
-			ociImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), host.OSTreeImage)
-			//err := crane.Copy(host.OSTreeImage, ociImage, opts...)
-			if err := OSTreeImagePull(host.OSTreeImage); err != nil {
-				slog.Error("Error copying OCI image", "image", ociImage, "error", err)
-				continue
-			}
-			slog.Info("Done copying OCI image", "image", ociImage)
-			pulled[host.OSTreeImage] = true
+func EnsureOCIFolders() error {
+	for _, dir := range [][]string{
+		{"registry"},
+		{"registry", "blobs"},
+		{"registry", "blobs", "sha256"},
+	} {
+		path := config.DataPath(dir...)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", path, err)
 		}
 	}
+	symSrc, err := filepath.Abs(config.DataPath("registry", "blobs", "sha256"))
+	if err != nil {
+		return fmt.Errorf("resolving registry blob path: %w", err)
+	}
+	link := config.DataPath("registry", "sha256")
+	if err := os.Symlink(symSrc, link); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("creating registry symlink %s: %w", link, err)
+	}
+	return nil
 }
 
-func OSTreeImagePull(src string, opts ...crane.Option) error {
+// LocalImageRef returns the reference under which image is cached in Booty's
+// embedded registry.
+func LocalImageRef(image string) string {
+	return fmt.Sprintf("%s:%d/%s", viper.GetString(config.ServerIP), viper.GetInt(config.HttpPort), image)
+}
+
+// OSTreeImageSync mirrors every OSTree image referenced by a registered host
+// into the local registry. Concurrent invocations are skipped.
+func OSTreeImageSync() {
+	if !state.OSTreeSyncMu.TryLock() {
+		slog.Info("OSTree image sync already in progress, skipping")
+		return
+	}
+	defer state.OSTreeSyncMu.Unlock()
+
+	if err := EnsureOCIFolders(); err != nil {
+		slog.Error("Could not prepare OCI registry folders", "error", err)
+		return
+	}
+	pulled := make(map[string]bool)
+	for _, host := range hardware.Snapshot().Hosts {
+		if host.OSTreeImage == "" || pulled[host.OSTreeImage] {
+			continue
+		}
+		if err := OSTreeImagePull(host.OSTreeImage); err != nil {
+			slog.Error("Error copying OCI image", "image", host.OSTreeImage, "error", err)
+			continue
+		}
+		slog.Info("Done copying OCI image", "image", host.OSTreeImage)
+		pulled[host.OSTreeImage] = true
+	}
+}
+
+func OSTreeImagePull(src string) error {
 	o := crane.Options{
 		Remote: []remote.Option{
 			remote.WithAuthFromKeychain(authn.DefaultKeychain),
@@ -101,27 +92,43 @@ func OSTreeImagePull(src string, opts ...crane.Option) error {
 	}
 
 	slog.Info("Saving image", "ref", srcRef.String())
-
-	err = crane.SaveOCI(img, viper.GetString(config.DataDir)+"/registry/")
-	if err != nil {
+	if err := crane.SaveOCI(img, config.DataPath("registry")); err != nil {
 		return fmt.Errorf("saving image %q: %w", srcRef, err)
 	}
 
-	localImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), src)
-	err = crane.Copy(src, localImage)
-	if err != nil {
-		return fmt.Errorf("error copying image %q: %w", srcRef, err)
+	localImage := LocalImageRef(src)
+	if err := crane.Copy(src, localImage); err != nil {
+		return fmt.Errorf("copying image %q to local registry: %w", srcRef, err)
 	}
-
 	slog.Info("Done saving image", "ref", srcRef.String())
 
-	digest, err := crane.Digest(localImage)
-	if err != nil {
-		slog.Error("Error getting image from cache", "image", localImage, "error", err)
-	}
-	if digest == "" {
+	if digest, err := crane.Digest(localImage); err != nil {
+		slog.Error("Error reading image back from cache", "image", localImage, "error", err)
+	} else if digest == "" {
 		slog.Warn("Image not found in local cache yet", "image", localImage)
 	}
-
 	return nil
+}
+
+// StartScheduler runs the Flatcar, CoreOS and OSTree checks on schedule with
+// a single scheduler; every job is in singleton mode so a slow run is never
+// overlapped by the next tick.
+func StartScheduler(schedule string) (*gocron.Scheduler, error) {
+	s := gocron.NewScheduler(time.UTC)
+	jobs := []struct {
+		name string
+		fn   func()
+	}{
+		{"flatcar", FlatcarVersionCheck},
+		{"coreos", CoreOSVersionCheck},
+		{"ostree", OSTreeImageSync},
+	}
+	for _, job := range jobs {
+		if _, err := s.Cron(schedule).SingletonMode().Do(job.fn); err != nil {
+			return nil, fmt.Errorf("scheduling %s check with %q: %w", job.name, schedule, err)
+		}
+	}
+	s.StartAsync()
+	slog.Info("Update scheduler started", "schedule", schedule)
+	return s, nil
 }

@@ -2,195 +2,235 @@ package versions
 
 import (
 	"bufio"
+	"context"
+	"crypto"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/go-co-op/gocron"
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/state"
 	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
-func StartFlatcarCron() {
-	slog.Info("Starting CRON version check")
-	cron := gocron.NewScheduler(time.UTC)
-	_, err := cron.Cron(viper.GetString(config.UpdateSchedule)).SingletonMode().Do(FlatcarVersionCheck)
-	if err != nil {
-		slog.Error("Error creating prune cronjob", "error", err)
-		os.Exit(1)
-	}
-	cron.StartAsync()
-}
+const (
+	flatcarKernel = "flatcar_production_pxe.vmlinuz"
+	flatcarInitrd = "flatcar_production_pxe_image.cpio.gz"
+	flatcarDir    = "flatcar"
+)
 
+var flatcarArtifacts = []string{flatcarInitrd, flatcarKernel}
+
+// FlatcarVersionCheck brings the served Flatcar release in line with the pin
+// (if set) or the channel's latest version. Concurrent invocations are
+// skipped.
 func FlatcarVersionCheck() {
-	if viper.GetBool(config.Updating) {
-		slog.Info("Already updating, skipping version check")
+	if !state.FlatcarUpdateMu.TryLock() {
+		slog.Info("Flatcar update already in progress, skipping version check")
 		return
 	}
-	slog.Debug("Checking remote flatcar version")
+	defer state.FlatcarUpdateMu.Unlock()
+	ctx := context.Background()
+	slog.Debug("Checking Flatcar version")
 
-	if viper.GetString(config.CurrentFlatcarVersion) == "" {
-		// Check for an existing version.txt file
-		versionFile := fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir))
-		if oldVer, err := os.Open(versionFile); err == nil {
-			data, _ := godotenv.Parse(oldVer)
-			oldVer.Close()
-			if v, ok := data["FLATCAR_VERSION"]; ok && v != "" {
-				slog.Info("Found old version.txt, setting current version to that", "version", v)
-				viper.Set(config.CurrentFlatcarVersion, v)
-			} else {
-				slog.Warn("Old version.txt file is invalid, setting current version to 0.0.0", "path", versionFile)
-				viper.Set(config.CurrentFlatcarVersion, "0.0.0")
-			}
-		} else {
-			slog.Info("version.txt not found, setting current version to 0.0.0", "path", versionFile)
-			viper.Set(config.CurrentFlatcarVersion, "0.0.0")
+	current := state.CurrentFlatcarVersion()
+	if current == "" {
+		current = state.LoadLocalFlatcarVersion()
+		if current == "" {
+			slog.Info("No local Flatcar version found, starting from 0.0.0")
+			current = "0.0.0"
 		}
+		state.SetCurrentFlatcarVersion(current)
 	}
 
-	// Determine the version we want to be running. When a version is pinned,
-	// that is always the target. Otherwise track the channel's latest version.
-	var targetVersion string
-	if pinned := viper.GetString(config.FlatcarVersion); pinned != "" {
-		targetVersion = pinned
-		slog.Debug("Flatcar version is pinned", "version", pinned)
+	target := state.FlatcarPin()
+	if target != "" {
+		slog.Debug("Flatcar version is pinned", "version", target)
 	} else {
-		LoadRemoteFlatcarVersion()
-		targetVersion = viper.GetString(config.RemoteFlatcarVersion)
+		remote, err := LoadRemoteFlatcarVersion(ctx)
+		if err != nil {
+			slog.Error("Could not determine remote Flatcar version, skipping update", "error", err)
+			return
+		}
+		target = remote
 	}
 
-	if targetVersion == "" {
-		slog.Warn("Could not determine target Flatcar version, skipping update")
+	if target == current {
 		return
 	}
-
-	if targetVersion != viper.GetString(config.CurrentFlatcarVersion) {
-		viper.Set(config.Updating, true)
-		defer viper.Set(config.Updating, false)
-		slog.Info("Target flatcar version differs from local", "target", targetVersion, "local", viper.GetString(config.CurrentFlatcarVersion))
-
-		// Only advance the current version once all artifacts have been
-		// downloaded successfully. If any download fails (e.g. a 404 because
-		// the remote hasn't published every artifact yet), keep the existing
-		// version so we don't serve a half-updated release.
-		if err := downloadFlatcarArtifacts(); err != nil {
-			slog.Error("Flatcar artifact download failed, not advancing version", "target", targetVersion, "error", err)
-			return
-		}
-
-		viper.Set(config.CurrentFlatcarVersion, targetVersion)
-		slog.Info("Flatcar updated", "version", targetVersion)
+	slog.Info("Target Flatcar version differs from local", "target", target, "local", current)
+	if err := installFlatcarRelease(ctx, target); err != nil {
+		slog.Error("Flatcar release install failed, not advancing version", "target", target, "error", err)
+		return
 	}
+	state.SetCurrentFlatcarVersion(target)
+	slog.Info("Flatcar updated", "version", target)
 }
 
-// downloadFlatcarArtifacts downloads version.txt and the PXE kernel/initrd for
-// the currently targeted Flatcar release. It returns an error if any artifact
-// fails to download (including HTTP 404s), so callers can avoid advancing the
-// recorded version when a release is incomplete or unavailable.
-func downloadFlatcarArtifacts() error {
-	// version.txt is small metadata; download without checksum verification.
-	if err := DownloadFlatcarFile("version.txt"); err != nil {
-		return fmt.Errorf("version.txt: %w", err)
-	}
-
-	artifacts := []string{
-		"flatcar_production_pxe_image.cpio.gz", // initrd
-		"flatcar_production_pxe.vmlinuz",       // kernel
-	}
-
-	for _, artifact := range artifacts {
-		if sum, err := LoadFlatcarDigest(artifact); err == nil {
-			if err := config.DownloadFileWithChecksumSHA512(fmt.Sprintf(RemoteFlatcarURL()+"/%s", artifact), sum); err != nil {
-				return fmt.Errorf("%s: %w", artifact, err)
-			}
-		} else {
-			slog.Warn("Could not load digest, falling back to unverified download", "file", artifact, "error", err)
-			if err := DownloadFlatcarFile(artifact); err != nil {
-				return fmt.Errorf("%s: %w", artifact, err)
-			}
-		}
-	}
-
-	return nil
-}
-
-func LoadRemoteFlatcarVersion() {
-	if resp, err := http.Get(RemoteFlatcarURL() + "/version.txt"); err == nil {
-		data, _ := godotenv.Parse(resp.Body)
-		if _, ok := data["FLATCAR_VERSION"]; !ok {
-			slog.Error("Error retrieving remote flatcar version", "url", resp.Request.URL.String())
-			return
-		}
-		viper.Set(config.RemoteFlatcarVersion, data["FLATCAR_VERSION"])
-		slog.Debug("Remote flatcar version found", "version", data["FLATCAR_VERSION"])
-	} else {
-		slog.Error("Error retrieving remote flatcar version", "url", RemoteFlatcarURL(), "error", err)
-	}
-}
-
-// RemoteFlatcarURL builds the remote release directory URL for Flatcar. When a
-// specific version is pinned via config.FlatcarVersion, the URL points at that
-// version's directory; otherwise it tracks the channel's "current" release.
-func RemoteFlatcarURL() string {
-	releaseDir := "current"
-	if pinned := viper.GetString(config.FlatcarVersion); pinned != "" {
-		releaseDir = pinned
-	}
+func flatcarReleaseURL(release string) string {
 	return fmt.Sprintf(viper.GetString(config.FlatcarURL),
 		viper.GetString(config.FlatcarChannel),
 		viper.GetString(config.FlatcarArchitecture),
-		releaseDir)
+		release)
 }
 
-func DownloadFlatcarFile(filename string) error {
-	return config.DownloadFile(fmt.Sprintf(RemoteFlatcarURL()+"/%s", filename))
+func fetchVersionTxt(ctx context.Context, url string) (map[string]string, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := config.MetadataClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer config.CloseQuietly(resp.Body, url)
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("%s: HTTP %d", url, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := godotenv.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", url, err)
+	}
+	if data["FLATCAR_VERSION"] == "" {
+		return nil, nil, fmt.Errorf("%s: FLATCAR_VERSION missing", url)
+	}
+	return data, body, nil
 }
 
-// LoadFlatcarDigest downloads the .DIGESTS file for the given artifact from
-// the remote Flatcar release URL, parses it, and returns the lowercase hex
-// SHA512 checksum. The DIGESTS file format contains sections headed by
-// "# <ALGO> HASH" followed by lines of "<hash>  <filename>".
-// Returns an error if the DIGESTS file cannot be fetched or does not contain
-// a SHA512 entry.
-func LoadFlatcarDigest(filename string) (string, error) {
-	digestURL := fmt.Sprintf("%s/%s.DIGESTS", RemoteFlatcarURL(), filename)
-	resp, err := http.Get(digestURL)
+// LoadRemoteFlatcarVersion fetches the channel's current version.txt and
+// records the version in state.
+func LoadRemoteFlatcarVersion(ctx context.Context) (string, error) {
+	data, _, err := fetchVersionTxt(ctx, flatcarReleaseURL("current")+"/version.txt")
+	if err != nil {
+		return "", err
+	}
+	v := data["FLATCAR_VERSION"]
+	state.SetRemoteFlatcarVersion(v)
+	slog.Debug("Remote Flatcar version found", "version", v)
+	return v, nil
+}
+
+// installFlatcarRelease downloads the PXE kernel and initrd for version into
+// DataDir/flatcar/<version>/, then atomically repoints the public symlinks,
+// writes version.txt and prunes older release directories.
+func installFlatcarRelease(ctx context.Context, version string) error {
+	base := flatcarReleaseURL(version)
+	dir := config.DataPath(flatcarDir, version)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	_, versionTxt, err := fetchVersionTxt(ctx, base+"/version.txt")
+	if err != nil {
+		return fmt.Errorf("version.txt: %w", err)
+	}
+
+	for _, artifact := range flatcarArtifacts {
+		dest := filepath.Join(dir, artifact)
+		hashAlgo := crypto.Hash(0)
+		digest, err := LoadFlatcarDigest(ctx, base, artifact)
+		if err != nil {
+			slog.Warn("Could not load digest, falling back to unverified download", "file", artifact, "error", err)
+		} else {
+			hashAlgo = crypto.SHA512
+			if config.FileHashMatches(dest, hashAlgo, digest) {
+				slog.Info("Artifact already present and verified", "path", dest)
+				continue
+			}
+		}
+		if err := config.Download(ctx, config.DownloadClient, base+"/"+artifact, dest, hashAlgo, digest); err != nil {
+			return fmt.Errorf("%s: %w", artifact, err)
+		}
+	}
+
+	for _, artifact := range flatcarArtifacts {
+		target := filepath.Join(flatcarDir, version, artifact)
+		if err := config.ReplaceSymlink(target, config.DataPath(artifact)); err != nil {
+			return fmt.Errorf("linking %s: %w", artifact, err)
+		}
+	}
+
+	if err := config.WriteFileAtomic(config.DataPath("version.txt"), versionTxt, 0o644); err != nil {
+		return fmt.Errorf("version.txt: %w", err)
+	}
+
+	pruneFlatcarReleases(version)
+	return nil
+}
+
+func pruneFlatcarReleases(keep string) {
+	root := config.DataPath(flatcarDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		slog.Warn("Could not list Flatcar release directories", "path", root, "error", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == keep {
+			continue
+		}
+		path := filepath.Join(root, e.Name())
+		if err := os.RemoveAll(path); err != nil {
+			slog.Warn("Could not remove old Flatcar release", "path", path, "error", err)
+			continue
+		}
+		slog.Info("Removed old Flatcar release", "path", path)
+	}
+}
+
+// LoadFlatcarDigest fetches <base>/<filename>.DIGESTS and returns the
+// lowercase hex SHA512 checksum it lists.
+func LoadFlatcarDigest(ctx context.Context, base, filename string) (string, error) {
+	digestURL := fmt.Sprintf("%s/%s.DIGESTS", base, filename)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, digestURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := config.MetadataClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch digest file %s: %w", digestURL, err)
 	}
-	defer resp.Body.Close()
+	defer config.CloseQuietly(resp.Body, digestURL)
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("digest file returned HTTP %d: %s", resp.StatusCode, digestURL)
 	}
+	sum, err := parseFlatcarDigests(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", digestURL, err)
+	}
+	return sum, nil
+}
 
-	scanner := bufio.NewScanner(resp.Body)
-	inSHA512Section := false
+// parseFlatcarDigests extracts the SHA512 hash from a Flatcar .DIGESTS file,
+// whose sections are headed by "# <ALGO> HASH" followed by "<hash>  <file>".
+func parseFlatcarDigests(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	inSHA512 := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "# SHA512 HASH" {
-			inSHA512Section = true
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
-			inSHA512Section = false
-			continue
-		}
-		if inSHA512Section && line != "" {
-			// Line format: "<hash>  <filename>"
-			fields := strings.Fields(line)
-			if len(fields) >= 1 {
+		switch {
+		case line == "# SHA512 HASH":
+			inSHA512 = true
+		case strings.HasPrefix(line, "#"):
+			inSHA512 = false
+		case inSHA512 && line != "":
+			if fields := strings.Fields(line); len(fields) >= 1 {
 				return strings.ToLower(fields[0]), nil
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error reading digest file %s: %w", digestURL, err)
+		return "", fmt.Errorf("error reading digest file: %w", err)
 	}
-
-	return "", fmt.Errorf("no SHA512 hash found in digest file %s", digestURL)
+	return "", fmt.Errorf("no SHA512 hash found in digest file")
 }
