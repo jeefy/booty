@@ -40,6 +40,8 @@ const (
 	ServerHttpPort      = "serverHttpPort"
 	JoinString          = "joinString"
 	OCIGC               = "ociGC"
+	OCIGCEmpty          = "ociGCEmpty"
+	DoInstallClearOn    = "doInstallClearOn"
 	DepsPxelinuxURL     = "depsPxelinuxURL"
 	DepsLdlinuxURL      = "depsLdlinuxURL"
 	Version             = "version"
@@ -49,6 +51,22 @@ const (
 // FlatcarPinFile is the file (relative to DataDir) that persists a Flatcar
 // version pin set via the Web UI.
 const FlatcarPinFile = "flatcar_pin.txt"
+
+// Values for DoInstallClearOn: clear a host's pending doInstall when it
+// fetches its Ignition config, or only once it POSTs /booted.
+const (
+	ClearOnIgnition = "ignition"
+	ClearOnBooted   = "booted"
+)
+
+// ValidateDoInstallClearOn rejects anything but the two known modes.
+func ValidateDoInstallClearOn(v string) error {
+	switch v {
+	case ClearOnIgnition, ClearOnBooted:
+		return nil
+	}
+	return fmt.Errorf("invalid --%s %q: must be %q or %q", DoInstallClearOn, v, ClearOnIgnition, ClearOnBooted)
+}
 
 // MetadataClient is used for small metadata fetches (version.txt, streams
 // JSON, DIGESTS files). It has a short overall timeout.
@@ -83,8 +101,10 @@ func LoadConfig() {
 	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
 	// https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt
 
-	viper.SetDefault(DepsPxelinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/pxelinux.0")
-	viper.SetDefault(DepsLdlinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
+	// The dated installer directories get removed on point releases; "current"
+	// always resolves.
+	viper.SetDefault(DepsPxelinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/current/images/netboot/pxelinux.0")
+	viper.SetDefault(DepsLdlinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/current/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
 
 	bindEnv(DepsPxelinuxURL, "DEPS_PXELINUX_URL")
 	bindEnv(DepsLdlinuxURL, "DEPS_LDLINUX_URL")
@@ -98,6 +118,8 @@ func LoadConfig() {
 	viper.SetDefault(TFTPBlockSize, 1468)
 	viper.SetDefault(WebDir, "./web/dist")
 	viper.SetDefault(OCIGC, true)
+	viper.SetDefault(OCIGCEmpty, false)
+	viper.SetDefault(DoInstallClearOn, ClearOnIgnition)
 }
 
 func bindEnv(key, env string) {
