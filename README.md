@@ -84,6 +84,7 @@ booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behi
 * Automatic updates retrieved from Flatcar-Linux, CoreOS and the Bluefin Server releases
 * Automatic drain/reboot of nodes (in conjunction with [Kured](https://github.com/weaveworks/kured))
 * Web UI to add/edit/remove hosts
+* Configuration view (`/config`: every effective setting with its source, secrets redacted) and a Butane template editor with Butane validation, read-only aware for GitOps/ConfigMap mounts (see [Configuration view and editor](#configuration-view-and-editor))
 * Builtin Ignition fragment (hostname, SSH keys, update timer, install-complete callback) merged into every host's config -- your Butane only carries what is specific to your fleet
 * Fleet status: every host reports what it is running and whether a reboot is pending (`/update-check`, `/info`)
 * `--profile=kubeadm-worker`: the whole Kubernetes worker setup (CNI, kubeadm/kubelet/kubectl/crictl, kubelet units, `kubeadm join` on every boot) as a versioned, embedded Ignition fragment
@@ -237,6 +238,32 @@ Flags: `--profile` (`""` or `kubeadm-worker`, validated at start-up), `--k8sVers
 
 Each check is recorded on the host (`running`, `lastCheck`, `rebootPending`, visible in `/booty.json`, `/hosts` and the UI), rewritten at most once a minute when nothing changed. `GET /info` gains `"fleet":{"hosts":N,"pendingReboots":N}` so you can see at a glance how many nodes are waiting on kured.
 
+## Configuration view and editor
+
+`GET /config` shows the running configuration and the Butane templates in play, so you do not have to guess which flag, environment variable or default a Booty instance ended up with:
+
+```json
+{"settings":[{"key":"serverIP","value":"192.168.1.10","source":"flag","redacted":false}, ...],
+ "templates":{"default":{"name":"config/ignition.yaml","source":"file","writable":true},
+              "hosts":[{"mac":"aa:bb:cc:dd:ee:01","hostname":"n1","name":"config/n1.yaml"}]}}
+```
+
+* `settings` lists every flag, sorted by key, with its effective value rendered as a string and its `source`: `flag` when it was passed on the command line, `env` when `BOOTY_<FLAG>` (or one of the legacy `IGNITION_FILE`/`HARDWARE_MAP`/`FLATCAR_VERSION_PIN` names) is set, otherwise `default`. Values Booty computes itself -- the autodetected `serverIP`, the derived `serverHttpPort`, the build stamp -- count as `default`. `joinString` and `githubToken` are always `redacted:true` and shown as `••••` when non-empty (empty stays empty); `joinStringFile` is a path, not the secret, and is shown as-is.
+* `templates.default` is `--ignitionFile`; `source` is `embedded` while the file does not exist and Booty renders its built-in minimal template, `file` otherwise. `templates.hosts` lists registered hosts with their own `ignitionFile`.
+* `writable` says whether saving the template from the UI would work. Booty probes the file (opened for writing and closed, never modified) or, for a missing file, its directory. When the probe fails the response carries `readOnlyReason`, e.g. `"/data/config/ignition.yaml is read-only (read-only file system)"`.
+
+The template editor behind it:
+
+| Endpoint | Does |
+|---|---|
+| `GET /config/template?name=config/ignition.yaml` | Returns `{name, source, writable, readOnlyReason?, content}`. `name` defaults to `--ignitionFile`; it must be a relative path inside `--dataDir` ending in `.yaml`, `.yml` or `.bu`, and may not name `hardware.json`, the pin file, temp files or the OCI blob store (400). A missing file is a 404, except for the default template, which returns the embedded Butane with `source:"embedded"`. |
+| `POST /config/template/validate` | Body `{"name","content","mac"?}`. Renders the template exactly like a boot would and translates it with Butane; answers `{"ok","ignition","entries":[{"kind":"warning|error","message"}]}` with HTTP 200 even when the template is broken (`ok:false`). With `mac` the registered host's hostname/image are used (404 if unknown); without it a dummy host (`example`, `00:00:00:00:00:00`) stands in. `{{ .JoinString }}` is the static join string; with `--kubeadmJoin=auto` it is the placeholder `kubeadm join <auto>` -- validation never mints a token. |
+| `PUT /config/template` | Body `{"name","content"}`. Validates with the dummy host first (`400 {"error":"template does not validate","entries":[...]}`), refuses read-only targets (`409 {"error":"template is read-only","reason":"..."}`), then writes the file atomically inside `--dataDir`, logs `Ignition template saved via API` with name and size, and answers like the GET. Never writes outside `--dataDir`. |
+
+**GitOps and ConfigMap mounts.** If `/data/config/` is a Kubernetes ConfigMap (as in [examples/k8s.yaml](examples/k8s.yaml)) or otherwise mounted read-only, the view still works but shows `writable:false` with the reason, the UI disables saving, and a `PUT` is answered with 409 -- edit the source of truth (Git, the ConfigMap) instead. Validation is always available.
+
+**Trust model.** The editor has no authentication, like the rest of Booty (see [Trust model](#trust-model)): anyone who can reach the HTTP port can read the effective configuration (secrets redacted) and, on a writable data directory, replace the Butane template every host boots with. Keep the port on the boot VLAN or mount the template read-only if that is not acceptable.
+
 ## Bluefin Server
 
 [Bluefin Server](https://github.com/projectbluefin/server) is an image-based server OS (Flatcar LTS userland, systemd-boot/UKI, updates through systemd-sysupdate, k0s as a sysext). It is not installed through Ignition: a PXE-booted installer writes a signed disk image (DDI) to a disk and the machine reboots into it. Booty drives exactly that.
@@ -319,7 +346,7 @@ Ports 67 and 4011 are privileged, so the container needs `--network=host`/`hostN
 
 ## Trust model
 
-Booty is meant to run on a network you control. It has **no authentication**: anyone who can reach the HTTP port can register hosts, read any registered host's rendered Ignition (including the kubeadm join string and the builtin SSH keys) via `/ignition.json?mac=` or `/ignition/builtin.json?mac=`, and download boot artifacts. This is inherent to PXE -- the booting machine has no credentials yet -- so treat the boot VLAN like you treat your DHCP server.
+Booty is meant to run on a network you control. It has **no authentication**: anyone who can reach the HTTP port can register hosts, read any registered host's rendered Ignition (including the kubeadm join string and the builtin SSH keys) via `/ignition.json?mac=` or `/ignition/builtin.json?mac=`, download boot artifacts, and -- through the [configuration editor](#configuration-view-and-editor) -- read the effective configuration (`joinString` and `githubToken` redacted) and, unless the data directory is mounted read-only, rewrite the Butane template every host boots with. This is inherent to PXE -- the booting machine has no credentials yet -- so treat the boot VLAN like you treat your DHCP server.
 
 With `--kubeadmJoin=static` the join string is whatever you configured, typically a never-expiring token that grants node-join to anyone who reads it. Prefer `--kubeadmJoin=auto`: each real boot gets its own token that expires after `--joinTokenTTL` (1 h by default) and is deleted afterwards, so what leaks over the boot VLAN is worth at most one hour of node-join; previews never mint. Booty's own credential for that is its service account, scoped by the Roles in [examples/k8s.yaml](examples/k8s.yaml) to creating/listing/deleting Secrets in `kube-system` and reading `cluster-info`.
 
