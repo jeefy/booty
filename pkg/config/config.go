@@ -44,6 +44,9 @@ const (
 	DoInstallClearOn    = "doInstallClearOn"
 	DepsPxelinuxURL     = "depsPxelinuxURL"
 	DepsLdlinuxURL      = "depsLdlinuxURL"
+	Builtin             = "builtin"
+	SSHAuthorizedKeys   = "sshAuthorizedKeys"
+	SSHAuthorizedKeysFl = "sshAuthorizedKeysFile"
 	Version             = "version"
 	Timestamp           = "timestamp"
 )
@@ -51,6 +54,15 @@ const (
 // FlatcarPinFile is the file (relative to DataDir) that persists a Flatcar
 // version pin set via the Web UI.
 const FlatcarPinFile = "flatcar_pin.txt"
+
+// DefaultIgnitionFile is the Butane template (relative to DataDir) used when
+// neither --ignitionFile nor a per-host ignitionFile is set. When it does
+// not exist Booty renders an embedded minimal template instead.
+const DefaultIgnitionFile = "config/ignition.yaml"
+
+// DefaultBuiltin lists the fragments Booty merges into every registered
+// host's Ignition config unless --builtin says otherwise.
+const DefaultBuiltin = "hostname,update,booted,sshkeys"
 
 // Values for DoInstallClearOn: clear a host's pending doInstall when it
 // fetches its Ignition config, or only once it POSTs /booted.
@@ -112,7 +124,7 @@ func LoadConfig() {
 	bindEnv(IgnitionFile, "IGNITION_FILE")
 	bindEnv(HardwareMap, "HARDWARE_MAP")
 
-	viper.SetDefault(IgnitionFile, "config/ignition.yaml")
+	viper.SetDefault(IgnitionFile, DefaultIgnitionFile)
 	viper.SetDefault(HardwareMap, "hardware.json")
 	viper.SetDefault(TFTPPort, 69)
 	viper.SetDefault(TFTPBlockSize, 1468)
@@ -120,12 +132,49 @@ func LoadConfig() {
 	viper.SetDefault(OCIGC, true)
 	viper.SetDefault(OCIGCEmpty, false)
 	viper.SetDefault(DoInstallClearOn, ClearOnIgnition)
+	viper.SetDefault(Builtin, DefaultBuiltin)
+	viper.SetDefault(HttpPort, 8080)
 }
 
 func bindEnv(key, env string) {
 	if err := viper.BindEnv(key, env); err != nil {
 		slog.Warn("Could not bind environment variable", "key", key, "env", env, "error", err)
 	}
+}
+
+// ResolveServerAddress fills in the client-facing address when the operator
+// left it to Booty: an empty --serverIP is autodetected from the default
+// route and a zero --serverHttpPort means "same as --httpPort". Explicit
+// values are left untouched. It must run once at startup, before viper
+// becomes read-only.
+func ResolveServerAddress() error {
+	if viper.GetString(ServerIP) == "" {
+		ip, err := DetectServerIP()
+		if err != nil {
+			return fmt.Errorf("--%s not set and autodetection failed: %w", ServerIP, err)
+		}
+		viper.Set(ServerIP, ip)
+		slog.Info("serverIP autodetected", "ip", ip)
+	}
+	if viper.GetInt(ServerHttpPort) == 0 {
+		viper.Set(ServerHttpPort, viper.GetInt(HttpPort))
+	}
+	return nil
+}
+
+// DetectServerIP returns the local address the kernel would use to reach a
+// public IP. UDP "dialing" only selects a route; no packet is sent.
+func DetectServerIP() (string, error) {
+	conn, err := net.Dial("udp4", "192.0.2.1:9")
+	if err != nil {
+		return "", err
+	}
+	defer CloseQuietly(conn, "route probe")
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || addr.IP == nil || addr.IP.IsUnspecified() {
+		return "", fmt.Errorf("no usable local address on the default route")
+	}
+	return addr.IP.String(), nil
 }
 
 // DataPath joins elem onto the configured data directory.
@@ -139,11 +188,20 @@ func FlatcarPinPath() string {
 	return DataPath(FlatcarPinFile)
 }
 
+// EffectiveServerHttpPort is the port booting clients use to reach Booty:
+// --serverHttpPort when set, otherwise --httpPort.
+func EffectiveServerHttpPort() int {
+	if port := viper.GetInt(ServerHttpPort); port != 0 {
+		return port
+	}
+	return viper.GetInt(HttpPort)
+}
+
 // ServerHostPort returns the host[:port] clients should use to reach the HTTP
 // server, omitting the port when it is the default 80.
 func ServerHostPort() string {
 	host := viper.GetString(ServerIP)
-	if port := viper.GetInt(ServerHttpPort); port != 80 {
+	if port := EffectiveServerHttpPort(); port != 80 {
 		return net.JoinHostPort(host, fmt.Sprint(port))
 	}
 	return host
@@ -159,7 +217,7 @@ func LocalRegistry() string {
 // ClientRegistry is the registry address rendered into Ignition/iPXE for
 // booting machines.
 func ClientRegistry() string {
-	return fmt.Sprintf("%s:%d", viper.GetString(ServerIP), viper.GetInt(ServerHttpPort))
+	return fmt.Sprintf("%s:%d", viper.GetString(ServerIP), EffectiveServerHttpPort())
 }
 
 // CloseQuietly closes c and logs (at debug level) any error. Use it for
