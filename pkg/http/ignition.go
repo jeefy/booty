@@ -100,24 +100,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if host == nil {
-		coreosConfig := coreOSType.Config{}
-		coreosConfig.Ignition.Version = "3.4.0"
-		truePointer := true
-		contentsPointer := `
-[Service]
-Type=simple
-ExecStart=reboot
-
-[Install]
-WantedBy=default.target
-`
-		coreosConfig.Systemd.Units = append(coreosConfig.Systemd.Units, coreOSType.Unit{
-			Name:     "Reboot now please",
-			Enabled:  &truePointer,
-			Contents: &contentsPointer,
-		})
-		var dataOut []byte
-		dataOut, err := json.Marshal(&coreosConfig)
+		dataOut, err := json.Marshal(brigIgnitionConfig())
 		if err != nil {
 			w.Write([]byte(fmt.Sprintf("Failed to marshal output: %v", err)))
 			return
@@ -152,4 +135,30 @@ WantedBy=default.target
 	}
 
 	w.Write(ignCfg)
+}
+
+// brigIgnitionConfig is served to unregistered hosts: a single systemd unit
+// that reboots the machine so it keeps returning to PXE until an operator
+// registers its MAC. Ignition rejects unit names without a systemd extension
+// (.service, .timer, ...), so the name must keep its suffix.
+func brigIgnitionConfig() *coreOSType.Config {
+	enabled := true
+	contents := `[Unit]
+Description=Booty brig: reboot until this host is registered
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reboot
+
+[Install]
+WantedBy=multi-user.target
+`
+	cfg := &coreOSType.Config{}
+	cfg.Ignition.Version = coreOSType.MaxVersion.String()
+	cfg.Systemd.Units = append(cfg.Systemd.Units, coreOSType.Unit{
+		Name:     "booty-brig-reboot.service",
+		Enabled:  &enabled,
+		Contents: &contents,
+	})
+	return cfg
 }
