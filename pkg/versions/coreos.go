@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/buger/jsonparser"
@@ -52,68 +53,85 @@ func CoreOSVersionCheck() {
 	// Fetch the streams JSON once into memory. This both sets
 	// RemoteCoreOSVersion and returns the raw body for checksum extraction.
 	body := LoadRemoteCoreOSVersion()
-	oldVersion := viper.GetString(config.CurrentCoreOSVersion)
-	if viper.GetString(config.RemoteCoreOSVersion) != viper.GetString(config.CurrentCoreOSVersion) {
-		viper.Set(config.Updating, true)
-		slog.Info("Remote coreos version differs from local", "remote", viper.GetString(config.RemoteCoreOSVersion), "local", oldVersion)
-
-		// Write the already-fetched streams JSON to disk (no second request).
-		if err := saveCoreOSJSON(body); err != nil {
-			slog.Error("Error saving coreos json", "error", err)
-		}
-
-		arch := viper.GetString(config.CoreOSArchitecture)
-		version := viper.GetString(config.RemoteCoreOSVersion)
-
-		// Download initramfs with SHA256 checksum verification.
-		initramfsFile := fmt.Sprintf("fedora-coreos-%s-live-initramfs.%s.img", version, arch)
-		if sha, err := extractCoreOSChecksum(body, "initramfs"); err == nil {
-			if err := config.DownloadFileWithChecksum(fmt.Sprintf(RemoteCoreOSURL()+"/%s", initramfsFile), sha); err != nil {
-				slog.Error("Error downloading file with checksum", "file", initramfsFile, "error", err)
-			}
-		} else {
-			slog.Warn("Could not extract initramfs checksum, falling back to unverified download", "error", err)
-			if err := DownloadCoreOSFile(initramfsFile); err != nil {
-				slog.Error("Error downloading file", "file", initramfsFile, "error", err)
-			}
-		}
-
-		// Download kernel with SHA256 checksum verification.
-		kernelFile := fmt.Sprintf("fedora-coreos-%s-live-kernel-%s", version, arch)
-		if sha, err := extractCoreOSChecksum(body, "kernel"); err == nil {
-			if err := config.DownloadFileWithChecksum(fmt.Sprintf(RemoteCoreOSURL()+"/%s", kernelFile), sha); err != nil {
-				slog.Error("Error downloading file with checksum", "file", kernelFile, "error", err)
-			}
-		} else {
-			slog.Warn("Could not extract kernel checksum, falling back to unverified download", "error", err)
-			if err := DownloadCoreOSFile(kernelFile); err != nil {
-				slog.Error("Error downloading file", "file", kernelFile, "error", err)
-			}
-		}
-
-		// Download rootfs with SHA256 checksum verification.
-		rootfsFile := fmt.Sprintf("fedora-coreos-%s-live-rootfs.%s.img", version, arch)
-		if sha, err := extractCoreOSChecksum(body, "rootfs"); err == nil {
-			if err := config.DownloadFileWithChecksum(fmt.Sprintf(RemoteCoreOSURL()+"/%s", rootfsFile), sha); err != nil {
-				slog.Error("Error downloading file with checksum", "file", rootfsFile, "error", err)
-			}
-		} else {
-			slog.Warn("Could not extract rootfs checksum, falling back to unverified download", "error", err)
-			if err := DownloadCoreOSFile(rootfsFile); err != nil {
-				slog.Error("Error downloading file", "file", rootfsFile, "error", err)
-			}
-		}
-
-		viper.Set(config.CurrentCoreOSVersion, viper.GetString(config.RemoteCoreOSVersion))
-
-		// Remove old versions once new ones are downloaded
-		os.Remove(fmt.Sprintf("fedora-coreos-%s-live-initramfs.%s.img", oldVersion, arch))
-		os.Remove(fmt.Sprintf("fedora-coreos-%s-live-kernel-%s", oldVersion, arch))
-		os.Remove(fmt.Sprintf("fedora-coreos-%s-live-rootfs.%s.img", oldVersion, arch))
-
-		viper.Set(config.Updating, false)
+	remoteVersion := viper.GetString(config.RemoteCoreOSVersion)
+	if body == nil || remoteVersion == "" {
+		slog.Warn("Could not determine remote CoreOS version, skipping update")
+		return
 	}
 
+	oldVersion := viper.GetString(config.CurrentCoreOSVersion)
+	if remoteVersion == oldVersion {
+		return
+	}
+
+	viper.Set(config.Updating, true)
+	defer viper.Set(config.Updating, false)
+	slog.Info("Remote coreos version differs from local", "remote", remoteVersion, "local", oldVersion)
+
+	// Only advance the current version once every artifact has been
+	// downloaded successfully, so a half-published release never gets served.
+	if err := downloadCoreOSArtifacts(body, remoteVersion); err != nil {
+		slog.Error("CoreOS artifact download failed, not advancing version", "target", remoteVersion, "error", err)
+		return
+	}
+
+	// Write the already-fetched streams JSON to disk (no second request).
+	if err := saveCoreOSJSON(body); err != nil {
+		slog.Error("Error saving coreos json", "error", err)
+	}
+
+	viper.Set(config.CurrentCoreOSVersion, remoteVersion)
+	slog.Info("CoreOS updated", "version", remoteVersion)
+
+	removeOldCoreOSArtifacts(oldVersion)
+}
+
+// downloadCoreOSArtifacts fetches the PXE initramfs, kernel and rootfs for
+// version, verifying SHA256 checksums from the streams JSON when available.
+func downloadCoreOSArtifacts(body []byte, version string) error {
+	arch := viper.GetString(config.CoreOSArchitecture)
+	artifacts := map[string]string{
+		"initramfs": fmt.Sprintf("fedora-coreos-%s-live-initramfs.%s.img", version, arch),
+		"kernel":    fmt.Sprintf("fedora-coreos-%s-live-kernel-%s", version, arch),
+		"rootfs":    fmt.Sprintf("fedora-coreos-%s-live-rootfs.%s.img", version, arch),
+	}
+
+	for _, artifactType := range []string{"initramfs", "kernel", "rootfs"} {
+		file := artifacts[artifactType]
+		url := fmt.Sprintf(RemoteCoreOSURL()+"/%s", file)
+		sha, err := extractCoreOSChecksum(body, artifactType)
+		if err != nil {
+			slog.Warn("Could not extract checksum, falling back to unverified download", "artifact", artifactType, "error", err)
+			if err := config.DownloadFile(url); err != nil {
+				return fmt.Errorf("%s: %w", file, err)
+			}
+			continue
+		}
+		if err := config.DownloadFileWithChecksum(url, sha); err != nil {
+			return fmt.Errorf("%s: %w", file, err)
+		}
+	}
+	return nil
+}
+
+// removeOldCoreOSArtifacts deletes the PXE files of a superseded release from
+// DataDir. Missing files are not an error.
+func removeOldCoreOSArtifacts(oldVersion string) {
+	if oldVersion == "" || oldVersion == "0.0.0" {
+		return
+	}
+	arch := viper.GetString(config.CoreOSArchitecture)
+	dataDir := viper.GetString(config.DataDir)
+	for _, file := range []string{
+		fmt.Sprintf("fedora-coreos-%s-live-initramfs.%s.img", oldVersion, arch),
+		fmt.Sprintf("fedora-coreos-%s-live-kernel-%s", oldVersion, arch),
+		fmt.Sprintf("fedora-coreos-%s-live-rootfs.%s.img", oldVersion, arch),
+	} {
+		path := filepath.Join(dataDir, file)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Could not remove old CoreOS artifact", "path", path, "error", err)
+		}
+	}
 }
 
 // LoadRemoteCoreOSVersion fetches the Fedora CoreOS streams JSON, sets the
