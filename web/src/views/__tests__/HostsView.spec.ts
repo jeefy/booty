@@ -4,6 +4,8 @@ import HostsView from '@/views/HostsView.vue'
 import type { BootyData, Host } from '@/types'
 import { jsonResponse, mockFetch, requestBody } from '@/__tests__/helpers'
 
+const DIGEST = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+
 const hostA: Host = {
   mac: 'aa:bb:cc:dd:ee:01',
   hostname: 'alpha',
@@ -12,7 +14,10 @@ const hostA: Host = {
   ignitionFile: 'alpha.yaml',
   os: 'flatcar',
   ostreeImage: '',
-  doInstall: false
+  doInstall: false,
+  running: '3815.2.0',
+  lastCheck: '2026-09-24T11:30:00Z',
+  rebootPending: false
 }
 
 const hostB: Host = {
@@ -23,7 +28,21 @@ const hostB: Host = {
   ignitionFile: '',
   os: 'ublue',
   ostreeImage: 'ghcr.io/ublue-os/bazzite:stable',
-  doInstall: true
+  doInstall: true,
+  running: `ghcr.io/ublue-os/bazzite@${DIGEST}`,
+  lastCheck: '2026-09-24T11:45:00Z',
+  rebootPending: true
+}
+
+const hostC: Host = {
+  mac: 'aa:bb:cc:dd:ee:03',
+  hostname: 'charlie-never',
+  ip: '',
+  booted: '',
+  os: 'coreos',
+  running: '',
+  lastCheck: '',
+  rebootPending: false
 }
 
 const data: BootyData = {
@@ -73,7 +92,9 @@ describe('HostsView', () => {
     expect(rows[1]!.text()).toContain('bravo')
 
     const link = rows[0]!.find('a')
-    expect(link.attributes('href')).toBe('/ignition.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01&preview=1')
+    expect(link.attributes('href')).toBe(
+      '/ignition.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01&preview=1&part=merged'
+    )
     expect(link.attributes('target')).toBe('_blank')
     expect(link.attributes('rel')).toBe('noopener noreferrer')
 
@@ -84,6 +105,93 @@ describe('HostsView', () => {
     expect(unknownRows).toHaveLength(1)
     expect(unknownRows[0]!.text()).toContain('10.0.0.99')
     expect(unknownRows[0]!.text()).toContain('7')
+  })
+
+  it('renders Running, Last check and a status badge for each fleet state', async () => {
+    const { wrapper } = mountWithData({
+      hosts: { [hostA.mac]: hostA, [hostB.mac]: hostB, [hostC.mac]: hostC },
+      unknownHosts: {}
+    })
+    await flushPromises()
+
+    const alpha = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"]')
+    expect(alpha.find('[data-testid="host-status"]').text()).toBe('Up to date')
+    expect(alpha.find('[data-testid="host-status"]').classes()).toContain('text-bg-success')
+    expect(alpha.find('[data-testid="host-running"]').text()).toBe('3815.2.0')
+    expect(alpha.find('[data-testid="host-running"] .mono').exists()).toBe(true)
+    expect(alpha.find('[data-testid="host-last-check"]').text()).toContain('ago')
+
+    const bravo = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"]')
+    expect(bravo.find('[data-testid="host-status"]').text()).toBe('Reboot pending')
+    expect(bravo.find('[data-testid="host-status"]').classes()).toContain('text-bg-warning')
+
+    const charlie = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:03"]')
+    expect(charlie.find('[data-testid="host-status"]').text()).toBe('Unknown')
+    expect(charlie.find('[data-testid="host-status"]').classes()).toContain('text-bg-secondary')
+    expect(charlie.find('[data-testid="host-running"]').text()).toBe('—')
+    expect(charlie.find('[data-testid="host-last-check"]').text()).toBe('never')
+  })
+
+  it('shortens image@digest to the image plus 12 hex chars and keeps the full value in the title', async () => {
+    const { wrapper } = mountWithData()
+    await flushPromises()
+
+    const cell = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-running"]')
+    const [image, digest] = cell.findAll('.mono')
+    expect(image!.text()).toBe('ghcr.io/ublue-os/bazzite')
+    expect(image!.attributes('title')).toBe(`ghcr.io/ublue-os/bazzite@${DIGEST}`)
+    expect(digest!.text()).toBe('@0123456789ab')
+    expect(digest!.attributes('title')).toBe(DIGEST)
+    expect(cell.text()).not.toContain(DIGEST)
+  })
+
+  it('links the merged preview from the MAC and exposes user/builtin parts as secondary links', async () => {
+    const { wrapper } = mountWithData()
+    await flushPromises()
+
+    const row = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"]')
+    const base = '/ignition.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A02&preview=1'
+    expect(row.find('[data-preview="merged"]').attributes('href')).toBe(`${base}&part=merged`)
+    const user = row.find('[data-preview="user"]')
+    const builtin = row.find('[data-preview="builtin"]')
+    expect(user.attributes('href')).toBe(`${base}&part=user`)
+    expect(user.text()).toBe('user config')
+    expect(builtin.attributes('href')).toBe(`${base}&part=builtin`)
+    expect(builtin.text()).toBe('builtin')
+    for (const link of [user, builtin]) {
+      expect(link.attributes('target')).toBe('_blank')
+      expect(link.attributes('rel')).toBe('noopener noreferrer')
+    }
+
+    const unknownLink = wrapper.find('[data-testid="unknown-table"] tr[data-mac] a')
+    expect(unknownLink.attributes('href')).toContain('&part=merged')
+  })
+
+  it('keeps ignition file, OSTree image and install flag visible in the host cell', async () => {
+    const { wrapper } = mountWithData()
+    await flushPromises()
+
+    const alpha = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-config"]')
+    expect(alpha.text()).toContain('alpha.yaml')
+    expect(alpha.text()).not.toContain('Install')
+
+    const bravo = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-config"]')
+    expect(bravo.text()).toContain('default ignition')
+    expect(bravo.text()).toContain('ghcr.io/ublue-os/bazzite:stable')
+    expect(bravo.text()).toContain('Install')
+  })
+
+  it('treats hosts from an old server without fleet fields as Unknown', async () => {
+    const { wrapper } = mountWithData({
+      hosts: { 'aa:bb:cc:dd:ee:10': { mac: 'aa:bb:cc:dd:ee:10', hostname: 'legacy' } },
+      unknownHosts: {}
+    })
+    await flushPromises()
+
+    const row = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:10"]')
+    expect(row.find('[data-testid="host-status"]').text()).toBe('Unknown')
+    expect(row.find('[data-testid="host-running"]').text()).toBe('—')
+    expect(row.find('[data-testid="host-last-check"]').text()).toBe('never')
   })
 
   it('shows empty states and tolerates missing maps in the payload', async () => {

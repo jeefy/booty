@@ -99,6 +99,11 @@ onMounted(() => {
         </div>
       </div>
 
+      <p v-if="info.fleet" class="small text-secondary mt-3 mb-0" data-testid="about-fleet">
+        Fleet: <span class="mono">{{ info.fleet.hosts ?? 0 }}</span> hosts,
+        <span class="mono">{{ info.fleet.pendingReboots ?? 0 }}</span> pending reboots.
+      </p>
+
       <div class="section-title">Project</div>
       <div class="panel p-3 fade-in">
         <p class="mb-2">

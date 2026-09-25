@@ -9,8 +9,9 @@ output must exist before starting `booty`).
 ```
 src/
   api.ts          typed fetch helpers (apiGet / apiPost) + ApiError from the JSON error envelope
-  types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, CachedImage)
+  types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, CachedImage) + normalisers
   utils/time.ts   relative / absolute time formatting for RFC3339 timestamps
+  utils/fleet.ts  fleet helpers: running-label splitting, host status, pending list, preview URLs
   components/     ErrorAlert, LoadingState, EmptyState, HostForm
   views/          HomeView (status + Flatcar pin), HostsView, CacheView, AboutView
   router/         hash-based routes (/, /hosts, /cache, /about)
@@ -19,6 +20,24 @@ src/
 
 Bootstrap CSS is imported from the npm package in `src/main.ts`; no Bootstrap
 JS is used (the navbar collapse is driven by Vue state).
+
+## Fleet status
+
+Each `Host` carries three fleet fields reported by the running machine:
+`running` (the version it last reported, or `image@digest` for ostree hosts),
+`lastCheck` (RFC3339) and `rebootPending`. The Hosts table shows them as the
+**Status** badge (`Reboot pending` / `Up to date` / `Unknown`), a monospace
+**Running** column (digests are shortened to `image@<12 hex>` with the full
+value in the tooltip) and a relative **Last check** column; Ignition file,
+OSTree image and the install flag are folded into the Host cell to keep the
+table readable at 1280px. Hosts from older servers that omit the fields are
+normalised to `""`/`false` in `types.ts` and render as `Unknown`. The Overview
+page's Fleet panel takes `hosts`/`pendingReboots` from `GET /info`'s `fleet`
+block when present and derives them from `/booty.json` otherwise, listing every
+host pending reboot with its running and target version. The MAC link in the
+Hosts table opens the merged Ignition preview
+(`/ignition.json?mac=<mac>&preview=1&part=merged`); the small "user config" and
+"builtin" links underneath open `part=user` and `part=builtin`.
 
 ## Development
 

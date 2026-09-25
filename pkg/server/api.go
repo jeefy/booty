@@ -208,6 +208,10 @@ type infoResponse struct {
 		Version   string `json:"version"`
 		Timestamp string `json:"timestamp"`
 	} `json:"booty"`
+	Fleet struct {
+		Hosts          int `json:"hosts"`
+		PendingReboots int `json:"pendingReboots"`
+	} `json:"fleet"`
 }
 
 func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +225,13 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	info.CoreOS.Version = state.CurrentCoreOSVersion()
 	info.Booty.Version = viper.GetString(config.Version)
 	info.Booty.Timestamp = viper.GetString(config.Timestamp)
+	hosts := hardware.Snapshot().Hosts
+	info.Fleet.Hosts = len(hosts)
+	for _, h := range hosts {
+		if h.RebootPending {
+			info.Fleet.PendingReboots++
+		}
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 

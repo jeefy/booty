@@ -38,6 +38,9 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.CoreOSChannel, "stable")
 	viper.Set(config.CoreOSArchitecture, "x86_64")
 	viper.Set(config.DoInstallClearOn, config.ClearOnIgnition)
+	viper.Set(config.Builtin, config.DefaultBuiltin)
+	viper.Set(config.SSHAuthorizedKeysFl, "")
+	viper.Set(config.SSHAuthorizedKeys, []string{})
 
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -254,8 +257,8 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:ff&preview=1", "")
-	if r.status != 200 || !strings.Contains(r.body, "node1") {
-		t.Fatalf("ignition preview: %+v", r)
+	if r.status != 200 || !strings.Contains(r.body, "/ignition/user.json?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff") {
+		t.Fatalf("ignition preview should be the merge wrapper: %+v", r)
 	}
 	if h, _ := hardware.Get("aa:bb:cc:dd:ee:ff"); !h.DoInstall || h.Booted != "" {
 		t.Fatalf("a preview must not flip doInstall or stamp booted, got %+v", h)
@@ -265,12 +268,16 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") {
 		t.Fatalf("ignition: %+v", r)
 	}
-	var ign map[string]any
-	if err := json.Unmarshal([]byte(r.body), &ign); err != nil {
+	var wrapper ignitionWrapper
+	if err := json.Unmarshal([]byte(r.body), &wrapper); err != nil {
 		t.Fatalf("ignition output is not JSON: %v\n%s", err, r.body)
 	}
-	if !strings.Contains(r.body, "node1") {
-		t.Fatalf("hostname not templated into ignition:\n%s", r.body)
+	if wrapper.Ignition.Version != "3.4.0" || len(wrapper.Ignition.Config.Merge) != 2 {
+		t.Fatalf("wrapper must carry the user config's version and two merge entries:\n%s", r.body)
+	}
+	if wrapper.Ignition.Config.Merge[0].Source != "http://192.168.1.10:8080/ignition/builtin.json?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff" ||
+		wrapper.Ignition.Config.Merge[1].Source != "http://192.168.1.10:8080/ignition/user.json?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff" {
+		t.Fatalf("merge order must be builtin then user, on the client-facing address:\n%s", r.body)
 	}
 	h, _ := hardware.Get("aa:bb:cc:dd:ee:ff")
 	if h.DoInstall {
@@ -278,6 +285,11 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	}
 	if h.Booted == "" || h.IP != "127.0.0.1" {
 		t.Fatalf("booted/ip should be recorded, got %+v", h)
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/ignition/user.json?mac=aa:bb:cc:dd:ee:ff", "")
+	if r.status != 200 || !strings.Contains(r.body, "node1") || !strings.Contains(r.body, `"version": "3.4.0"`) {
+		t.Fatalf("user child must be the rendered butane: %+v", r)
 	}
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:00", "")
@@ -388,17 +400,20 @@ func TestInfoAndVersion(t *testing.T) {
 	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") {
 		t.Fatalf("info: %+v", r)
 	}
-	var info map[string]map[string]string
+	var info map[string]map[string]any
 	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"flatcar", "coreos", "booty"} {
+	for _, key := range []string{"flatcar", "coreos", "booty", "fleet"} {
 		if _, ok := info[key]; !ok {
 			t.Fatalf("info missing %q: %s", key, r.body)
 		}
 	}
 	if _, ok := info["flatcar"]["pinnedVersion"]; !ok {
 		t.Fatalf("info.flatcar missing pinnedVersion: %s", r.body)
+	}
+	if info["fleet"]["hosts"] != float64(0) || info["fleet"]["pendingReboots"] != float64(0) {
+		t.Fatalf("info.fleet should count zero hosts: %s", r.body)
 	}
 
 	r = do(t, http.MethodGet, srv.URL+"/version.json", "")

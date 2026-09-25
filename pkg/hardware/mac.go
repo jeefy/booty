@@ -16,14 +16,17 @@ import (
 )
 
 type Host struct {
-	MAC          string `json:"mac"`
-	Hostname     string `json:"hostname"`
-	IP           string `json:"ip"`
-	Booted       string `json:"booted"`
-	IgnitionFile string `json:"ignitionFile,omitempty"`
-	OS           string `json:"os,omitempty"`
-	OSTreeImage  string `json:"ostreeImage,omitempty"`
-	DoInstall    bool   `json:"doInstall,omitempty"`
+	MAC           string `json:"mac"`
+	Hostname      string `json:"hostname"`
+	IP            string `json:"ip"`
+	Booted        string `json:"booted"`
+	IgnitionFile  string `json:"ignitionFile,omitempty"`
+	OS            string `json:"os,omitempty"`
+	OSTreeImage   string `json:"ostreeImage,omitempty"`
+	DoInstall     bool   `json:"doInstall,omitempty"`
+	Running       string `json:"running"`
+	LastCheck     string `json:"lastCheck"`
+	RebootPending bool   `json:"rebootPending"`
 }
 
 type UnknownHost struct {

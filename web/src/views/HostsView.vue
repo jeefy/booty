@@ -3,13 +3,22 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { apiGet, apiPost, errorMessage } from '@/api'
 import {
   normalizeBootyData,
+  normalizeHost,
   type BootyData,
   type Host,
+  type RawBootyData,
   type RegisterResponse,
   type StatusResponse,
   type UnknownHost
 } from '@/types'
 import { formatAbsolute, formatRelative } from '@/utils/time'
+import {
+  HOST_STATUS_LABEL,
+  hostStatus,
+  ignitionPreviewUrl,
+  splitRunning,
+  type RunningLabel
+} from '@/utils/fleet'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -46,7 +55,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    hostData.value = normalizeBootyData(await apiGet<Partial<BootyData>>('/booty.json'))
+    hostData.value = normalizeBootyData(await apiGet<RawBootyData>('/booty.json'))
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
@@ -70,7 +79,10 @@ function startRegister(mac: string, unknown: UnknownHost) {
     ignitionFile: '',
     os: '',
     ostreeImage: '',
-    doInstall: false
+    doInstall: false,
+    running: '',
+    lastCheck: '',
+    rebootPending: false
   }
 }
 
@@ -85,7 +97,7 @@ async function save(mac: string) {
   rowErrors[mac] = ''
   try {
     const { host } = await apiPost<RegisterResponse>('/register', draft)
-    const saved = host ?? draft
+    const saved = normalizeHost(host ?? draft)
     const nextHosts = { ...hostData.value.hosts }
     if (mac !== saved.mac) delete nextHosts[mac]
     nextHosts[saved.mac] = saved
@@ -116,9 +128,14 @@ async function remove(mac: string) {
   }
 }
 
-function ignitionUrl(mac: string) {
-  return `/ignition.json?mac=${encodeURIComponent(mac)}&preview=1`
-}
+const runningLabels = computed(() => {
+  const labels: Record<string, RunningLabel> = {}
+  for (const [mac, host] of hosts.value) {
+    const label = splitRunning(host.running)
+    if (label) labels[mac] = label
+  }
+  return labels
+})
 
 onMounted(() => {
   void load()
@@ -149,12 +166,11 @@ onMounted(() => {
           <thead>
             <tr>
               <th scope="col">MAC</th>
-              <th scope="col">Hostname</th>
+              <th scope="col">Host</th>
               <th scope="col">IP</th>
               <th scope="col">OS</th>
-              <th scope="col">Ignition</th>
-              <th scope="col">OSTree image</th>
-              <th scope="col">Install</th>
+              <th scope="col">Running</th>
+              <th scope="col">Last check</th>
               <th scope="col">Last boot</th>
               <th scope="col" class="text-end">Actions</th>
             </tr>
@@ -165,34 +181,84 @@ onMounted(() => {
                 <td>
                   <a
                     class="mono"
-                    :href="ignitionUrl(mac)"
+                    :href="ignitionPreviewUrl(mac)"
                     target="_blank"
                     rel="noopener noreferrer"
-                    title="Open rendered Ignition config"
+                    title="Open merged Ignition preview (builtin + user config)"
+                    data-preview="merged"
                   >
                     {{ mac }}
                   </a>
+                  <div class="preview-parts small">
+                    <a
+                      :href="ignitionPreviewUrl(mac, 'user')"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Preview only the user's Ignition config"
+                      data-preview="user"
+                      >user config</a
+                    >
+                    <span aria-hidden="true">·</span>
+                    <a
+                      :href="ignitionPreviewUrl(mac, 'builtin')"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Preview only Booty's builtin Ignition fragment"
+                      data-preview="builtin"
+                      >builtin</a
+                    >
+                  </div>
                 </td>
-                <td>{{ host.hostname || '—' }}</td>
+                <td>
+                  <div class="host-name">
+                    <span>{{ host.hostname || '—' }}</span>
+                    <span
+                      class="badge"
+                      :class="HOST_STATUS_LABEL[hostStatus(host)].badge"
+                      :data-status="hostStatus(host)"
+                      data-testid="host-status"
+                    >
+                      {{ HOST_STATUS_LABEL[hostStatus(host)].text }}
+                    </span>
+                  </div>
+                  <div class="host-config small text-secondary" data-testid="host-config">
+                    <span class="mono" title="Ignition file">{{
+                      host.ignitionFile || 'default ignition'
+                    }}</span>
+                    <span
+                      v-if="host.ostreeImage"
+                      class="mono truncate ostree"
+                      :title="`OSTree image: ${host.ostreeImage}`"
+                    >
+                      {{ host.ostreeImage }}
+                    </span>
+                    <span v-if="host.doInstall" class="badge text-bg-warning">Install</span>
+                  </div>
+                </td>
                 <td class="mono">{{ host.ip || '—' }}</td>
                 <td>
                   <span v-if="host.os" class="badge text-bg-light border">{{ host.os }}</span>
                   <span v-else class="text-secondary">default</span>
                 </td>
-                <td class="mono">{{ host.ignitionFile || '—' }}</td>
-                <td>
-                  <span
-                    v-if="host.ostreeImage"
-                    class="mono truncate ostree"
-                    :title="host.ostreeImage"
-                  >
-                    {{ host.ostreeImage }}
-                  </span>
+                <td data-testid="host-running">
+                  <template v-if="runningLabels[mac]">
+                    <div class="mono truncate running" :title="host.running">
+                      {{ runningLabels[mac].image }}
+                    </div>
+                    <div
+                      v-if="runningLabels[mac].digest"
+                      class="mono small text-secondary"
+                      :title="runningLabels[mac].digest"
+                    >
+                      @{{ runningLabels[mac].shortDigest }}
+                    </div>
+                  </template>
                   <span v-else class="text-secondary">—</span>
                 </td>
-                <td>
-                  <span v-if="host.doInstall" class="badge text-bg-warning">Yes</span>
-                  <span v-else class="text-secondary">No</span>
+                <td data-testid="host-last-check">
+                  <span :title="formatAbsolute(host.lastCheck)">{{
+                    formatRelative(host.lastCheck)
+                  }}</span>
                 </td>
                 <td>
                   <span :title="formatAbsolute(host.booted)">{{
@@ -252,12 +318,12 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="rowErrors[mac] && !drafts[mac]" :data-mac-error="mac">
-                <td colspan="9" class="pt-0 border-top-0">
+                <td colspan="8" class="pt-0 border-top-0">
                   <div class="row-error" data-testid="row-error">{{ rowErrors[mac] }}</div>
                 </td>
               </tr>
               <tr v-if="drafts[mac]" class="table-active" :data-mac-edit="mac">
-                <td colspan="9" class="pt-0 border-top-0">
+                <td colspan="8" class="pt-0 border-top-0">
                   <HostForm
                     v-model="drafts[mac]"
                     :busy="Boolean(busy[mac])"
@@ -301,10 +367,11 @@ onMounted(() => {
                 <td>
                   <a
                     class="mono"
-                    :href="ignitionUrl(mac)"
+                    :href="ignitionPreviewUrl(mac)"
                     target="_blank"
                     rel="noopener noreferrer"
-                    title="Open rendered Ignition config"
+                    title="Open merged Ignition preview"
+                    data-preview="merged"
                   >
                     {{ mac }}
                   </a>
@@ -360,7 +427,40 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.preview-parts {
+  display: flex;
+  gap: var(--booty-space-1);
+  margin-top: var(--booty-space-1);
+  color: var(--booty-muted);
+}
+
+.preview-parts a {
+  text-decoration: none;
+}
+
+.preview-parts a:hover {
+  text-decoration: underline;
+}
+
+.host-name {
+  display: flex;
+  align-items: center;
+  gap: var(--booty-space-2);
+}
+
+.host-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-1) var(--booty-space-2);
+  margin-top: var(--booty-space-1);
+}
+
 .ostree {
-  max-width: 18rem;
+  max-width: 12rem;
+}
+
+.running {
+  max-width: 12rem;
 }
 </style>

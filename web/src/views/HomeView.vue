@@ -2,7 +2,14 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { apiGet, apiPost, errorMessage } from '@/api'
-import { normalizeBootyData, type BootyData, type Info, type PinState } from '@/types'
+import {
+  normalizeBootyData,
+  type BootyData,
+  type Info,
+  type PinState,
+  type RawBootyData
+} from '@/types'
+import { fleetSummary, pendingHosts, splitRunning, targetVersion } from '@/utils/fleet'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 
@@ -25,13 +32,22 @@ const unknownCount = computed(() => Object.keys(hostData.value.unknownHosts).len
 const flatcarVersion = computed(() => info.value.flatcar?.version || '')
 const coreosVersion = computed(() => info.value.coreos?.version || '')
 const bootyVersion = computed(() => info.value.booty?.version || '')
+const fleet = computed(() => fleetSummary(hostData.value, info.value))
+const pending = computed(() =>
+  pendingHosts(hostData.value).map((host) => ({
+    mac: host.mac,
+    hostname: host.hostname || host.mac,
+    running: splitRunning(host.running),
+    target: targetVersion(host, info.value)
+  }))
+)
 
 async function load(showSpinner = true) {
   if (showSpinner) loading.value = true
   error.value = ''
   try {
     const [data, infoData, pinData] = await Promise.all([
-      apiGet<Partial<BootyData>>('/booty.json'),
+      apiGet<RawBootyData>('/booty.json'),
       apiGet<Info>('/info'),
       apiGet<PinState>('/flatcar/pin')
     ])
@@ -132,6 +148,65 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div class="section-title">Fleet</div>
+      <div
+        class="panel fleet-panel fade-in"
+        :class="{ 'fleet-panel--alert': fleet.pendingReboots > 0 }"
+        data-testid="fleet-card"
+      >
+        <div class="fleet-stats">
+          <div class="fleet-stat">
+            <div class="stat-label">Hosts</div>
+            <div class="stat-value" data-testid="fleet-hosts">{{ fleet.hosts }}</div>
+          </div>
+          <div class="fleet-stat">
+            <div class="stat-label">Pending reboots</div>
+            <div
+              class="stat-value"
+              :class="{ 'fleet-pending': fleet.pendingReboots > 0 }"
+              data-testid="fleet-pending"
+            >
+              {{ fleet.pendingReboots }}
+            </div>
+          </div>
+          <div class="fleet-stat fleet-source stat-hint">
+            <template v-if="fleet.fromServer">Reported by /info</template>
+            <template v-else>Derived from host records</template>
+          </div>
+        </div>
+        <table v-if="pending.length" class="table table-sm fleet-table mb-0" data-testid="fleet-list">
+          <thead>
+            <tr>
+              <th scope="col">Host</th>
+              <th scope="col">Running</th>
+              <th scope="col">Target</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in pending" :key="row.mac" :data-mac="row.mac">
+              <td>
+                <RouterLink to="/hosts">{{ row.hostname }}</RouterLink>
+              </td>
+              <td>
+                <span v-if="row.running" class="mono truncate fleet-version" :title="row.running.full">{{
+                  row.running.short
+                }}</span>
+                <span v-else class="text-secondary">—</span>
+              </td>
+              <td>
+                <span v-if="row.target" class="mono truncate fleet-version" :title="row.target">{{
+                  row.target
+                }}</span>
+                <span v-else class="text-secondary">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="fleet-empty small text-secondary" data-testid="fleet-empty">
+          Every host is on its target version.
+        </div>
+      </div>
+
       <div class="section-title">Flatcar version pin</div>
       <div class="panel p-3 pin-panel fade-in">
         <p v-if="pin.pinned" class="mb-3">
@@ -174,5 +249,66 @@ onUnmounted(() => {
 <style scoped>
 .pin-panel {
   max-width: 40rem;
+}
+
+.fleet-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.fleet-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--booty-border);
+}
+
+.fleet-panel--alert::before {
+  background: var(--bs-warning);
+}
+
+.fleet-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--booty-space-3) var(--booty-space-5);
+  padding: var(--booty-space-3);
+}
+
+.fleet-source {
+  margin-left: auto;
+  margin-top: 0;
+}
+
+.fleet-pending {
+  color: var(--booty-accent-ink);
+}
+
+.fleet-table {
+  border-top: 1px solid var(--booty-border);
+}
+
+.fleet-table th {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--booty-muted);
+  background: var(--booty-surface-alt);
+}
+
+.fleet-table td,
+.fleet-table th {
+  padding-left: var(--booty-space-3);
+  padding-right: var(--booty-space-3);
+}
+
+.fleet-version {
+  max-width: 22rem;
+}
+
+.fleet-empty {
+  padding: 0 var(--booty-space-3) var(--booty-space-3);
 }
 </style>

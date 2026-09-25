@@ -5,12 +5,15 @@ import (
 	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 func newDownloadServer(t *testing.T, body string, status int) *httptest.Server {
@@ -178,5 +181,65 @@ func TestCleanRelPath(t *testing.T) {
 		if tc.ok && got != tc.want {
 			t.Errorf("CleanRelPath(%q)=%q want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestServerAddressHelpers(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	LoadConfig()
+
+	viper.Set(ServerIP, "192.168.1.10")
+	viper.Set(HttpPort, 8080)
+	viper.Set(ServerHttpPort, 0)
+	if got := EffectiveServerHttpPort(); got != 8080 {
+		t.Fatalf("EffectiveServerHttpPort=%d want httpPort 8080", got)
+	}
+	if got := ServerHostPort(); got != "192.168.1.10:8080" {
+		t.Fatalf("ServerHostPort=%q", got)
+	}
+	if got := ClientRegistry(); got != "192.168.1.10:8080" {
+		t.Fatalf("ClientRegistry=%q", got)
+	}
+
+	viper.Set(ServerHttpPort, 80)
+	if got := ServerHostPort(); got != "192.168.1.10" {
+		t.Fatalf("ServerHostPort must omit :80, got %q", got)
+	}
+	if got := ClientRegistry(); got != "192.168.1.10:80" {
+		t.Fatalf("ClientRegistry keeps the explicit port for OCI refs, got %q", got)
+	}
+
+	viper.Set(ServerHttpPort, 9090)
+	if got := ServerHostPort(); got != "192.168.1.10:9090" {
+		t.Fatalf("explicit serverHttpPort must win, got %q", got)
+	}
+}
+
+func TestResolveServerAddress(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	LoadConfig()
+	viper.Set(HttpPort, 18080)
+	viper.Set(ServerHttpPort, 0)
+	viper.Set(ServerIP, "10.9.8.7")
+
+	if err := ResolveServerAddress(); err != nil {
+		t.Fatalf("ResolveServerAddress: %v", err)
+	}
+	if viper.GetString(ServerIP) != "10.9.8.7" {
+		t.Fatalf("explicit serverIP must be kept, got %q", viper.GetString(ServerIP))
+	}
+	if viper.GetInt(ServerHttpPort) != 18080 {
+		t.Fatalf("serverHttpPort should default to httpPort, got %d", viper.GetInt(ServerHttpPort))
+	}
+
+	viper.Set(ServerIP, "")
+	if err := ResolveServerAddress(); err != nil {
+		t.Skipf("no default route in this environment: %v", err)
+	}
+	ip := net.ParseIP(viper.GetString(ServerIP))
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
+		t.Fatalf("autodetected serverIP %q should be a real interface address", viper.GetString(ServerIP))
 	}
 }

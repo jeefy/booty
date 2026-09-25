@@ -4,14 +4,10 @@ kind: ConfigMap
 metadata:
   name: booty-config
 data:
-  # Update Hardware with your MAC/Hostname mapping. Here's mine for an example
+  # Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
   ignition.yaml: |
     variant: flatcar
     version: 1.1.0
-    passwd:
-      users:
-        - name: core
-          ssh_authorized_keys: [] # Add your SSH keys here
     storage:
       filesystems:
         - device: /dev/sda
@@ -20,10 +16,6 @@ data:
           wipe_filesystem: true
           label: ssd
       files:
-        - path: /etc/hostname
-          mode: 0644
-          contents:
-            inline: {{ .Hostname }}
         - path: /opt/cni.sh
           contents:
             source: http://192.168.50.20/data/config/cni.sh
@@ -39,10 +31,6 @@ data:
         - path: /opt/join.sh
           contents:
             source: http://192.168.50.20/data/config/join.sh
-          mode: 0775
-        - path: /opt/version-check.sh
-          contents:
-            source: http://192.168.50.20/data/config/version-check.sh
           mode: 0775
     systemd:
       units:
@@ -66,26 +54,6 @@ data:
                 [Unit]
                 After=var-lib-containerd.mount
                 Requires=var-lib-containerd.mount 
-        - name: update.service
-          contents: |
-            [Unit]
-            Description=Compares current version to remote version
-
-            [Service]
-            Environment="BOOTY_IP={{ .ServerIP }}"
-            Type=oneshot
-            ExecStart=/opt/version-check.sh
-        - name: update.timer
-          enabled: true
-          contents: |
-            [Unit]
-            Description=Run update-check every 10 minutes
-
-            [Timer]
-            OnCalendar=*:0/10
-
-            [Install]
-            WantedBy=multi-user.target
         - enabled: true
           name: cni-install.service
           contents: |
@@ -176,23 +144,6 @@ data:
 
     systemctl enable kubelet && systemctl start kubelet
     echo "Kubelet started";
-  version-check.sh: |
-    #!/bin/bash
-
-    set -a
-    . /etc/lsb-release
-    . <(curl http://${BOOTY_IP}/version.txt)
-    set +a
-
-    echo "Local version: $DISTRIB_RELEASE";
-    echo "Remote version: $FLATCAR_VERSION";
-
-    if [ "$DISTRIB_RELEASE" != "$FLATCAR_VERSION" ]; then
-      echo "Need to reboot!";
-      touch /var/run/reboot-required
-    else
-      echo "Up to date";
-    fi
 ---
 apiVersion: apps/v1
 kind: Deployment
