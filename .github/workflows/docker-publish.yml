@@ -145,6 +145,8 @@ jobs:
   # Upload the provenance to ghcr.io
   provenance:
     needs: [build]
+    # Nothing is pushed on pull requests, so there is no digest to attest.
+    if: github.event_name != 'pull_request'
     permissions:
       id-token: write # For signing.
       actions: read # For reading workflow info.
