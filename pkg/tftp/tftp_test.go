@@ -191,22 +191,25 @@ func TestIPXEScriptRendering(t *testing.T) {
 		t.Fatalf("flatcar script has placeholders or leading tabs:\n%s", out)
 	}
 
-	ublue := &hardware.Host{MAC: "aa:bb:cc:dd:ee:02", OS: "ublue", DoInstall: true, OSTreeImage: vars.OSTreeImage}
-	vars.MenuDefault = MenuDefaultForHost(ublue)
-	out = IPXEScript(OSForHost(ublue), vars)
+	coreos := &hardware.Host{MAC: "aa:bb:cc:dd:ee:02", OS: "coreos", DoInstall: true, OSTreeImage: vars.OSTreeImage}
+	vars.MenuDefault = MenuDefaultForHost(coreos)
+	out = IPXEScript(OSForHost(coreos), vars)
 	for _, want := range []string{
-		"set menu-default install",
 		"set OSTREE_IMAGE ghcr.io/ublue-os/bazzite:stable",
 		"set CONFIGURL http://192.168.1.10:8080/ignition.json?mac=${mac}",
 		"set VERSION 39.20231101.3.0",
-		"chain http://192.168.1.10:8080/data/ublue.ipxe",
+		"kernel ${BASEURL}/fedora-coreos-${VERSION}-live-kernel-${ARCH}",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("ublue script missing %q:\n%s", want, out)
+			t.Errorf("coreos script missing %q:\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "[[") {
-		t.Fatalf("ublue script has placeholders:\n%s", out)
+		t.Fatalf("coreos script has placeholders:\n%s", out)
+	}
+
+	if _, stale := PXEConfig["ublue.ipxe"]; stale {
+		t.Fatal("ublue was replaced by bluefin")
 	}
 
 	vars.MenuDefault = MenuDefaultForHost(nil)
@@ -232,5 +235,64 @@ func TestIPXEScriptRendering(t *testing.T) {
 				t.Errorf("template %q has a leading tab line %q", key, line)
 			}
 		}
+	}
+}
+
+func TestBluefinScriptRendering(t *testing.T) {
+	vars := TemplateVars{
+		Server:   "192.168.1.10:8080",
+		Hostname: "srv1",
+		Bluefin: BluefinVars{
+			Version:     "26.08.0",
+			Vmlinuz:     "bluefin-server-pxe-vmlinuz-26.08.0",
+			Initrd:      "bluefin-server-pxe-initrd-26.08.0.cpio.gz",
+			DDI:         "bluefin-server-ddi-4593.2.5.raw.zst",
+			DDISha256:   strings.Repeat("a", 64),
+			InstallDisk: "/dev/vda",
+			CredsURL:    "http://192.168.1.10:8080/creds/aa:bb:cc:dd:ee:03.tar",
+			CredsSha256: strings.Repeat("b", 64),
+		},
+	}
+	host := &hardware.Host{MAC: "aa:bb:cc:dd:ee:03", OS: "bluefin", DoInstall: true, InstallDisk: "/dev/vda"}
+	vars.MenuDefault = MenuDefaultForHost(host)
+	if got := OSForHost(host); got != "bluefin" {
+		t.Fatalf("OSForHost=%q", got)
+	}
+	out := IPXEScript(OSForHost(host), vars)
+	for _, want := range []string{
+		"#!ipxe\niseq ${platform} efi || goto not-efi\n",
+		"set BASEURL http://192.168.1.10:8080/data/bluefin/current\n",
+		"menu Booty - Bluefin Server 26.08.0 - srv1\n",
+		"Install Bluefin Server to /dev/vda (wipes it)\n",
+		"choose --timeout ${menu-timeout} --default install selected || goto run-from-disk\n",
+		"kernel ${BASEURL}/bluefin-server-pxe-vmlinuz-26.08.0 systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended inst.ddi_url=${BASEURL}/bluefin-server-ddi-4593.2.5.raw.zst inst.ddi_sha256=" + strings.Repeat("a", 64) + " inst.target_disk=/dev/vda inst.creds_url=http://192.168.1.10:8080/creds/aa:bb:cc:dd:ee:03.tar inst.creds_sha256=" + strings.Repeat("b", 64) + "\n",
+		"initrd ${BASEURL}/bluefin-server-pxe-initrd-26.08.0.cpio.gz\n",
+		":run-from-disk\nexit\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bluefin script missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "[[") {
+		t.Fatalf("bluefin script has placeholders:\n%s", out)
+	}
+
+	vars.Bluefin.InstallDisk, vars.Bluefin.CredsURL = "", ""
+	host.DoInstall = false
+	vars.MenuDefault = MenuDefaultForHost(host)
+	out = IPXEScript("bluefin", vars)
+	if strings.Contains(out, "inst.target_disk") || strings.Contains(out, "inst.creds_") || !strings.Contains(out, "to the first writable disk (wipes it)") || !strings.Contains(out, "--default run-from-disk") {
+		t.Fatalf("optional args must vanish without disk/creds:\n%s", out)
+	}
+	if !strings.Contains(out, "inst.ddi_sha256="+strings.Repeat("a", 64)) {
+		t.Fatalf("ddi sha is mandatory:\n%s", out)
+	}
+
+	out = IPXEScript("bluefin", TemplateVars{Server: "192.168.1.10:8080", Hostname: "srv1", MenuDefault: "install"})
+	if !strings.Contains(out, "echo Bluefin artifacts not downloaded yet") || strings.Contains(out, "kernel ") || strings.Contains(out, "item --key i install") || strings.Contains(out, "[[") {
+		t.Fatalf("without a cached release only run-from-disk/shell are offered:\n%s", out)
+	}
+	if !strings.Contains(out, ":run-from-disk\nexit\n") || !strings.Contains(out, "srv1") {
+		t.Fatalf("pending menu wrong:\n%s", out)
 	}
 }

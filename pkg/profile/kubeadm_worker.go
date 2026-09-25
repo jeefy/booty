@@ -57,8 +57,8 @@ func Validate(name string) error {
 
 // AppliesTo reports whether a profile targets hosts running os. Only the
 // container-Linux flavours (Flatcar, Fedora CoreOS) are kubeadm workers;
-// ublue hosts are rpm-ostree desktops. An empty os is Booty's default
-// (Flatcar).
+// Bluefin Server ships k0s as a sysext and is provisioned through systemd
+// credentials, not Ignition. An empty os is Booty's default (Flatcar).
 func AppliesTo(os string) bool {
 	switch os {
 	case "", "flatcar", "coreos":

@@ -29,7 +29,7 @@ import (
 
 var Cmd = &cobra.Command{
 	Use:           "booty",
-	Long:          "Easy iPXE server for Flatcar, CoreOS, and more",
+	Long:          "Easy iPXE server for Flatcar, CoreOS, Bluefin Server, and more",
 	RunE:          run,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -47,7 +47,7 @@ func init() {
 	flags.Int(config.TFTPPort, 69, "UDP port to use for the TFTP server")
 	flags.Int(config.TFTPBlockSize, 1468, "TFTP block size to negotiate with clients")
 	flags.Bool(config.Debug, false, "Enable debug logging")
-	flags.String(config.UpdateSchedule, "*/5 * * * *", "Cron schedule for the Flatcar/CoreOS version checks and OSTree image sync")
+	flags.String(config.UpdateSchedule, "*/5 * * * *", "Cron schedule for the Flatcar/CoreOS/Bluefin version checks and OSTree image sync")
 	flags.String(config.DataDir, "/data", "Directory to store stateful data")
 	flags.String(config.WebDir, "./web/dist", "Directory with the built Web UI, used when no UI is embedded in the binary")
 	flags.String(config.FlatcarArchitecture, "amd64", "Architecture to use for the Flatcar downloads")
@@ -55,6 +55,9 @@ func init() {
 	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates")
 	flags.String(config.FlatcarVersion, "", "Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel")
 	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
+	flags.String(config.BluefinRepo, config.DefaultBluefinRepo, "GitHub repository whose installer-v* releases provide the Bluefin Server PXE kernel, initrd and DDI")
+	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 26.08.0). When empty, tracks the newest installer-v* release")
+	flags.String(config.GithubToken, "", "GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed")
 	flags.String(config.ServerIP, "", "IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)")
 	flags.Int(config.ServerHttpPort, 0, "HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort")
 	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is")
@@ -62,12 +65,13 @@ func init() {
 	flags.StringSlice(config.SSHAuthorizedKeys, nil, "SSH public key added to the 'core' user by the sshkeys builtin (repeatable)")
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
 	flags.Bool(config.OCIGCEmpty, false, "Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image")
-	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system)")
+	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch), 'booted' (only on POST /booted from the installed system) or 'next-boot' (Bluefin: the first /booty.ipxe fetch at least --installMinDuration after the install stanza was served; other OSes behave like 'booted')")
+	flags.Duration(config.InstallMinDuration, config.DefaultInstallMinDuration, "Minimum time between serving a Bluefin install stanza and the re-PXE that counts as 'install finished' for --doInstallClearOn=next-boot; earlier re-PXEs keep doInstall")
 	flags.Bool(config.ProxyDHCP, false, "EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename")
 	flags.String(config.ProxyDHCPListen, "", "IP or interface name the ProxyDHCP server binds to (default all interfaces)")
 	flags.Bool(config.ProxyDHCPRelay, false, "Answer relayed PXE requests (giaddr set) on the ProxyDHCP server")
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
-	flags.String(config.AutoRegister, "", "Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or ublue) instead of sending them to the brig; empty disables")
+	flags.String(config.AutoRegister, "", "Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables")
 	flags.String(config.HostnameTemplate, config.DefaultHostnameTemplate, "Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP")
 	flags.String(config.JoinStringFile, "", "File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString")
 	flags.String(config.KubeadmJoin, config.KubeadmJoinStatic, "Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot; in-cluster only)")
@@ -127,6 +131,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	if viper.GetDuration(config.JoinTokenTTL) <= 0 {
 		return fmt.Errorf("--%s must be positive, got %s", config.JoinTokenTTL, viper.GetDuration(config.JoinTokenTTL))
+	}
+	if viper.GetDuration(config.InstallMinDuration) <= 0 {
+		return fmt.Errorf("--%s must be positive, got %s", config.InstallMinDuration, viper.GetDuration(config.InstallMinDuration))
 	}
 	if err := config.ResolveServerAddress(); err != nil {
 		return err
@@ -225,6 +232,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	go func() {
 		versions.FlatcarVersionCheck()
 		versions.CoreOSVersionCheck()
+		versions.BluefinVersionCheck()
 		<-ready
 		versions.ReplayStoredManifests(ctx, "http://"+config.LocalRegistry())
 		versions.OSTreeImageSync()

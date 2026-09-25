@@ -41,7 +41,11 @@ func validateHost(h *hardware.Host) error {
 		}
 	}
 	if h.OS != "" && !hardware.IsValidOS(h.OS) {
-		return fmt.Errorf("invalid os %q: must be one of flatcar, coreos, ublue", h.OS)
+		return fmt.Errorf("invalid os %q: must be one of %s", h.OS, hardware.ValidOSList())
+	}
+	h.InstallDisk = strings.TrimSpace(h.InstallDisk)
+	if err := hardware.ValidateInstallDisk(h.InstallDisk); err != nil {
+		return err
 	}
 	if h.IgnitionFile != "" {
 		clean, err := config.CleanRelPath(h.IgnitionFile)
@@ -151,6 +155,7 @@ func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
 			h.IP = ip
 		}
 		h.DoInstall = false
+		h.InstallServedAt = ""
 	})
 	switch {
 	case errors.Is(err, hardware.ErrNotFound):
@@ -193,12 +198,12 @@ func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	flatcar, coreos := state.CurrentFlatcarVersion(), state.CurrentCoreOSVersion()
+	flatcar, coreos, bluefin := state.CurrentFlatcarVersion(), state.CurrentCoreOSVersion(), state.CurrentBluefinVersion()
 	if r.URL.Path == "/version.json" {
-		writeJSON(w, http.StatusOK, map[string]string{"flatcar": flatcar, "coreos": coreos})
+		writeJSON(w, http.StatusOK, map[string]string{"flatcar": flatcar, "coreos": coreos, "bluefin": bluefin})
 		return
 	}
-	writeText(w, http.StatusOK, fmt.Sprintf("FLATCAR_VERSION=%s\nCOREOS_VERSION=%s\n", flatcar, coreos))
+	writeText(w, http.StatusOK, fmt.Sprintf("FLATCAR_VERSION=%s\nCOREOS_VERSION=%s\nBLUEFIN_VERSION=%s\n", flatcar, coreos, bluefin))
 }
 
 type infoResponse struct {
@@ -209,6 +214,10 @@ type infoResponse struct {
 	CoreOS struct {
 		Version string `json:"version"`
 	} `json:"coreos"`
+	Bluefin struct {
+		Version       string `json:"version"`
+		PinnedVersion string `json:"pinnedVersion"`
+	} `json:"bluefin"`
 	Booty struct {
 		Version   string `json:"version"`
 		Timestamp string `json:"timestamp"`
@@ -228,6 +237,8 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	info.Flatcar.Version = state.CurrentFlatcarVersion()
 	info.Flatcar.PinnedVersion = state.FlatcarPin()
 	info.CoreOS.Version = state.CurrentCoreOSVersion()
+	info.Bluefin.Version = state.CurrentBluefinVersion()
+	info.Bluefin.PinnedVersion = state.BluefinPin()
 	info.Booty.Version = viper.GetString(config.Version)
 	info.Booty.Timestamp = viper.GetString(config.Timestamp)
 	hosts := hardware.Snapshot().Hosts

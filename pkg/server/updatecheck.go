@@ -22,6 +22,10 @@ var nowFunc = time.Now
 
 var coreOSVersionRe = regexp.MustCompile(`^\d+\.\d{8}\.\d+\.\d+$`)
 
+// Bluefin Server updates itself with systemd-sysupdate; Booty never asks it
+// to reboot, and a re-PXE would only re-image the disk.
+const bluefinUpdateReason = "bluefin updates itself via systemd-sysupdate; re-PXE only re-images"
+
 type updateCheckResponse struct {
 	RebootRequired bool   `json:"rebootRequired"`
 	Running        string `json:"running"`
@@ -88,9 +92,12 @@ func evaluateUpdate(host *hardware.Host, rep updateReport) updateCheckResponse {
 		osName = host.OS
 	}
 	switch {
+	case osName == "bluefin" || host.OS == "bluefin":
+		resp.Reason = bluefinUpdateReason
+		return resp
 	case osName == "flatcar":
 		return evaluateFlatcar(rep, resp)
-	case osName == "coreos" || osName == "ublue" || host.OSTreeImage != "":
+	case osName == "coreos" || host.OSTreeImage != "":
 		return evaluateOSTree(host, rep, resp)
 	}
 	resp.Reason = "unknown os; cannot determine target"
@@ -178,7 +185,8 @@ func localImageDigest(image string) string {
 
 // normalizeImageRef strips the rpm-ostree transport prefixes and Booty's own
 // client-facing registry so the reference matches what hosts are registered
-// with (e.g. ghcr.io/ublue-os/bazzite:stable).
+// with (e.g. ghcr.io/ublue-os/bazzite:stable, a Universal Blue image booted
+// as os=coreos).
 func normalizeImageRef(image string) string {
 	image = strings.TrimSpace(image)
 	for _, prefix := range []string{"ostree-unverified-registry:", "ostree-image-signed:", "ostree-unverified-image:", "ostree-remote-image:", "docker://", "registry:"} {

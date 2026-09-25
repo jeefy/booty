@@ -165,6 +165,10 @@ func TestRegisterValidation(t *testing.T) {
 	}{
 		{"invalid mac", `{"mac":"nope","hostname":"x"}`},
 		{"bad os", `{"mac":"aa:bb:cc:dd:ee:01","os":"windows"}`},
+		{"ublue is gone", `{"mac":"aa:bb:cc:dd:ee:01","os":"ublue"}`},
+		{"relative install disk", `{"mac":"aa:bb:cc:dd:ee:01","os":"bluefin","installDisk":"sda"}`},
+		{"install disk with whitespace", `{"mac":"aa:bb:cc:dd:ee:01","os":"bluefin","installDisk":"/dev/sda inst.x=1"}`},
+		{"install disk traversal", `{"mac":"aa:bb:cc:dd:ee:01","os":"bluefin","installDisk":"/dev/../etc"}`},
 		{"bad hostname", `{"mac":"aa:bb:cc:dd:ee:01","hostname":"Bad_Name!"}`},
 		{"leading hyphen hostname", `{"mac":"aa:bb:cc:dd:ee:01","hostname":"-node"}`},
 		{"too long hostname", `{"mac":"aa:bb:cc:dd:ee:01","hostname":"` + strings.Repeat("a", 254) + `"}`},
@@ -186,6 +190,7 @@ func TestRegisterValidation(t *testing.T) {
 		`{"mac":"aa:bb:cc:dd:ee:01","hostname":"Node-1.Example.COM"}`,
 		`{"mac":"aa:bb:cc:dd:ee:02","hostname":""}`,
 		`{"mac":"aa:bb:cc:dd:ee:03"}`,
+		`{"mac":"aa:bb:cc:dd:ee:04","os":"bluefin","installDisk":" /dev/nvme0n1 "}`,
 	} {
 		if r := do(t, http.MethodPost, srv.URL+"/register", body); r.status != 200 {
 			t.Fatalf("register %s: %+v", body, r)
@@ -338,7 +343,7 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 		t.Fatalf("unknown host should be observed once, got %+v", u)
 	}
 
-	r = do(t, http.MethodPost, srv.URL+"/register", `{"mac":"aa:bb:cc:dd:ee:ff","hostname":"node1","os":"ublue","doInstall":true,"ostreeImage":"ghcr.io/ublue-os/bazzite:stable"}`)
+	r = do(t, http.MethodPost, srv.URL+"/register", `{"mac":"aa:bb:cc:dd:ee:ff","hostname":"node1","os":"coreos","doInstall":true,"ostreeImage":"ghcr.io/ublue-os/bazzite:stable"}`)
 	if r.status != 200 {
 		t.Fatalf("register: %+v", r)
 	}
@@ -347,8 +352,8 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	}
 
 	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=AA:BB:CC:DD:EE:FF", "")
-	if r.status != 200 || !strings.Contains(r.body, "set menu-default install") || !strings.Contains(r.body, "set OSTREE_IMAGE ghcr.io/ublue-os/bazzite:stable") {
-		t.Fatalf("ublue ipxe: %+v", r)
+	if r.status != 200 || !strings.Contains(r.body, "fedora-coreos-${VERSION}-live-kernel") || !strings.Contains(r.body, "set OSTREE_IMAGE ghcr.io/ublue-os/bazzite:stable") {
+		t.Fatalf("coreos ipxe: %+v", r)
 	}
 	if strings.Contains(r.body, "[[") {
 		t.Fatalf("placeholders left: %s", r.body)
@@ -434,7 +439,7 @@ func TestDoInstallClearOnBooted(t *testing.T) {
 	srv, _ := newTestServer(t)
 	viper.Set(config.DoInstallClearOn, config.ClearOnBooted)
 
-	r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"aa:bb:cc:dd:ee:02","hostname":"n2","os":"ublue","doInstall":true}`)
+	r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"aa:bb:cc:dd:ee:02","hostname":"n2","os":"coreos","doInstall":true}`)
 	if r.status != 200 {
 		t.Fatalf("register: %+v", r)
 	}
@@ -517,7 +522,7 @@ func TestInfoAndVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"flatcar", "coreos", "booty", "fleet"} {
+	for _, key := range []string{"flatcar", "coreos", "bluefin", "booty", "fleet"} {
 		if _, ok := info[key]; !ok {
 			t.Fatalf("info missing %q: %s", key, r.body)
 		}
@@ -525,16 +530,19 @@ func TestInfoAndVersion(t *testing.T) {
 	if _, ok := info["flatcar"]["pinnedVersion"]; !ok {
 		t.Fatalf("info.flatcar missing pinnedVersion: %s", r.body)
 	}
+	if _, ok := info["bluefin"]["pinnedVersion"]; !ok || info["bluefin"]["version"] == nil {
+		t.Fatalf("info.bluefin must carry version and pinnedVersion: %s", r.body)
+	}
 	if info["fleet"]["hosts"] != float64(0) || info["fleet"]["pendingReboots"] != float64(0) {
 		t.Fatalf("info.fleet should count zero hosts: %s", r.body)
 	}
 
 	r = do(t, http.MethodGet, srv.URL+"/version.json", "")
-	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") || !strings.Contains(r.body, `"flatcar"`) {
+	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") || !strings.Contains(r.body, `"flatcar"`) || !strings.Contains(r.body, `"bluefin"`) {
 		t.Fatalf("version.json: %+v", r)
 	}
 	r = do(t, http.MethodGet, srv.URL+"/version.txt", "")
-	if r.status != 200 || !strings.HasPrefix(r.contentType, "text/plain") || !strings.HasPrefix(r.body, "FLATCAR_VERSION=") || !strings.Contains(r.body, "\nCOREOS_VERSION=") {
+	if r.status != 200 || !strings.HasPrefix(r.contentType, "text/plain") || !strings.HasPrefix(r.body, "FLATCAR_VERSION=") || !strings.Contains(r.body, "\nCOREOS_VERSION=") || !strings.Contains(r.body, "\nBLUEFIN_VERSION=") {
 		t.Fatalf("version.txt: %+v", r)
 	}
 }
