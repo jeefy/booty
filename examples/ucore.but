@@ -1,7 +1,7 @@
 # Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
-# Only the ucore/k8s specific pieces remain here. uCore hosts are registered as os=ublue, so the
-# kubeadm-worker profile does not apply; this template installs the Kubernetes packages with
-# rpm-ostree and carries its own join script.
+# Only the ucore/k8s specific pieces remain here. uCore hosts are registered as os=coreos with an
+# ostreeImage; run Booty without --profile for them (or override the profile units here): this
+# template installs the Kubernetes packages with rpm-ostree and carries its own join script.
 variant: flatcar
 version: 1.1.0
 

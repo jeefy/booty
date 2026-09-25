@@ -3,8 +3,10 @@
 This folder contains example Butane templates Booty can use to iPXE boot machines and a Kubernetes manifest for running Booty itself.
 
 * [`config/ignition.yaml`](config/ignition.yaml) -- site-only template for Flatcar workers (DNS, motd). Everything Kubernetes-related comes from `--profile=kubeadm-worker`.
-* [`ucore.but`](ucore.but) -- uCore (Fedora CoreOS based, registered as `ublue`) node that rebases onto the image cached by Booty, installs Kubernetes with rpm-ostree and joins a kubeadm cluster with its own inline join script.
-* [`bazzite.but`](bazzite.but) -- Bazzite desktop that rebases onto a `bazzite-nvidia` image.
+* [`ucore.but`](ucore.but) -- uCore (Fedora CoreOS based, registered as `coreos` with an `ostreeImage`) node that rebases onto the image cached by Booty, installs Kubernetes with rpm-ostree and joins a kubeadm cluster with its own inline join script.
+* [`bazzite.but`](bazzite.but) -- Bazzite desktop (registered as `coreos` with an `ostreeImage`) that rebases onto a `bazzite-nvidia` image.
+
+Bluefin Server hosts need no template at all: they are provisioned through systemd credentials rather than Ignition (see the *Bluefin Server* section of the main README).
 * [`k8s.yaml`](k8s.yaml) -- Booty in `kube-system` on the control-plane node: ServiceAccount + RBAC for automatic join tokens, ConfigMap with the site template, Secret with SSH keys, Deployment (`hostNetwork`, `/healthz` probes, minimal capabilities) and the two MetalLB Services.
 
 The templates only contain what is specific to that fleet. Booty merges its **builtin fragment** into every registered host's Ignition (see the *Composition* section of the main README): `/etc/hostname` from the hardware database, the `core` user's SSH keys from `--sshAuthorizedKeysFile`/`--sshAuthorizedKeys`, the `booty-booted.service` install-complete callback, and the `booty-update.timer` that asks `GET /update-check` every 10 minutes and touches `/var/run/reboot-required` for [kured](https://github.com/kubereboot/kured) when the host is behind what Booty serves.
