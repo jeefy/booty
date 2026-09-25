@@ -65,11 +65,14 @@ func init() {
 	flags.String(config.ProxyDHCPListen, "", "IP or interface name the ProxyDHCP server binds to (default all interfaces)")
 	flags.Bool(config.ProxyDHCPRelay, false, "Answer relayed PXE requests (giaddr set) on the ProxyDHCP server")
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
+	flags.String(config.AutoRegister, "", "Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or ublue) instead of sending them to the brig; empty disables")
+	flags.String(config.HostnameTemplate, config.DefaultHostnameTemplate, "Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
 		os.Exit(1)
 	}
+	Cmd.AddCommand(initCmd)
 
 	viper.SetDefault(config.Version, "dev")
 	if version != "" {
@@ -95,6 +98,12 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err := config.ValidateDoInstallClearOn(viper.GetString(config.DoInstallClearOn)); err != nil {
 		return err
 	}
+	if err := hardware.ValidateAutoRegisterOS(viper.GetString(config.AutoRegister)); err != nil {
+		return fmt.Errorf("--%s: %w", config.AutoRegister, err)
+	}
+	if _, err := hardware.ParseHostnameTemplate(viper.GetString(config.HostnameTemplate)); err != nil {
+		return fmt.Errorf("--%s: %w", config.HostnameTemplate, err)
+	}
 	builtin, err := ignition.ParseFeatures(viper.GetString(config.Builtin))
 	if err != nil {
 		return err
@@ -105,6 +114,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin))
 	if !builtin.Enabled() {
 		slog.Info("Builtin Ignition fragment disabled; serving user configs as-is")
+	}
+	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" {
+		slog.Warn("Auto-registration enabled: any unknown MAC that boots becomes a registered host", "os", autoOS, "hostnameTemplate", viper.GetString(config.HostnameTemplate))
 	}
 	if keysFile := viper.GetString(config.SSHAuthorizedKeysFl); keysFile != "" {
 		if _, err := ignition.LoadSSHKeys(keysFile, nil); err != nil {
