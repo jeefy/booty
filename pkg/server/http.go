@@ -103,6 +103,8 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/info", handleInfoRequest)
 	mux.HandleFunc("/flatcar/pin", handleFlatcarPinRequest)
 	mux.HandleFunc("/config", handleConfigRequest)
+	mux.HandleFunc("/config/template", handleConfigTemplateRequest)
+	mux.HandleFunc("/config/template/validate", handleConfigTemplateValidateRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.HandleFunc(credsPathPrefix, handleCredsRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
