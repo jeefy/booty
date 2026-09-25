@@ -37,7 +37,7 @@ label local
 
 	"flatcar.ipxe": `#!ipxe
 echo Hello from Booty!
-kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json
+kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json?mac=${mac}
 initrd http://[[server]]/data/flatcar_production_pxe_image.cpio.gz
 boot
 `,
@@ -45,7 +45,7 @@ boot
 	"coreos.ipxe": `#!ipxe
 echo Hello from Booty!
 set BASEURL http://[[server]]/data/
-set CONFIGURL http://[[server]]/ignition.json
+set CONFIGURL http://[[server]]/ignition.json?mac=${mac}
 set OSTREE_IMAGE [[ostree-image]]
 set STREAM [[coreos-channel]]
 set VERSION [[coreos-version]]
@@ -58,7 +58,7 @@ boot
 
 	"ublue.ipxe": `#!ipxe
 set BASEURL http://[[server]]/data/
-set CONFIGURL http://[[server]]/ignition.json
+set CONFIGURL http://[[server]]/ignition.json?mac=${mac}
 set OSTREE_IMAGE [[ostree-image]]
 set STREAM [[coreos-channel]]
 set VERSION [[coreos-version]]

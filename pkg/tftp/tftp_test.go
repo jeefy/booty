@@ -218,6 +218,9 @@ func TestIPXEScriptRendering(t *testing.T) {
 	if !strings.HasPrefix(out, "#!ipxe\n") || !strings.Contains(out, "kernel http://192.168.1.10:8080/data/flatcar_production_pxe.vmlinuz") {
 		t.Fatalf("flatcar script wrong:\n%s", out)
 	}
+	if !strings.Contains(out, "ignition.config.url=http://192.168.1.10:8080/ignition.json?mac=${mac}") {
+		t.Fatalf("flatcar script must pass the client MAC to the ignition fetch:\n%s", out)
+	}
 	if strings.Contains(out, "[[") || strings.Contains(out, "\n\t") {
 		t.Fatalf("flatcar script has placeholders or leading tabs:\n%s", out)
 	}
@@ -228,6 +231,7 @@ func TestIPXEScriptRendering(t *testing.T) {
 	for _, want := range []string{
 		"set menu-default install",
 		"set OSTREE_IMAGE ghcr.io/ublue-os/bazzite:stable",
+		"set CONFIGURL http://192.168.1.10:8080/ignition.json?mac=${mac}",
 		"set VERSION 39.20231101.3.0",
 		"chain http://192.168.1.10:8080/data/ublue.ipxe",
 	} {
