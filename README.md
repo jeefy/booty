@@ -9,8 +9,13 @@ Easy iPXE server for Flatcar, CoreOS, and more
 
 Usage:
   booty [flags]
+  booty [command]
+
+Available Commands:
+  init        Create a data directory with a starter Butane template and an empty hardware map
 
 Flags:
+      --autoRegister string            Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or ublue) instead of sending them to the brig; empty disables
       --builtin string                 Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is (default "hostname,update,booted,sshkeys")
       --coreOSArchitecture string      Architecture to use for CoreOS downloads (default "x86_64")
       --coreOSChannel string           CoreOS channel to look for updates (default "stable")
@@ -21,6 +26,7 @@ Flags:
       --flatcarChannel string          Flatcar channel to look for updates (default "stable")
       --flatcarVersion string          Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel
   -h, --help                           help for booty
+      --hostnameTemplate string        Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP (default "node-{{ .MACSuffix }}")
       --httpPort int                   Port to use for the HTTP server (default 8080)
       --joinString string              The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
       --ociGC                          Delete unreferenced OCI blobs from the local registry after a fully successful image sync (default true)
@@ -42,6 +48,15 @@ Every flag can also be set through the environment as `BOOTY_<FLAGNAME>` (upper-
 
 `--serverIP` is the address booting machines use to reach Booty. When left empty it is autodetected at startup from the default route (logged as `serverIP autodetected`). Set it explicitly whenever that address is not what clients should use -- behind a MetalLB/keepalived VIP, a NAT or a hostPort mapping the node IP is the wrong answer. `--serverHttpPort` only matters when clients reach Booty on a different port than it listens on (port mapping); it defaults to `--httpPort`, and `:80` is omitted from generated URLs.
 
+## Quick start
+
+```
+booty init ./data          # writes data/config/ignition.yaml (commented starter Butane) and data/hardware.json
+booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behind a VIP/NAT
+```
+
+`booty init [dir]` (default: `--dataDir`, `BOOTY_DATADIR` or `./data`) never overwrites existing files -- rerunning it prints `exists, skipped` -- and ends with the DHCP settings for your network (`next-server`, `filename undionly.kpxe` / `ipxe.efi`), the run command and the UI URL. The starter template is valid on its own: hostname, SSH keys, the update timer and the booted callback come from the [builtin fragment](#composition), so edit it only for what is specific to your fleet.
+
 ## Features
 
 * iPXE boot (BIOS and x86-64 UEFI) into the latest Flatcar-Linux or CoreOS
@@ -54,7 +69,8 @@ Every flag can also be set through the environment as `BOOTY_<FLAGNAME>` (upper-
 * Web UI to add/edit/remove hosts
 * Builtin Ignition fragment (hostname, SSH keys, update timer, install-complete callback) merged into every host's config -- your Butane only carries what is specific to your fleet
 * Fleet status: every host reports what it is running and whether a reboot is pending (`/update-check`, `/info`)
-* Unrecognized MAC addresses go into the brig (boot loop till the MAC is registered)
+* Unrecognized MAC addresses go into the brig (boot loop till the MAC is registered), or are registered automatically with `--autoRegister` (see [Auto-registration](#auto-registration))
+* `booty init` scaffolds a data directory with a commented starter Butane template and prints the DHCP settings
 * Support for different operating systems and ignition files per machine
 * **EXPERIMENTAL**: Support for per-ostree images per machine (in conjunction with [ignition rebase scripts](examples/bazzite.but))
   * Auto-caches OCI images used for hosts (and has a page listing cached artifacts)
@@ -110,11 +126,28 @@ If Booty listens on a non-standard TFTP port (`--tftpPort`), UEFI firmware canno
 
 1. DHCP hands the machine `next-server` = Booty and `filename` = `undionly.kpxe` / `ipxe.efi` as above; the firmware fetches it over TFTP.
 2. The embedded script chains `booty.ipxe` over TFTP. That file is only a stub that chains to `http://<serverIP>/booty.ipxe?mac=${mac}` -- iPXE fills in its own MAC, so identification does not depend on ARP working across routers.
-3. `/booty.ipxe` looks the MAC up in the hardware database and renders the boot script for that host's OS (`flatcar`, `coreos` or `ublue`). Unregistered hosts get an interactive menu (boot from disk / reboot) and show up under "Unknown hosts" in the UI so you can register them with one click.
+3. `/booty.ipxe` looks the MAC up in the hardware database and renders the boot script for that host's OS (`flatcar`, `coreos` or `ublue`). Unregistered hosts get an interactive menu (boot from disk / reboot) and show up under "Unknown hosts" in the UI so you can register them with one click -- unless `--autoRegister` is set, in which case they are registered on the spot (see [Auto-registration](#auto-registration)).
 4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`. For a registered host that is a tiny wrapper whose `ignition.config.merge` points at two children: Booty's builtin fragment (`/ignition/builtin.json`) and the host's Butane template rendered to Ignition (`/ignition/user.json`; variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`). Ignition fetches and merges them itself, later entries winning, so your template overrides the builtin. The wrapper fetch records `booted`/`ip` for the host and, by default, clears a pending `doInstall`; the child fetches have no side effects. With `--doInstallClearOn=booted` the flag instead stays set until the installed system calls `POST http://<serverIP>/booted?mac=<mac>` (the builtin `booty-booted.service` does exactly that), so a failed install keeps the host in install mode. Add `&preview=1` (the UI does) to look at a config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
 5. Kernel/initrd/rootfs are served from `/data/`. Flatcar artifacts live in `data/flatcar/<version>/` behind symlinks at the old paths, so the kernel and initrd always come from the same release and updates are atomic.
 
 `/booty.ipxe` and `/ignition.json` fall back to an ARP lookup of the requesting IP when called without `?mac=`; the shipped scripts always pass it.
+
+### Auto-registration
+
+By default an unknown MAC gets the menu and the brig until you register it (in the UI, or `POST /register`). With `--autoRegister=flatcar|coreos|ublue` Booty instead registers the host itself the first time it fetches `/booty.ipxe` or `/ignition.json`: it is stored with that OS, the requesting IP and a hostname rendered from `--hostnameTemplate`, logged as `Auto-registered unknown host`, and immediately served the real boot script and Ignition -- the machine never sees the brig and never appears under "Unknown hosts". Only the boot path does this; `/hosts`, `/ignition/user.json`, `/ignition/builtin.json` and `/update-check` still answer 404 for unregistered MACs and never create hosts.
+
+`--hostnameTemplate` is a Go `text/template` (default `node-{{ .MACSuffix }}`) with these fields:
+
+| Field | Example for `aa:bb:cc:dd:ee:ff` from `192.168.1.57` |
+|---|---|
+| `.MAC` | `aa:bb:cc:dd:ee:ff` (not a valid hostname on its own) |
+| `.MACSuffix` | `ddeeff` |
+| `.MACFlat` | `aabbccddeeff` |
+| `.IP` | `192.168.1.57` |
+
+The result must be an RFC 1123 label or dotted name (`[a-z0-9-]`, no leading/trailing hyphen, at most 253 characters); Booty checks at startup that the template parses and renders a valid name for a dummy MAC, and rejects the flag otherwise. `/register` applies the same rule to a non-empty `hostname`. Hostnames are not required to be unique -- a template like `worker` registers every machine as `worker` with only a warning in the log -- so keep a MAC-derived field in it.
+
+**Trust model caveat.** Auto-registration turns "any device on the boot VLAN can PXE boot" into "any device on the boot VLAN becomes a registered host that receives your Ignition config" (including `--joinString` and the builtin SSH keys, which unregistered hosts can already read; see [Trust model](#trust-model)). For a kubeadm cluster this also means a stray or wrongly named machine joins as a Node; a hostname collision creates a duplicate Node object or hijacks an existing one. The brig is the safer default; turn auto-registration on when the boot network is closed and you want zero-touch provisioning. Auto-registered hosts start with `doInstall` unset, so for uBlue/CoreOS installs you still flip it in the UI.
 
 ## Composition
 
@@ -178,7 +211,7 @@ Ports 67 and 4011 are privileged, so the container needs `--network=host`/`hostN
 
 Booty is meant to run on a network you control. It has **no authentication**: anyone who can reach the HTTP port can register hosts, read any registered host's rendered Ignition (including a `--joinString` kubeadm token and the builtin SSH keys) via `/ignition.json?mac=` or `/ignition/user.json?mac=`, and download boot artifacts. This is inherent to PXE -- the booting machine has no credentials yet -- so treat the boot VLAN like you treat your DHCP server.
 
-What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files and the OCI blob store are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, OS names, versions) are validated.
+What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files and the OCI blob store are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, hostnames, OS names, versions) are validated. `--autoRegister` widens this further; read [Auto-registration](#auto-registration) before turning it on.
 
 ## Running as root / capabilities
 
