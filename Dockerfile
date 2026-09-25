@@ -1,5 +1,5 @@
 ### Stage One: build the web UI
-FROM docker.io/library/node:22-alpine AS build-web
+FROM docker.io/library/node:25-alpine AS build-web
 WORKDIR /app
 COPY web/package*.json ./
 RUN npm ci
