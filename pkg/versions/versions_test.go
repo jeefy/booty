@@ -118,6 +118,37 @@ func TestExtractCoreOSChecksum(t *testing.T) {
 	}
 }
 
+func TestExtractCoreOSLocation(t *testing.T) {
+	body := []byte(streamsFixture)
+	tests := []struct {
+		arch, artifact, want string
+		ok                   bool
+	}{
+		{"x86_64", "kernel", "https://example/kernel", true},
+		{"x86_64", "rootfs", "https://example/rootfs", true},
+		{"aarch64", "kernel", "https://example/kernel-arm", true},
+		{"x86_64", "bogus", "", false},
+		{"ppc64le", "kernel", "", false},
+	}
+	for _, tc := range tests {
+		got, err := extractCoreOSLocation(body, tc.arch, tc.artifact)
+		if tc.ok != (err == nil) {
+			t.Errorf("%s/%s: ok=%v err=%v", tc.arch, tc.artifact, tc.ok, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s/%s: got %q want %q", tc.arch, tc.artifact, got, tc.want)
+		}
+	}
+	insecure := []byte(`{"architectures":{"x86_64":{"artifacts":{"metal":{"formats":{"pxe":{"kernel":{"location":"http://example/k"}}}}}}}}`)
+	if _, err := extractCoreOSLocation(insecure, "x86_64", "kernel"); err == nil {
+		t.Error("non-https location must be rejected")
+	}
+	if _, err := extractCoreOSLocation(nil, "x86_64", "kernel"); err == nil {
+		t.Error("nil body should error")
+	}
+}
+
 func TestCoreOSArtifactNames(t *testing.T) {
 	names := coreOSArtifactNames("39.20231101.3.0", "x86_64")
 	if names["kernel"] != "fedora-coreos-39.20231101.3.0-live-kernel-x86_64" {
