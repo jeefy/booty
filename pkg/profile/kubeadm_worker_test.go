@@ -108,7 +108,7 @@ func TestScriptsCarryVersions(t *testing.T) {
 	}
 	tools := decodeFile(t, cfg, KubeToolsScript)
 	for _, want := range []string{
-		`RELEASE="v1.34.3"`, `CRICTL="v1.34.3"`,
+		`RELEASE="v1.34.3"`, `CRICTL="v1.34.0"`,
 		"pkgs.k8s.io/core:/stable:/${KUBE_MINOR}/rpm/", "dnf install -y",
 		"https://dl.k8s.io/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}",
 		"github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL}/crictl-${CRICTL}-linux-amd64.tar.gz",
@@ -244,5 +244,13 @@ func TestSystemdQuote(t *testing.T) {
 	got := systemdQuote("kubeadm join a \"b\" c\\d\n --x")
 	if got != `kubeadm join a \"b\" c\\d --x` {
 		t.Fatalf("systemdQuote = %q", got)
+	}
+}
+
+func TestCrictlVersionFor(t *testing.T) {
+	for in, want := range map[string]string{"v1.34.3": "v1.34.0", "v1.35.0": "v1.35.0", "1.33.7": "v1.33.0", "weird": "weird"} {
+		if got := crictlVersionFor(in); got != want {
+			t.Errorf("crictlVersionFor(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

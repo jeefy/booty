@@ -21,7 +21,7 @@ Flags:
       --containerdDisk string          Block device the kubeadm-worker profile formats (ext4, wiped on every boot) and mounts at /var/lib/containerd, e.g. /dev/sda; empty keeps containerd on the root filesystem
       --coreOSArchitecture string      Architecture to use for CoreOS downloads (default "x86_64")
       --coreOSChannel string           CoreOS channel to look for updates (default "stable")
-      --crictlVersion string           cri-tools release installed by the kubeadm-worker profile; defaults to --k8sVersion
+      --crictlVersion string           cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)
       --dataDir string                 Directory to store stateful data (default "/data")
       --debug                          Enable debug logging
       --doInstallClearOn string        When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system) (default "ignition")

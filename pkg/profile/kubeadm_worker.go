@@ -115,7 +115,7 @@ func withDefaults(o Options) Options {
 		o.CNIVersion = config.DefaultCNIVersion
 	}
 	if o.CrictlVersion == "" {
-		o.CrictlVersion = o.K8sVersion
+		o.CrictlVersion = crictlVersionFor(o.K8sVersion)
 	}
 	if o.KubeletUnitsURL == "" {
 		o.KubeletUnitsURL = config.DefaultKubeletUnitsURL
@@ -217,7 +217,11 @@ mkdir -p /opt/bin/
 cd /opt/bin/
 curl -fL --remote-name-all "https://dl.k8s.io/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}"
 chmod +x kubeadm kubelet kubectl
-curl -fL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL}/crictl-${CRICTL}-linux-amd64.tar.gz" | tar -C /opt/bin/ -xz
+# crictl is a convenience for operators; kubeadm join does not need it, so a
+# missing release must not fail the boot.
+if ! curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL}/crictl-${CRICTL}-linux-amd64.tar.gz" | tar -C /opt/bin/ -xz; then
+  echo "warning: crictl ${CRICTL} not installed (download failed); continuing" >&2
+fi
 mkdir -p /etc/kubernetes/manifests
 echo "Kubernetes ${RELEASE} tools and crictl ${CRICTL} installed"
 `
@@ -252,3 +256,14 @@ export PATH=/opt/bin/:$PATH
 kubeadm reset -f || true
 exec ${JOIN_STRING}
 `
+
+// crictlVersionFor returns the cri-tools release matching a Kubernetes
+// version: cri-tools tags once per minor (v1.34.0), not per patch.
+func crictlVersionFor(k8sVersion string) string {
+	v := strings.TrimPrefix(k8sVersion, "v")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return k8sVersion
+	}
+	return "v" + parts[0] + "." + parts[1] + ".0"
+}
