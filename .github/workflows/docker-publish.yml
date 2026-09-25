@@ -1,10 +1,5 @@
 name: Docker
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
 on:
   push:
     branches: [ main ]
@@ -21,9 +16,51 @@ env:
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
 
-
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # web/dist must exist before Go tests run (//go:embed all:web/dist)
+      - name: Lint, test, and build the web UI
+        run: |
+          cd web
+          npm ci
+          npm run lint
+          npm run type-check
+          npm run test:unit -- --run
+          npm run build
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./... -race
+
+      - name: golangci-lint
+        uses: golangci-lint/golangci-lint-action@v6
+        with:
+          version: latest
+
   build:
+    needs: test
     outputs:
       image: ${{ steps.image.outputs.image }}
       digest: ${{ steps.build-and-push.outputs.digest }}
@@ -37,23 +74,25 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       # Install the cosign tool except on PR
       # https://github.com/sigstore/cosign-installer
       - name: Install cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@main
+        uses: sigstore/cosign-installer@v3.9.2
+
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       # Login against a Docker registry except on PR
       # https://github.com/docker/login-action
       - name: Log into registry ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@28218f9b04b4f3f62068d7b6ce6ca5b26e35336c
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -63,7 +102,7 @@ jobs:
       # https://github.com/docker/metadata-action
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@98669ae865ea3cffbcbaa878cf57c20bbf1c6c38
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
@@ -71,15 +110,19 @@ jobs:
       # https://github.com/docker/build-push-action
       - name: Build and push Docker image
         id: build-and-push
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             BOOTY_VERSION=${{ github.ref_name }}
             BOOTY_TIMESTAMP=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+
       - name: Sign the published Docker image
         if: ${{ github.event_name != 'pull_request' }}
         env:
@@ -96,7 +139,7 @@ jobs:
           # NOTE: The digest output from docker/build-push-action is of the
           # form "sha256:<digest>"
           image_name="${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}"
-          echo "::set-output name=image::$image_name"
+          echo "image=$image_name" >> "$GITHUB_OUTPUT"
 
   # Generate SLSA provenance for the image
   # Upload the provenance to ghcr.io
@@ -106,7 +149,7 @@ jobs:
       id-token: write # For signing.
       actions: read # For reading workflow info.
       packages: write # For uploading attestations.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@main
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
     with:
       image: ${{ needs.build.outputs.image }}
       digest: ${{ needs.build.outputs.digest }}
@@ -114,7 +157,8 @@ jobs:
       compile-generator: true
     secrets:
       registry-password: ${{ secrets.GITHUB_TOKEN }}
-# Verify the created provenance attestation.
+
+  # Verify the created provenance attestation.
   verify:
     # NOTE: this name is used as the status check name and by protected
     # branches for required status checks. It should have a unique name among
@@ -124,9 +168,10 @@ jobs:
     permissions:
       packages: read # For reading attestations.
     runs-on: ubuntu-latest
-    if: ${{ always() }}
+    # PR builds are never pushed, so there is nothing to verify.
+    if: github.event_name != 'pull_request'
     steps:
-      - uses: sigstore/cosign-installer@main
+      - uses: sigstore/cosign-installer@v3.9.2
       - env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
