@@ -42,6 +42,9 @@ watch(
             <RouterLink class="nav-link" to="/cache">OCI Cache</RouterLink>
           </li>
           <li class="nav-item">
+            <RouterLink class="nav-link" to="/config">Config</RouterLink>
+          </li>
+          <li class="nav-item">
             <RouterLink class="nav-link" to="/about">About</RouterLink>
           </li>
         </ul>

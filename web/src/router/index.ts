@@ -7,6 +7,7 @@ const router = createRouter({
     { path: '/', name: 'home', component: HomeView },
     { path: '/hosts', name: 'hosts', component: () => import('../views/HostsView.vue') },
     { path: '/cache', name: 'cache', component: () => import('../views/CacheView.vue') },
+    { path: '/config', name: 'config', component: () => import('../views/ConfigView.vue') },
     { path: '/about', name: 'about', component: () => import('../views/AboutView.vue') }
   ]
 })

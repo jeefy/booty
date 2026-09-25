@@ -1,10 +1,12 @@
 export class ApiError extends Error {
   readonly status: number
+  readonly details: Record<string, unknown>
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, details: Record<string, unknown> = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.details = details
   }
 }
 
@@ -13,9 +15,9 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
   try {
     const body: unknown = await response.json()
     if (body && typeof body === 'object' && 'error' in body) {
-      const message = (body as { error: unknown }).error
+      const { error: message, ...details } = body as { error: unknown } & Record<string, unknown>
       if (typeof message === 'string' && message.length > 0) {
-        return new ApiError(response.status, message)
+        return new ApiError(response.status, message, details)
       }
     }
   } catch {
@@ -39,6 +41,14 @@ export function apiGet<T>(path: string): Promise<T> {
 export function apiPost<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+}
+
+export function apiPut<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   })

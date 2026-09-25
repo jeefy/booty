@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
-import { ApiError, apiGet, apiPost, errorMessage } from '@/api'
+import { ApiError, apiGet, apiPost, apiPut, errorMessage } from '@/api'
 import { jsonResponse, mockFetch, requestBody, textResponse } from './helpers'
 
 afterEach(() => {
@@ -54,6 +54,38 @@ describe('apiPost', () => {
       status: 400,
       message: 'invalid version format'
     })
+  })
+})
+
+describe('apiPut', () => {
+  it('sends a JSON body with the PUT method and JSON headers', async () => {
+    const spy = mockFetch(() =>
+      jsonResponse({ name: 'ignition.yaml', source: 'file', writable: true, content: 'x' })
+    )
+    const result = await apiPut<{ name: string }>('/config/template', {
+      name: 'ignition.yaml',
+      content: 'variant: flatcar\n'
+    })
+    expect(result.name).toBe('ignition.yaml')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const [url, init] = spy.mock.calls[0]!
+    expect(url).toBe('/config/template')
+    expect(init?.method).toBe('PUT')
+    expect(new Headers(init?.headers).get('Content-Type')).toBe('application/json')
+    expect(requestBody(init)).toEqual({ name: 'ignition.yaml', content: 'variant: flatcar\n' })
+  })
+
+  it('surfaces the 409 read-only error from the JSON envelope', async () => {
+    mockFetch(() =>
+      jsonResponse({ error: 'template is read-only', reason: 'mounted from a ConfigMap' }, 409)
+    )
+    const err = await apiPut('/config/template', { name: 'x', content: '' }).catch(
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(409)
+    expect((err as ApiError).message).toBe('template is read-only')
+    expect((err as ApiError).details).toEqual({ reason: 'mounted from a ConfigMap' })
   })
 })
 
