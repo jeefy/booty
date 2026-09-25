@@ -87,6 +87,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
 		os.Exit(1)
 	}
+	config.FlagChanged = flags.Changed
 	Cmd.AddCommand(initCmd)
 
 	viper.SetDefault(config.Version, "dev")

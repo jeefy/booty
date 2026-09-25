@@ -278,3 +278,85 @@ func TestBluefinDefaults(t *testing.T) {
 		t.Fatalf("BluefinCurrentManifestPath=%q", got)
 	}
 }
+
+func TestProbeWritable(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "config", "ignition.yaml")
+	if err := WriteFileAtomic(existing, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, reason := ProbeWritable(existing); !ok || reason != "" {
+		t.Fatalf("existing writable file: %v %q", ok, reason)
+	}
+	if ok, reason := ProbeWritable(filepath.Join(dir, "config", "new.yaml")); !ok || reason != "" {
+		t.Fatalf("missing file in writable dir: %v %q", ok, reason)
+	}
+	if ok, reason := ProbeWritable(filepath.Join(dir, "deeper", "still", "new.yaml")); !ok || reason != "" {
+		t.Fatalf("missing ancestors are created by WriteFileAtomic: %v %q", ok, reason)
+	}
+	if ok, reason := ProbeWritable(filepath.Join(dir, "config")); ok || !strings.Contains(reason, "is a directory") {
+		t.Fatalf("directory: %v %q", ok, reason)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("probe must not leave files behind: %v", entries)
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file mode bits")
+	}
+	if err := os.Chmod(existing, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "config"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "config"), 0o755) })
+	if ok, reason := ProbeWritable(existing); ok || reason != existing+" is read-only (permission denied)" {
+		t.Fatalf("read-only file: %v %q", ok, reason)
+	}
+	if ok, reason := ProbeWritable(filepath.Join(dir, "config", "new.yaml")); ok || !strings.HasSuffix(reason, "config is read-only (permission denied)") {
+		t.Fatalf("read-only directory: %v %q", ok, reason)
+	}
+}
+
+func TestSettingSourceAndValue(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	LoadConfig()
+	t.Setenv("BOOTY_FLATCARCHANNEL", "beta")
+	t.Setenv("HARDWARE_MAP", "hosts.json")
+	viper.Set(SSHAuthorizedKeys, []string{"a", "b"})
+	FlagChanged = func(key string) bool { return key == HttpPort }
+	t.Cleanup(func() { FlagChanged = nil })
+
+	if EnvName(HttpPort) != "BOOTY_HTTPPORT" {
+		t.Fatalf("EnvName: %q", EnvName(HttpPort))
+	}
+	for key, want := range map[string]string{
+		HttpPort:       SourceFlag,
+		FlatcarChannel: SourceEnv,
+		HardwareMap:    SourceEnv,
+		TFTPPort:       SourceDefault,
+		ServerIP:       SourceDefault,
+	} {
+		if got := SettingSource(key); got != want {
+			t.Errorf("SettingSource(%s) = %q want %q", key, got, want)
+		}
+	}
+	for key, want := range map[string]string{
+		FlatcarChannel:    "beta",
+		TFTPPort:          "69",
+		OCIGC:             "true",
+		JoinTokenTTL:      "1h0m0s",
+		SSHAuthorizedKeys: "a, b",
+		ServerIP:          "",
+	} {
+		if got := SettingValue(key); got != want {
+			t.Errorf("SettingValue(%s) = %q want %q", key, got, want)
+		}
+	}
+}
