@@ -16,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/kubeadm"
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
@@ -65,6 +66,9 @@ type Options struct {
 	WebFS     fs.FS
 	WebDir    string
 	BootFiles fs.FS
+	// Minter provides kubeadm join tokens for --kubeadmJoin=auto; nil means
+	// build one from the in-cluster environment on first use.
+	Minter *kubeadm.Minter
 }
 
 func uiFileSystem(o Options) http.FileSystem {
@@ -80,6 +84,7 @@ func uiFileSystem(o Options) http.FileSystem {
 }
 
 func NewHandler(o Options) http.Handler {
+	setJoinMinter(o.Minter)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/healthz", handleHealthz)

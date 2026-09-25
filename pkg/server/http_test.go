@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/jeefy/booty/pkg/config"
@@ -44,6 +45,16 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.SSHAuthorizedKeys, []string{})
 	viper.Set(config.AutoRegister, "")
 	viper.Set(config.HostnameTemplate, config.DefaultHostnameTemplate)
+	viper.Set(config.Profile, "")
+	viper.Set(config.KubeadmJoin, config.KubeadmJoinStatic)
+	viper.Set(config.JoinString, "")
+	viper.Set(config.JoinStringFile, "")
+	viper.Set(config.JoinTokenTTL, time.Hour)
+	viper.Set(config.K8sVersion, config.DefaultK8sVersion)
+	viper.Set(config.CNIVersion, config.DefaultCNIVersion)
+	viper.Set(config.CrictlVersion, "")
+	viper.Set(config.ContainerdDisk, "")
+	viper.Set(config.KubeletUnitsURL, config.DefaultKubeletUnitsURL)
 
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)

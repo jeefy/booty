@@ -425,7 +425,7 @@ func TestUpdateCheckOSTree(t *testing.T) {
 func TestStarterButaneRenders(t *testing.T) {
 	newTestServer(t)
 	host := &hardware.Host{MAC: "aa:bb:cc:dd:ee:01", Hostname: "n1"}
-	rendered, err := renderIgnition("starter", ign.StarterButane, host)
+	rendered, err := renderIgnition("starter", ign.StarterButane, host, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestExampleTemplatesRender(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rendered, err := renderIgnition(name, string(src), host)
+		rendered, err := renderIgnition(name, string(src), host, "kubeadm join 10.0.0.1:6443 --token t.s")
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
