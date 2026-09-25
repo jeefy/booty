@@ -44,6 +44,10 @@ const (
 	Builtin             = "builtin"
 	SSHAuthorizedKeys   = "sshAuthorizedKeys"
 	SSHAuthorizedKeysFl = "sshAuthorizedKeysFile"
+	ProxyDHCP           = "proxyDHCP"
+	ProxyDHCPListen     = "proxyDHCPListen"
+	ProxyDHCPRelay      = "proxyDHCPRelay"
+	ProxyDHCPPorts      = "proxyDHCPPorts"
 	Version             = "version"
 	Timestamp           = "timestamp"
 )
@@ -134,6 +138,12 @@ func LoadConfig() {
 	viper.SetDefault(DoInstallClearOn, ClearOnIgnition)
 	viper.SetDefault(Builtin, DefaultBuiltin)
 	viper.SetDefault(HttpPort, 8080)
+	viper.SetDefault(ProxyDHCP, false)
+	viper.SetDefault(ProxyDHCPListen, "")
+	viper.SetDefault(ProxyDHCPRelay, false)
+	// Test-only override of the two ProxyDHCP listen ports ("67,4011"), so
+	// the server can be exercised without root. Deliberately not a flag.
+	viper.SetDefault(ProxyDHCPPorts, "")
 }
 
 func bindEnv(key, env string) {

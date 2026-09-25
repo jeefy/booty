@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 
 	booty "github.com/jeefy/booty"
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/dhcp"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/ignition"
 	"github.com/jeefy/booty/pkg/server"
@@ -59,6 +61,9 @@ func init() {
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
 	flags.Bool(config.OCIGCEmpty, false, "Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image")
 	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch) or 'booted' (only on POST /booted from the installed system)")
+	flags.Bool(config.ProxyDHCP, false, "EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename")
+	flags.String(config.ProxyDHCPListen, "", "IP or interface name the ProxyDHCP server binds to (default all interfaces)")
+	flags.Bool(config.ProxyDHCPRelay, false, "Answer relayed PXE requests (giaddr set) on the ProxyDHCP server")
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
 
 	if err := viper.BindPFlags(flags); err != nil {
@@ -131,7 +136,7 @@ func run(cmd *cobra.Command, argv []string) error {
 		slog.Warn("Could not prepare OCI registry folders", "error", err)
 	}
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 4)
 	ready := make(chan struct{})
 
 	tftpServer, err := tftp.Start(tftp.Config{
@@ -151,6 +156,20 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		tftpServer.Shutdown(5 * time.Second)
 		return err
+	}
+
+	var dhcpServer *dhcp.Server
+	if viper.GetBool(config.ProxyDHCP) {
+		dhcpServer, err = startProxyDHCP(errCh)
+		if err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if herr := httpServer.Shutdown(shutdownCtx); herr != nil {
+				slog.Warn("HTTP shutdown failed", "error", herr)
+			}
+			tftpServer.Shutdown(5 * time.Second)
+			return err
+		}
 	}
 	close(ready)
 
@@ -189,6 +208,9 @@ func run(cmd *cobra.Command, argv []string) error {
 		slog.Info("HTTP server stopped")
 	}
 	tftpServer.Shutdown(10 * time.Second)
+	if dhcpServer != nil {
+		dhcpServer.Shutdown(10 * time.Second)
+	}
 	slog.Info("Booty stopped")
 	return runErr
 }
@@ -207,6 +229,20 @@ func ensureBootFilesInDataDir(bootFiles fs.FS) {
 			slog.Warn("Could not write boot file to data dir", "name", name, "error", err)
 		}
 	}
+}
+
+func startProxyDHCP(errCh chan<- error) (*dhcp.Server, error) {
+	port67, port4011, err := dhcp.ParsePorts(viper.GetString(config.ProxyDHCPPorts))
+	if err != nil {
+		return nil, err
+	}
+	return dhcp.Start(dhcp.Config{
+		Listen:   viper.GetString(config.ProxyDHCPListen),
+		ServerIP: net.ParseIP(viper.GetString(config.ServerIP)),
+		Relay:    viper.GetBool(config.ProxyDHCPRelay),
+		Port67:   port67,
+		Port4011: port4011,
+	}, errCh)
 }
 
 func configureLogging(debug bool) {
