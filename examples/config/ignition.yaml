@@ -1,107 +1,29 @@
-# Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
-# This template only has to carry what is specific to your fleet.
+# Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys)
+# and, with --profile=kubeadm-worker, the whole Kubernetes worker setup (CNI plugins,
+# kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot, optional
+# containerd disk via --containerdDisk) — see the README. This template only has to
+# carry what is specific to your site.
+#
+# SSH keys: pass --sshAuthorizedKeysFile (or --sshAuthorizedKeys) instead of listing
+# them here; the sshkeys builtin adds them to the 'core' user.
+#
+# Anything you define here with the same file path or unit name as a builtin/profile
+# entry wins over it (Ignition merge: later entries win).
 variant: flatcar
 version: 1.1.0
 storage:
-  filesystems:
-    - device: /dev/sda
-      format: ext4
-      path: /var/lib/containerd
-      wipe_filesystem: true
-      label: ssd
   files:
-    - path: /opt/cni.sh
+    # Site DNS. Drop this block to keep DHCP-provided resolvers.
+    - path: /etc/systemd/resolved.conf.d/booty.conf
+      mode: 0644
       contents:
-        source: http://{{ .ServerIP }}/data/config/cni.sh
-      mode: 0775
-    - path: /opt/systemd.sh
+        inline: |
+          [Resolve]
+          DNS=192.168.1.1
+          FallbackDNS=1.1.1.1
+    # Example of a per-host value: {{ .Hostname }}, {{ .ServerIP }}, {{ .JoinString }}
+    # and {{ .OSTreeImage }} are available in every template.
+    - path: /etc/motd
+      mode: 0644
       contents:
-        source: http://{{ .ServerIP }}/data/config/systemd.sh
-      mode: 0775
-    - path: /opt/kube-tools.sh
-      contents:
-        source: http://{{ .ServerIP }}/data/config/kube-tools.sh
-      mode: 0775
-    - path: /opt/join.sh
-      contents:
-        source: http://{{ .ServerIP }}/data/config/join.sh
-      mode: 0775
-systemd:
-  units:
-    - name: var-lib-containerd.mount
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Mount ephemeral to /var/lib/containerd
-        Before=local-fs.target
-        [Mount]
-        What=/dev/disk/by-label/ssd
-        Where=/var/lib/containerd
-        Type=ext4
-        [Install]
-        WantedBy=local-fs.target        
-    - enabled: true
-      name: containerd.service
-      dropins:
-        - name: 10-wait-containerd.conf
-          contents: |
-            [Unit]
-            After=var-lib-containerd.mount
-            Requires=var-lib-containerd.mount 
-    - enabled: true
-      name: cni-install.service
-      contents: |
-        [Install]
-        WantedBy=multi-user.target
-
-        [Unit]
-        Description=k8s installation script
-        Wants=network-online.target
-        After=network.target network-online.target
-
-        [Service]
-        Type=oneshot
-        ExecStart=/opt/cni.sh
-    - enabled: true
-      name: kube-tools-install.service
-      contents: |
-        [Install]
-        WantedBy=multi-user.target
-
-        [Unit]
-        Description=k8s installation script
-        Requires=cni-install.service
-        After=cni-install.service
-
-        [Service]
-        Type=oneshot
-        ExecStart=/opt/kube-tools.sh
-    - enabled: true
-      name: systemd-k8s-setup.service
-      contents: |
-        [Install]
-        WantedBy=multi-user.target
-
-        [Unit]
-        Description=k8s installation script
-        Requires=kube-tools-install.service
-        After=kube-tools-install.service
-
-        [Service]
-        Type=oneshot
-        ExecStart=/opt/systemd.sh
-    - enabled: true
-      name: k8s-join.service
-      contents: |
-        [Install]
-        WantedBy=multi-user.target
-
-        [Unit]
-        Description=k8s join script
-        Requires=systemd-k8s-setup.service
-        After=systemd-k8s-setup.service
-
-        [Service]
-        Environment="JOIN_STRING={{ .JoinString }}"
-        Type=oneshot
-        ExecStart=/bin/bash -c 'PATH=/opt/bin:$PATH exec /opt/join.sh'
+        inline: "{{ .Hostname }} -- PXE booted from Booty at {{ .ServerIP }}\n"
