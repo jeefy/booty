@@ -1,0 +1,11 @@
+#!ipxe
+:start
+dhcp || goto retry
+chain tftp://${next-server}/booty.ipxe || chain http://${next-server}/booty.ipxe?mac=${mac} || goto shell
+exit
+:retry
+sleep 5
+goto start
+:shell
+echo Booty: could not reach ${next-server} - dropping to the iPXE shell
+shell
