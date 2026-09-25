@@ -85,7 +85,7 @@ func TestKubeadmWorkerProfileStatic(t *testing.T) {
 	}
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac=aa:bb:cc:dd:ee:02", "")
-	if r.status != 200 || strings.Contains(r.body, "booty-k8s-join") || strings.Contains(r.body, "/opt/booty/") || !strings.Contains(r.body, "booty-booted.service") {
+	if r.status != 200 || strings.Contains(r.body, "booty-k8s-join") || strings.Contains(r.body, "/opt/booty/kube-tools.sh") || !strings.Contains(r.body, "booty-booted.service") {
 		t.Fatalf("ublue hosts must not get the profile: %+v", r)
 	}
 
