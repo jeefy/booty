@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -241,5 +242,39 @@ func TestResolveServerAddress(t *testing.T) {
 	ip := net.ParseIP(viper.GetString(ServerIP))
 	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
 		t.Fatalf("autodetected serverIP %q should be a real interface address", viper.GetString(ServerIP))
+	}
+}
+
+func TestValidateDoInstallClearOn(t *testing.T) {
+	for _, ok := range []string{ClearOnIgnition, ClearOnBooted, ClearOnNextBoot} {
+		if err := ValidateDoInstallClearOn(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "never", "Ignition", "nextboot"} {
+		if err := ValidateDoInstallClearOn(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+}
+
+func TestBluefinDefaults(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	LoadConfig()
+	if got := viper.GetString(BluefinRepo); got != "projectbluefin/server" {
+		t.Fatalf("bluefinRepo default %q", got)
+	}
+	if got := viper.GetDuration(InstallMinDuration); got != 3*time.Minute {
+		t.Fatalf("installMinDuration default %s", got)
+	}
+	t.Setenv("BOOTY_GITHUBTOKEN", "ghp_x")
+	t.Setenv("BOOTY_BLUEFINVERSION", "26.08.0")
+	if viper.GetString(GithubToken) != "ghp_x" || viper.GetString(BluefinVersion) != "26.08.0" {
+		t.Fatalf("env binding: token=%q version=%q", viper.GetString(GithubToken), viper.GetString(BluefinVersion))
+	}
+	viper.Set(DataDir, "/d")
+	if got := BluefinCurrentManifestPath(); got != "/d/bluefin/current/manifest.json" {
+		t.Fatalf("BluefinCurrentManifestPath=%q", got)
 	}
 }

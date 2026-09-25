@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strings"
@@ -14,6 +15,7 @@ import (
 var (
 	FlatcarUpdateMu sync.Mutex
 	CoreOSUpdateMu  sync.Mutex
+	BluefinUpdateMu sync.Mutex
 	OSTreeSyncMu    sync.Mutex
 )
 
@@ -23,7 +25,10 @@ type runtimeState struct {
 	remoteFlatcarVersion  string
 	currentCoreOSVersion  string
 	remoteCoreOSVersion   string
+	currentBluefinVersion string
+	remoteBluefinVersion  string
 	flatcarPin            string
+	bluefinPin            string
 }
 
 var s runtimeState
@@ -53,6 +58,39 @@ func Init() {
 	s.mu.Lock()
 	s.flatcarPin = pin
 	s.mu.Unlock()
+
+	if v := LoadLocalBluefinVersion(); v != "" {
+		SetCurrentBluefinVersion(v)
+		slog.Info("Local Bluefin version found", "version", v)
+	}
+	bluefinPin := strings.TrimSpace(viper.GetString(config.BluefinVersion))
+	if bluefinPin != "" {
+		slog.Info("Bluefin version pinned via flag/env", "version", bluefinPin)
+	}
+	s.mu.Lock()
+	s.bluefinPin = bluefinPin
+	s.mu.Unlock()
+}
+
+// LoadLocalBluefinVersion reads the version recorded in
+// DataDir/bluefin/current/manifest.json; "" when absent or unparseable.
+func LoadLocalBluefinVersion() string {
+	path := config.BluefinCurrentManifestPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Error("Error reading local Bluefin manifest", "path", path, "error", err)
+		}
+		return ""
+	}
+	var m struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		slog.Warn("Local Bluefin manifest is not parseable", "path", path, "error", err)
+		return ""
+	}
+	return strings.TrimSpace(m.Version)
 }
 
 // LoadLocalFlatcarVersion parses FLATCAR_VERSION from DataDir/version.txt.
@@ -146,4 +184,36 @@ func SetFlatcarPin(version string) error {
 	s.flatcarPin = version
 	s.mu.Unlock()
 	return nil
+}
+
+func CurrentBluefinVersion() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentBluefinVersion
+}
+
+func SetCurrentBluefinVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentBluefinVersion = v
+}
+
+func RemoteBluefinVersion() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.remoteBluefinVersion
+}
+
+func SetRemoteBluefinVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remoteBluefinVersion = v
+}
+
+// BluefinPin is the --bluefinVersion pin; it is flag/env only and has no
+// persisted counterpart.
+func BluefinPin() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.bluefinPin
 }

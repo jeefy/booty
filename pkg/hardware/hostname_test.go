@@ -97,12 +97,12 @@ func TestHostnameTemplate(t *testing.T) {
 }
 
 func TestValidateAutoRegisterOS(t *testing.T) {
-	for _, ok := range []string{"", "flatcar", "coreos", "ublue"} {
+	for _, ok := range []string{"", "flatcar", "coreos", "bluefin"} {
 		if err := ValidateAutoRegisterOS(ok); err != nil {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"windows", "Flatcar", "none"} {
+	for _, bad := range []string{"windows", "Flatcar", "none", "ublue"} {
 		if err := ValidateAutoRegisterOS(bad); err == nil {
 			t.Errorf("%q should be rejected", bad)
 		}

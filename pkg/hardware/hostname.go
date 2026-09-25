@@ -116,5 +116,5 @@ func ValidateAutoRegisterOS(os string) error {
 	if os == "" || IsValidOS(os) {
 		return nil
 	}
-	return fmt.Errorf("invalid auto-register os %q: must be one of flatcar, coreos, ublue", os)
+	return fmt.Errorf("invalid auto-register os %q: must be one of %s", os, ValidOSList())
 }
