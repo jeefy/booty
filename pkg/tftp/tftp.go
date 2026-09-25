@@ -84,6 +84,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	n, err := rf.ReadFrom(file)
 	if err != nil {
 		return err
