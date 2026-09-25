@@ -149,6 +149,7 @@ func main() {
 }
 
 func run(cmd *cobra.Command, argv []string) error {
+	configureLogging(viper.GetBool(config.Debug))
 	slog.Info("Starting Booty!")
 	config.LoadConfig(cmd)
 	config.EnsureDeps()
@@ -176,4 +177,12 @@ func run(cmd *cobra.Command, argv []string) error {
 	bootyHTTP.StartHTTP()
 
 	return nil
+}
+
+func configureLogging(debug bool) {
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 }
