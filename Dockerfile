@@ -1,11 +1,14 @@
 ### Stage One
 FROM golang:1.24-alpine as build-golang
 
+ARG BOOTY_VERSION=dev
+ARG BOOTY_TIMESTAMP=
+
 WORKDIR /app
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOARCH=amd64 GOOS=linux go build -o bin/booty -ldflags "-X main.version=$BOOTY_VERSION -X main.timestamp=$BOOTY_TIMESTAMP" cmd/main.go
+RUN CGO_ENABLED=0 GOARCH=amd64 GOOS=linux go build -o bin/booty -ldflags "-X main.version=${BOOTY_VERSION} -X main.timestamp=${BOOTY_TIMESTAMP}" cmd/main.go
 
 
 ### Stage Two
