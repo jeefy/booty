@@ -39,6 +39,7 @@ const (
 	ServerIP            = "serverIP"
 	ServerHttpPort      = "serverHttpPort"
 	JoinString          = "joinString"
+	OCIGC               = "ociGC"
 	DepsPxelinuxURL     = "depsPxelinuxURL"
 	DepsLdlinuxURL      = "depsLdlinuxURL"
 	Version             = "version"
@@ -96,6 +97,7 @@ func LoadConfig() {
 	viper.SetDefault(TFTPPort, 69)
 	viper.SetDefault(TFTPBlockSize, 1468)
 	viper.SetDefault(WebDir, "./web/dist")
+	viper.SetDefault(OCIGC, true)
 }
 
 func bindEnv(key, env string) {
@@ -123,6 +125,19 @@ func ServerHostPort() string {
 		return net.JoinHostPort(host, fmt.Sprint(port))
 	}
 	return host
+}
+
+// LocalRegistry is how Booty reaches its own embedded OCI registry from
+// inside the process. It must stay loopback: the server may be behind a
+// port mapping (ServerHttpPort) that is only valid for booting clients.
+func LocalRegistry() string {
+	return fmt.Sprintf("127.0.0.1:%d", viper.GetInt(HttpPort))
+}
+
+// ClientRegistry is the registry address rendered into Ignition/iPXE for
+// booting machines.
+func ClientRegistry() string {
+	return fmt.Sprintf("%s:%d", viper.GetString(ServerIP), viper.GetInt(ServerHttpPort))
 }
 
 // CloseQuietly closes c and logs (at debug level) any error. Use it for
