@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/buger/jsonparser"
 	"github.com/jeefy/booty/pkg/config"
@@ -98,7 +99,16 @@ func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch str
 		if sha != "" {
 			hashAlgo = crypto.SHA256
 		}
-		if err := config.Download(ctx, config.DownloadClient, base+"/"+file, config.DataPath(file), hashAlgo, sha); err != nil {
+		// Fedora has renamed artifacts over time (e.g. -live-kernel-x86_64
+		// became -live-kernel.x86_64), so fetch from the location the stream
+		// publishes and keep our stable local name for the boot scripts.
+		url := base + "/" + file
+		if loc, err := extractCoreOSLocation(body, arch, artifactType); err == nil {
+			url = loc
+		} else {
+			slog.Warn("Could not extract artifact location, falling back to constructed URL", "artifact", artifactType, "error", err)
+		}
+		if err := config.Download(ctx, config.DownloadClient, url, config.DataPath(file), hashAlgo, sha); err != nil {
 			removeOldCoreOSArtifacts(version, arch)
 			return fmt.Errorf("%s: %w", file, err)
 		}
@@ -153,6 +163,20 @@ func coreOSReleaseURL(version, arch string) string {
 
 func RemoteCoreOSJSONURL() string {
 	return fmt.Sprintf("https://builds.coreos.fedoraproject.org/streams/%s.json", viper.GetString(config.CoreOSChannel))
+}
+
+func extractCoreOSLocation(body []byte, arch, artifactType string) (string, error) {
+	if len(body) == 0 {
+		return "", fmt.Errorf("no JSON body to extract location from")
+	}
+	loc, err := jsonparser.GetString(body, "architectures", arch, "artifacts", "metal", "formats", "pxe", artifactType, "location")
+	if err != nil {
+		return "", fmt.Errorf("location not found for %s: %w", artifactType, err)
+	}
+	if !strings.HasPrefix(loc, "https://") {
+		return "", fmt.Errorf("refusing non-https location for %s: %q", artifactType, loc)
+	}
+	return loc, nil
 }
 
 func extractCoreOSChecksum(body []byte, arch, artifactType string) (string, error) {
