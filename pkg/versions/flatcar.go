@@ -31,22 +31,23 @@ func FlatcarVersionCheck() {
 		slog.Info("Already updating, skipping version check")
 		return
 	}
-	if viper.GetBool("debug") {
-		slog.Info("Checking remote flatcar version")
-	}
+	slog.Debug("Checking remote flatcar version")
 
 	if viper.GetString(config.CurrentFlatcarVersion) == "" {
 		// Check for an existing version.txt file
-		if oldVer, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir))); err == nil {
-			slog.Info("Found old version.txt, setting current version to that")
+		versionFile := fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir))
+		if oldVer, err := os.Open(versionFile); err == nil {
 			data, _ := godotenv.Parse(oldVer)
-			if _, ok := data["FLATCAR_VERSION"]; !ok {
-				slog.Warn("Old version.txt file is invalid")
+			oldVer.Close()
+			if v, ok := data["FLATCAR_VERSION"]; ok && v != "" {
+				slog.Info("Found old version.txt, setting current version to that", "version", v)
+				viper.Set(config.CurrentFlatcarVersion, v)
+			} else {
+				slog.Warn("Old version.txt file is invalid, setting current version to 0.0.0", "path", versionFile)
+				viper.Set(config.CurrentFlatcarVersion, "0.0.0")
 			}
-			slog.Info("Flatcar version set", "version", data["FLATCAR_VERSION"])
-			viper.Set(config.CurrentFlatcarVersion, data["FLATCAR_VERSION"])
 		} else {
-			slog.Info("version.txt not found, setting current version to 0.0.0", "path", fmt.Sprintf("%s/version.txt", viper.GetString(config.DataDir)))
+			slog.Info("version.txt not found, setting current version to 0.0.0", "path", versionFile)
 			viper.Set(config.CurrentFlatcarVersion, "0.0.0")
 		}
 	}
@@ -56,9 +57,7 @@ func FlatcarVersionCheck() {
 	var targetVersion string
 	if pinned := viper.GetString(config.FlatcarVersion); pinned != "" {
 		targetVersion = pinned
-		if viper.GetBool("debug") {
-			slog.Info("Flatcar version is pinned", "version", pinned)
-		}
+		slog.Debug("Flatcar version is pinned", "version", pinned)
 	} else {
 		LoadRemoteFlatcarVersion()
 		targetVersion = viper.GetString(config.RemoteFlatcarVersion)
@@ -127,9 +126,7 @@ func LoadRemoteFlatcarVersion() {
 			return
 		}
 		viper.Set(config.RemoteFlatcarVersion, data["FLATCAR_VERSION"])
-		if viper.GetBool("debug") {
-			slog.Info("Remote flatcar version found", "version", data["FLATCAR_VERSION"])
-		}
+		slog.Debug("Remote flatcar version found", "version", data["FLATCAR_VERSION"])
 	} else {
 		slog.Error("Error retrieving remote flatcar version", "url", RemoteFlatcarURL(), "error", err)
 	}

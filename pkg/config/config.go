@@ -62,11 +62,12 @@ func LoadConfig(cmd *cobra.Command) {
 
 	if file, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(DataDir))); err == nil {
 		data, _ := godotenv.Parse(file)
-		if _, ok := data["FLATCAR_VERSION"]; !ok {
-			viper.Set(CurrentFlatcarVersion, data["FLATCAR_VERSION"])
-			slog.Info("Local version found", "version", data["FLATCAR_VERSION"])
+		file.Close()
+		if v, ok := data["FLATCAR_VERSION"]; ok && v != "" {
+			viper.Set(CurrentFlatcarVersion, v)
+			slog.Info("Local version found", "version", v)
 		}
-	} else {
+	} else if !os.IsNotExist(err) {
 		slog.Error("Error retrieving existing local version", "error", err)
 	}
 
