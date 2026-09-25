@@ -6,9 +6,11 @@ import (
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -126,6 +128,59 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return fail(err)
 	}
 	return nil
+}
+
+// ProbeWritable reports whether WriteFileAtomic(path) could succeed without
+// changing anything: an existing file is opened write-only and closed again;
+// for a missing one a temp file is created and removed in the nearest
+// existing ancestor directory. The reason names the path and the OS error,
+// e.g. "/data/config/ignition.yaml is read-only (read-only file system)",
+// which is what a Kubernetes ConfigMap mount produces.
+func ProbeWritable(path string) (writable bool, reason string) {
+	info, err := os.Stat(path)
+	switch {
+	case err == nil && info.IsDir():
+		return false, fmt.Sprintf("%s is a directory", path)
+	case err == nil:
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return false, readOnlyReason(path, err)
+		}
+		CloseQuietly(f, path)
+		return true, ""
+	case !errors.Is(err, fs.ErrNotExist):
+		return false, readOnlyReason(path, err)
+	}
+
+	dir := filepath.Dir(path)
+	for {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	f, err := os.CreateTemp(dir, ".booty-probe-*.tmp")
+	if err != nil {
+		return false, readOnlyReason(dir, err)
+	}
+	tmp := f.Name()
+	CloseQuietly(f, tmp)
+	if err := os.Remove(tmp); err != nil {
+		slog.Warn("Could not remove probe file", "path", tmp, "error", err)
+	}
+	return true, ""
+}
+
+func readOnlyReason(path string, err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	return fmt.Sprintf("%s is read-only (%v)", path, err)
 }
 
 // ReplaceSymlink atomically points linkPath at target, replacing whatever
