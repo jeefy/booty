@@ -1,53 +1,83 @@
 package config
 
 import (
-	"crypto/sha256"
-	"crypto/sha512"
-	"encoding/hex"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/joho/godotenv"
-	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
+// Viper keys. After LoadConfig returns viper is treated as read-only; all
+// runtime state (current/remote versions, pin, update locks) lives in
+// pkg/state.
 const (
-	CurrentFlatcarVersion = "currentFlatcarVersion"
-	RemoteFlatcarVersion  = "remoteFlatcarVersion"
-	FlatcarChannel        = "flatcarChannel"
-	FlatcarVersion        = "flatcarVersion"
-	CurrentCoreOSVersion  = "currentCoreOSVersion"
-	RemoteCoreOSVersion   = "remoteCoreOSVersion"
-	CoreOSChannel         = "coreOSChannel"
-	IgnitionFile          = "ignitionFile"
-	HardwareMap           = "hardwareMap"
-	CoreOSArchitecture    = "coreOSArchitecture"
-	FlatcarArchitecture   = "flatcarArchitecture"
-	Debug                 = "debug"
-	UpdateSchedule        = "updateSchedule"
-	HttpPort              = "httpPort"
-	DataDir               = "dataDir"
-	FlatcarURL            = "flatcarURL"
-	CoreOSURL             = "coreOSURL"
-	ServerIP              = "serverIP"
-	ServerHttpPort        = "serverHttpPort"
-	JoinString            = "joinString"
-	Updating              = "updating"
-	TFTPBlockSize         = "tftpBlockSize"
-	DepsPxelinuxURL       = "depsPxelinuxURL"
-	DepsLdlinuxURL        = "depsLdlinuxURL"
-	DepsUndionlyURL       = "depsUndionlyURL"
+	FlatcarChannel      = "flatcarChannel"
+	FlatcarVersion      = "flatcarVersion"
+	CoreOSChannel       = "coreOSChannel"
+	IgnitionFile        = "ignitionFile"
+	HardwareMap         = "hardwareMap"
+	CoreOSArchitecture  = "coreOSArchitecture"
+	FlatcarArchitecture = "flatcarArchitecture"
+	Debug               = "debug"
+	UpdateSchedule      = "updateSchedule"
+	HttpPort            = "httpPort"
+	TFTPPort            = "tftpPort"
+	TFTPBlockSize       = "tftpBlockSize"
+	WebDir              = "webDir"
+	DataDir             = "dataDir"
+	FlatcarURL          = "flatcarURL"
+	CoreOSURL           = "coreOSURL"
+	ServerIP            = "serverIP"
+	ServerHttpPort      = "serverHttpPort"
+	JoinString          = "joinString"
+	OCIGC               = "ociGC"
+	DepsPxelinuxURL     = "depsPxelinuxURL"
+	DepsLdlinuxURL      = "depsLdlinuxURL"
+	Version             = "version"
+	Timestamp           = "timestamp"
 )
 
-func LoadConfig(cmd *cobra.Command) {
+// FlatcarPinFile is the file (relative to DataDir) that persists a Flatcar
+// version pin set via the Web UI.
+const FlatcarPinFile = "flatcar_pin.txt"
+
+// MetadataClient is used for small metadata fetches (version.txt, streams
+// JSON, DIGESTS files). It has a short overall timeout.
+var MetadataClient = &http.Client{Timeout: 30 * time.Second}
+
+// DownloadClient is used for large artifact downloads. Individual phases are
+// bounded (dial, TLS, response headers) while the overall timeout is generous
+// enough for multi-hundred-megabyte images on slow links.
+var DownloadClient = &http.Client{
+	Timeout: 60 * time.Minute,
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+	},
+}
+
+// LoadConfig installs defaults and environment bindings. Every flag can be
+// set through a BOOTY_<FLAG> environment variable (e.g. BOOTY_HTTPPORT); the
+// historical explicit names are kept for compatibility.
+func LoadConfig() {
+	viper.SetEnvPrefix("BOOTY")
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	viper.AutomaticEnv()
+
 	viper.SetDefault(Debug, false)
-	viper.SetDefault(Updating, false)
 	viper.SetDefault(FlatcarURL, "https://%s.release.flatcar-linux.net/%s-usr/%s")
 	viper.SetDefault(CoreOSURL, "https://builds.coreos.fedoraproject.org/prod/streams/%s/builds/%s/%s")
 	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
@@ -55,205 +85,126 @@ func LoadConfig(cmd *cobra.Command) {
 
 	viper.SetDefault(DepsPxelinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/pxelinux.0")
 	viper.SetDefault(DepsLdlinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/20230607/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
-	viper.SetDefault(DepsUndionlyURL, "https://raw.githubusercontent.com/jeefy/booty/main/undionly.kpxe")
-	viper.BindEnv(DepsPxelinuxURL, "DEPS_PXELINUX_URL")
-	viper.BindEnv(DepsLdlinuxURL, "DEPS_LDLINUX_URL")
-	viper.BindEnv(DepsUndionlyURL, "DEPS_UNDIONLY_URL")
 
-	if file, err := os.Open(fmt.Sprintf("%s/version.txt", viper.GetString(DataDir))); err == nil {
-		data, _ := godotenv.Parse(file)
-		if _, ok := data["FLATCAR_VERSION"]; !ok {
-			viper.Set(CurrentFlatcarVersion, data["FLATCAR_VERSION"])
-			slog.Info("Local version found", "version", data["FLATCAR_VERSION"])
-		}
-	} else {
-		slog.Error("Error retrieving existing local version", "error", err)
-	}
+	bindEnv(DepsPxelinuxURL, "DEPS_PXELINUX_URL")
+	bindEnv(DepsLdlinuxURL, "DEPS_LDLINUX_URL")
+	bindEnv(FlatcarVersion, "FLATCAR_VERSION_PIN")
+	bindEnv(IgnitionFile, "IGNITION_FILE")
+	bindEnv(HardwareMap, "HARDWARE_MAP")
 
-	viper.BindEnv(FlatcarVersion, "FLATCAR_VERSION_PIN")
-
-	// Load a Flatcar version pin persisted via the Web UI, unless one was
-	// already supplied via the --flatcarVersion flag or FLATCAR_VERSION_PIN env.
-	if viper.GetString(FlatcarVersion) == "" {
-		if pin, err := os.ReadFile(FlatcarPinPath()); err == nil {
-			if v := strings.TrimSpace(string(pin)); v != "" {
-				viper.Set(FlatcarVersion, v)
-				slog.Info("Loaded persisted Flatcar version pin", "version", v)
-			}
-		}
-	}
-
-	viper.BindEnv(IgnitionFile, "IGNITION_FILE")
 	viper.SetDefault(IgnitionFile, "config/ignition.yaml")
-	viper.BindEnv(HardwareMap, "HARDWARE_MAP")
 	viper.SetDefault(HardwareMap, "hardware.json")
+	viper.SetDefault(TFTPPort, 69)
+	viper.SetDefault(TFTPBlockSize, 1468)
+	viper.SetDefault(WebDir, "./web/dist")
+	viper.SetDefault(OCIGC, true)
 }
 
-func DownloadFile(url string) error {
-	slog.Info("Downloading", "url", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
+func bindEnv(key, env string) {
+	if err := viper.BindEnv(key, env); err != nil {
+		slog.Warn("Could not bind environment variable", "key", key, "env", env, "error", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
-	}
-	filename := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
-	slog.Info("Creating", "filename", filename)
-
-	f, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = io.Copy(f, resp.Body)
-	if err != nil {
-		return err
-	}
-	fileInfo, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	slog.Info("Download completed", "url", url, "size_bytes", fileInfo.Size())
-
-	return nil
 }
 
-// DownloadFileWithChecksum downloads url to a temporary file, verifies its
-// SHA256 digest against expectedSHA256 (a lowercase hex string), and only
-// moves the file to its final destination (DataDir/basename(url)) when the
-// digest matches. The temporary file is always removed on failure.
-func DownloadFileWithChecksum(url string, expectedSHA256 string) error {
-	slog.Info("Downloading with checksum verification", "url", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
-	}
-
-	finalPath := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
-	tmpPath := finalPath + ".tmp"
-
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-
-	h := sha256.New()
-	writer := io.MultiWriter(tmpFile, h)
-
-	_, err = io.Copy(writer, resp.Body)
-	if err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	actualSHA256 := hex.EncodeToString(h.Sum(nil))
-	if actualSHA256 != expectedSHA256 {
-		os.Remove(tmpPath)
-		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", url, expectedSHA256, actualSHA256)
-	}
-
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	slog.Info("Download and checksum verification completed", "url", url)
-	return nil
-}
-
-// DownloadFileWithChecksumSHA512 downloads url to a temporary file, verifies
-// its SHA512 digest against expectedSHA512 (a lowercase hex string), and only
-// moves the file to its final destination (DataDir/basename(url)) when the
-// digest matches. The temporary file is always removed on failure.
-func DownloadFileWithChecksumSHA512(url string, expectedSHA512 string) error {
-	slog.Info("Downloading with SHA512 checksum verification", "url", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
-	}
-
-	finalPath := fmt.Sprintf("%s/%s", viper.GetString(DataDir), path.Base(url))
-	tmpPath := finalPath + ".tmp"
-
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-
-	h := sha512.New()
-	writer := io.MultiWriter(tmpFile, h)
-
-	_, err = io.Copy(writer, resp.Body)
-	if err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	actualSHA512 := hex.EncodeToString(h.Sum(nil))
-	if actualSHA512 != expectedSHA512 {
-		os.Remove(tmpPath)
-		return fmt.Errorf("SHA512 checksum mismatch for %s: expected %s, got %s", url, expectedSHA512, actualSHA512)
-	}
-
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	slog.Info("Download and SHA512 checksum verification completed", "url", url)
-	return nil
-}
-
-func EnsureDeps() {
-	DownloadFile(viper.GetString(DepsPxelinuxURL))
-	DownloadFile(viper.GetString(DepsLdlinuxURL))
-	DownloadFile(viper.GetString(DepsUndionlyURL))
+// DataPath joins elem onto the configured data directory.
+func DataPath(elem ...string) string {
+	return filepath.Join(append([]string{viper.GetString(DataDir)}, elem...)...)
 }
 
 // FlatcarPinPath returns the path to the file used to persist a Flatcar version
 // pin set via the Web UI across restarts.
 func FlatcarPinPath() string {
-	return fmt.Sprintf("%s/flatcar_pin.txt", viper.GetString(DataDir))
+	return DataPath(FlatcarPinFile)
 }
 
-// SetFlatcarPin updates the in-memory Flatcar version pin and persists it to
-// disk so it survives restarts. An empty version clears the pin (returning the
-// server to tracking the latest version on the configured channel).
-func SetFlatcarPin(version string) error {
-	version = strings.TrimSpace(version)
-	viper.Set(FlatcarVersion, version)
-
-	if version == "" {
-		if err := os.Remove(FlatcarPinPath()); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
+// ServerHostPort returns the host[:port] clients should use to reach the HTTP
+// server, omitting the port when it is the default 80.
+func ServerHostPort() string {
+	host := viper.GetString(ServerIP)
+	if port := viper.GetInt(ServerHttpPort); port != 80 {
+		return net.JoinHostPort(host, fmt.Sprint(port))
 	}
+	return host
+}
 
-	return os.WriteFile(FlatcarPinPath(), []byte(version+"\n"), 0o644)
+// LocalRegistry is how Booty reaches its own embedded OCI registry from
+// inside the process. It must stay loopback: the server may be behind a
+// port mapping (ServerHttpPort) that is only valid for booting clients.
+func LocalRegistry() string {
+	return fmt.Sprintf("127.0.0.1:%d", viper.GetInt(HttpPort))
+}
+
+// ClientRegistry is the registry address rendered into Ignition/iPXE for
+// booting machines.
+func ClientRegistry() string {
+	return fmt.Sprintf("%s:%d", viper.GetString(ServerIP), viper.GetInt(ServerHttpPort))
+}
+
+// CloseQuietly closes c and logs (at debug level) any error. Use it for
+// read-only handles where a close failure carries no information for the
+// caller.
+func CloseQuietly(c io.Closer, what string) {
+	if err := c.Close(); err != nil {
+		slog.Debug("Close failed", "what", what, "error", err)
+	}
+}
+
+// CleanRelPath validates that p is a clean, relative path that cannot escape
+// the directory it is resolved against. It returns the cleaned path.
+func CleanRelPath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	if strings.ContainsRune(p, 0) {
+		return "", fmt.Errorf("path contains NUL byte")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+		return "", fmt.Errorf("path must be relative")
+	}
+	clean := filepath.Clean(p)
+	if clean == "." {
+		return "", fmt.Errorf("path must name a file")
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(clean), "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("path must not contain '..'")
+		}
+	}
+	return clean, nil
+}
+
+// EnsureDeps makes sure the legacy PXE bootloader files (pxelinux.0 and
+// ldlinux.c32) are present in DataDir, downloading them when missing. Failures
+// are not fatal: Booty keeps working for iPXE clients (undionly.kpxe is
+// embedded in the binary) and only legacy PXE becomes unavailable.
+func EnsureDeps(ctx context.Context) {
+	legacyOK := true
+	for _, key := range []string{DepsPxelinuxURL, DepsLdlinuxURL} {
+		url := viper.GetString(key)
+		if url == "" {
+			continue
+		}
+		dest := DataPath(path.Base(url))
+		if _, err := os.Stat(dest); err == nil {
+			slog.Debug("Dependency already present", "path", dest)
+			continue
+		}
+		if err := Download(ctx, DownloadClient, url, dest, 0, ""); err != nil {
+			slog.Debug("Dependency download failed", "url", url, "error", err)
+			legacyOK = false
+		}
+	}
+	if !legacyOK {
+		slog.Warn("Legacy PXE unavailable: could not fetch pxelinux.0/ldlinux.c32 (iPXE via undionly.kpxe still works)")
+	}
+}
+
+// EnsureFile writes data to path only when the file does not exist yet.
+func EnsureFile(path string, data []byte, perm os.FileMode) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return WriteFileAtomic(path, data, perm)
 }

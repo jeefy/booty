@@ -1,13 +1,203 @@
-.row-striped:nth-of-type(odd){
-    background-color: #efefef;
-}
-  
-.row-striped:nth-of-type(even){
-    background-color: #ffffff;
+:root {
+  --booty-accent: #ea6153;
+  --booty-accent-ink: #b8382c;
+  --booty-accent-soft: rgba(234, 97, 83, 0.12);
+  --booty-ink: #1f2328;
+  --booty-muted: #6b7280;
+  --booty-surface: #ffffff;
+  --booty-surface-alt: #f6f7f9;
+  --booty-border: #e3e6ea;
+  --booty-nav-bg: #181c21;
+  --booty-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --booty-radius: 0.5rem;
+  --booty-nav-height: 3.5rem;
+  --booty-space-1: 0.25rem;
+  --booty-space-2: 0.5rem;
+  --booty-space-3: 1rem;
+  --booty-space-4: 1.5rem;
+  --booty-space-5: 3rem;
 }
 
-.row.header {
-    font-weight: 900;
-    color: #ffffff;
-    background-color: #ea6153;
+html,
+body {
+  background-color: var(--booty-surface-alt);
+  color: var(--booty-ink);
+}
+
+body {
+  padding-top: calc(var(--booty-nav-height) + var(--booty-space-4));
+  padding-bottom: var(--booty-space-5);
+}
+
+a {
+  color: var(--booty-accent-ink);
+}
+
+a:hover {
+  color: var(--booty-accent);
+}
+
+.mono {
+  font-family: var(--booty-mono);
+  font-size: 0.875em;
+  letter-spacing: 0.01em;
+}
+
+.truncate {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.page-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--booty-space-3);
+  margin-bottom: var(--booty-space-4);
+  padding-bottom: var(--booty-space-2);
+  border-bottom: 2px solid var(--booty-accent);
+}
+
+.page-header h2 {
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--booty-muted);
+  margin: var(--booty-space-4) 0 var(--booty-space-2);
+}
+
+.panel {
+  background: var(--booty-surface);
+  border: 1px solid var(--booty-border);
+  border-radius: var(--booty-radius);
+}
+
+.table-panel {
+  overflow-x: auto;
+}
+
+.table-panel > .table {
+  margin-bottom: 0;
+}
+
+.table-panel > .table > thead th {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--booty-muted);
+  background: var(--booty-surface-alt);
+  border-bottom: 1px solid var(--booty-border);
+  white-space: nowrap;
+}
+
+.table-panel > .table > tbody td {
+  vertical-align: middle;
+}
+
+.table-panel .form-control-sm,
+.table-panel .form-select-sm {
+  min-width: 8rem;
+}
+
+.empty-state {
+  padding: var(--booty-space-5) var(--booty-space-3);
+  text-align: center;
+  color: var(--booty-muted);
+}
+
+.empty-state strong {
+  display: block;
+  color: var(--booty-ink);
+  margin-bottom: var(--booty-space-1);
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--booty-space-3);
+}
+
+.stat {
+  padding: var(--booty-space-3);
+  position: relative;
+  overflow: hidden;
+}
+
+.stat::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--booty-accent);
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--booty-muted);
+  margin-bottom: var(--booty-space-1);
+}
+
+.stat-value {
+  font-family: var(--booty-mono);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+  word-break: break-all;
+}
+
+.stat-value a {
+  text-decoration: none;
+}
+
+.stat-value a:hover {
+  text-decoration: underline;
+}
+
+.stat-hint {
+  font-size: 0.8125rem;
+  color: var(--booty-muted);
+  margin-top: var(--booty-space-1);
+}
+
+.row-error {
+  font-size: 0.8125rem;
+  color: var(--bs-danger);
+  margin-top: var(--booty-space-1);
+}
+
+.fade-in {
+  animation: booty-fade-in 180ms ease-out both;
+}
+
+@keyframes booty-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-in {
+    animation: none;
+  }
 }
