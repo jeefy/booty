@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"text/template"
 	"time"
 
@@ -461,43 +462,84 @@ func renderUserIgnition(mac string, host *hardware.Host, joinString string) ([]b
 }
 
 func renderIgnition(name, src string, host *hardware.Host, joinString string) ([]byte, error) {
-	t, err := template.New(name).Parse(src)
+	ignCfg, rendered, entries, err := renderButane(name, src, templateDataFor(host, joinString))
 	if err != nil {
-		return nil, fmt.Errorf("parsing template: %w", err)
+		if rendered != "" {
+			slog.Error("Butane template contents", "template", rendered)
+			for _, entry := range entries {
+				slog.Error("Butane report entry", "entry", entry.text)
+			}
+		}
+		return nil, err
 	}
+	if len(entries) > 0 {
+		slog.Warn("Problems translating butane config", "report", reportText(entries))
+	}
+	return ignCfg, nil
+}
 
-	templateData := struct {
-		JoinString  string
-		ServerIP    string
-		OSTreeImage string
-		Hostname    string
-	}{
+type templateData struct {
+	JoinString  string
+	ServerIP    string
+	OSTreeImage string
+	Hostname    string
+}
+
+func templateDataFor(host *hardware.Host, joinString string) templateData {
+	return templateData{
 		JoinString:  joinString,
 		ServerIP:    config.ClientRegistry(),
 		Hostname:    host.Hostname,
 		OSTreeImage: resolveOSTreeImage(host),
 	}
+}
 
-	var tpl bytes.Buffer
-	if err := t.Execute(&tpl, templateData); err != nil {
-		return nil, fmt.Errorf("executing template: %w", err)
+// reportEntry is one Butane validation message. Message carries the
+// location ("at $.storage.files.0, line 6 col 9: ...") so an editor can
+// point at it; text is Butane's own rendering, kept for the boot-path log.
+type reportEntry struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+	text    string
+}
+
+func reportText(entries []reportEntry) string {
+	var sb strings.Builder
+	for _, e := range entries {
+		sb.WriteString(e.text)
+		sb.WriteString("\n")
 	}
+	return sb.String()
+}
+
+// renderButane executes the Go template in src and translates the result
+// with Butane. rendered is the executed template (empty when the template
+// itself failed to parse or execute); err covers template errors,
+// translation errors and fatal reports, with the entries explaining why.
+func renderButane(name, src string, data templateData) (ignCfg []byte, rendered string, entries []reportEntry, err error) {
+	t, err := template.New(name).Parse(src)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("parsing template: %w", err)
+	}
+	var tpl bytes.Buffer
+	if err := t.Execute(&tpl, data); err != nil {
+		return nil, "", nil, fmt.Errorf("executing template: %w", err)
+	}
+	rendered = tpl.String()
 
 	ignCfg, report, err := butaneConfig.TranslateBytes(tpl.Bytes(), butaneCommon.TranslateBytesOptions{Pretty: true})
+	for _, e := range report.Entries {
+		text := e.String()
+		msg := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, e.Kind.String()), ":"))
+		entries = append(entries, reportEntry{Kind: e.Kind.String(), Message: msg, text: text})
+	}
 	if err != nil {
-		slog.Error("Butane template contents", "template", tpl.String())
-		for _, entry := range report.Entries {
-			slog.Error("Butane report entry", "entry", entry.String())
-		}
-		return nil, fmt.Errorf("translating butane: %w", err)
+		return nil, rendered, entries, fmt.Errorf("translating butane: %w", err)
 	}
-	if len(report.Entries) > 0 {
-		slog.Warn("Problems translating butane config", "report", report.String())
-		if report.IsFatal() {
-			return nil, fmt.Errorf("butane report is fatal: %s", report.String())
-		}
+	if report.IsFatal() {
+		return nil, rendered, entries, fmt.Errorf("butane report is fatal: %s", report.String())
 	}
-	return ignCfg, nil
+	return ignCfg, rendered, entries, nil
 }
 
 // brigIgnitionConfig is served to unregistered hosts: a single systemd unit
