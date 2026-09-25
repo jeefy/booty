@@ -51,10 +51,11 @@ func versionIsSet(v string) bool {
 	return v != "" && v != unsetVersion
 }
 
-// VerifyLocalArtifacts reconciles the recorded Flatcar/CoreOS versions with
-// what is actually on disk. A release whose PXE files are incomplete is
-// reset to 0.0.0 so the next version check re-downloads it instead of
-// trusting the stale record; a partial CoreOS set is removed outright.
+// VerifyLocalArtifacts reconciles the recorded Flatcar/CoreOS/Bluefin
+// versions with what is actually on disk. A release whose PXE files are
+// incomplete is reset to 0.0.0 so the next version check re-downloads it
+// instead of trusting the stale record; a partial CoreOS set is removed
+// outright.
 func VerifyLocalArtifacts() {
 	dataDir := viper.GetString(config.DataDir)
 
@@ -63,6 +64,14 @@ func VerifyLocalArtifacts() {
 			slog.Warn("Flatcar artifacts missing on disk; version reset to 0.0.0 so the next check re-downloads them",
 				"version", v, "missing", missing)
 			state.SetCurrentFlatcarVersion(unsetVersion)
+		}
+	}
+
+	if v := state.CurrentBluefinVersion(); versionIsSet(v) {
+		if missing := MissingBluefinArtifacts(dataDir); len(missing) > 0 {
+			slog.Warn("Bluefin artifacts missing on disk; version reset to 0.0.0 so the next check re-downloads them",
+				"version", v, "missing", missing)
+			state.SetCurrentBluefinVersion(unsetVersion)
 		}
 	}
 
