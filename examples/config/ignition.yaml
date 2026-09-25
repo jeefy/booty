@@ -1,9 +1,7 @@
+# Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
+# This template only has to carry what is specific to your fleet.
 variant: flatcar
 version: 1.1.0
-passwd:
-  users:
-    - name: core
-      ssh_authorized_keys: [] # Add your SSH keys here
 storage:
   filesystems:
     - device: /dev/sda
@@ -12,10 +10,6 @@ storage:
       wipe_filesystem: true
       label: ssd
   files:
-    - path: /etc/hostname
-      mode: 0644
-      contents:
-        inline: {{ .Hostname }}
     - path: /opt/cni.sh
       contents:
         source: http://{{ .ServerIP }}/data/config/cni.sh
@@ -31,10 +25,6 @@ storage:
     - path: /opt/join.sh
       contents:
         source: http://{{ .ServerIP }}/data/config/join.sh
-      mode: 0775
-    - path: /opt/version-check.sh
-      contents:
-        source: http://{{ .ServerIP }}/data/config/version-check.sh
       mode: 0775
 systemd:
   units:
@@ -58,26 +48,6 @@ systemd:
             [Unit]
             After=var-lib-containerd.mount
             Requires=var-lib-containerd.mount 
-    - name: update.service
-      contents: |
-        [Unit]
-        Description=Compares current version to remote version
-
-        [Service]
-        Environment="BOOTY_IP={{ .ServerIP }}"
-        Type=oneshot
-        ExecStart=/opt/version-check.sh
-    - name: update.timer
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Run update-check every 10 minutes
-
-        [Timer]
-        OnCalendar=*:0/10
-
-        [Install]
-        WantedBy=multi-user.target
     - enabled: true
       name: cni-install.service
       contents: |

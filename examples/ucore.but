@@ -1,34 +1,10 @@
+# Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
+# Only the ucore/k8s specific pieces remain here.
 variant: flatcar
 version: 1.1.0
 
-passwd:
-  users:
-  - name: core
-    ssh_authorized_keys:
-    - YOUR SSH KEY(S) HERE 
-
 systemd:
   units:       
-  - name: update.service
-    contents: |
-      [Unit]
-      Description=Compares current version to remote version
-
-      [Service]
-      Environment="BOOTY_IP={{ .ServerIP }}"
-      Type=oneshot
-      ExecStart=/opt/bin/version-check.sh
-  - name: update.timer
-    enabled: true
-    contents: |
-      [Unit]
-      Description=Run update-check every 10 minutes
-
-      [Timer]
-      OnCalendar=*:0/10
-
-      [Install]
-      WantedBy=multi-user.target
   - enabled: true
     name: k8s-join.service
     contents: |
@@ -89,22 +65,6 @@ systemd:
       [Install]
       WantedBy=multi-user.target
   - enabled: true
-    name: booty-booted.service
-    contents: |
-      [Unit]
-      Description=Tell Booty this host finished installing (clears doInstall)
-      After=network-online.target
-      Wants=network-online.target
-
-      [Service]
-      Type=oneshot
-      RemainAfterExit=yes
-      # systemd expands $VAR itself, hence $$ for everything meant for bash
-      ExecStart=/bin/bash -c 'set -- $$(ip -o route get 1); while [ $$# -gt 1 ] && [ "$$1" != dev ]; do shift; done; MAC=$$(cat /sys/class/net/$$2/address); curl -fsS --retry 5 --retry-connrefused -X POST "http://{{ .ServerIP }}/booted?mac=$$MAC"'
-
-      [Install]
-      WantedBy=multi-user.target
-  - enabled: true
     name: grab-scripts.service
     contents: |
       [Install]
@@ -123,8 +83,6 @@ systemd:
       ExecStart=/bin/bash -c 'mkdir -p /opt/bin/cni'
       ExecStart=/bin/bash -c 'wget http://{{ .ServerIP }}/data/config/join.sh -O /opt/bin/join.sh'
       ExecStart=/bin/bash -c 'chmod +x /opt/bin/join.sh'
-      ExecStart=/bin/bash -c 'wget http://{{ .ServerIP }}/data/config/version-check.sh -O /opt/bin/version-check.sh'
-      ExecStart=/bin/bash -c 'chmod +x /opt/bin/version-check.sh'
       ExecStart=/bin/bash -c 'wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service -O /etc/systemd/system/containerd.service'
       ExecStart=rpm-ostree install kubernetes-kubeadm kubernetes-node crictl conntrack
       ExecStart=rpm-ostree apply-live
@@ -141,10 +99,3 @@ systemd:
       ExecStart=systemctl disable firewalld
       ExecStart=/bin/bash -c 'echo "export PATH=/opt/bin/:$PATH" >> /etc/profile'
       ExecStartPost=touch /root/.postGrab
-
-storage:
-  files:
-  - path: /etc/hostname
-    mode: 0644
-    contents:
-      inline: {{ .Hostname }}

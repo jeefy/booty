@@ -1,11 +1,10 @@
+# Booty merges its builtin fragment (hostname, update timer, booted callback, ssh keys) — see README.
+# The core user's SSH keys come from --sshAuthorizedKeysFile; only extra users and the rebase logic live here.
 variant: flatcar
 version: 1.1.0
 
 passwd:
     users:
-    - name: core
-      ssh_authorized_keys:
-      - SSH Pub Key go brrrr
     - name: gamer
       password_hash: Generate your own password here and paste it here
       home_dir: /home/gamer
@@ -53,22 +52,6 @@ systemd:
 
         ExecStartPost=touch /root/postRebase
         ExecStartPost=systemctl reboot
-
-        [Install]
-        WantedBy=multi-user.target
-    - enabled: true
-      name: booty-booted.service
-      contents: |
-        [Unit]
-        Description=Tell Booty this host finished installing (clears doInstall)
-        After=network-online.target
-        Wants=network-online.target
-
-        [Service]
-        Type=oneshot
-        RemainAfterExit=yes
-        # systemd expands $VAR itself, hence $$ for everything meant for bash
-        ExecStart=/bin/bash -c 'set -- $$(ip -o route get 1); while [ $$# -gt 1 ] && [ "$$1" != dev ]; do shift; done; MAC=$$(cat /sys/class/net/$$2/address); curl -fsS --retry 5 --retry-connrefused -X POST "http://{{ .ServerIP }}/booted?mac=$$MAC"'
 
         [Install]
         WantedBy=multi-user.target
