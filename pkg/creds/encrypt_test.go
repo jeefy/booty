@@ -129,17 +129,21 @@ func systemdCreds(t *testing.T) []string {
 	if err != nil {
 		t.Skip("systemd-creds not installed")
 	}
-	if os.Geteuid() == 0 {
-		return []string{bin}
+	cmd := []string{bin}
+	if os.Geteuid() != 0 {
+		sudo, err := exec.LookPath("sudo")
+		if err != nil {
+			t.Skip("not root and no sudo")
+		}
+		if err := exec.Command(sudo, "-n", "true").Run(); err != nil {
+			t.Skip("not root and sudo needs a password")
+		}
+		cmd = []string{sudo, "-n", bin}
 	}
-	sudo, err := exec.LookPath("sudo")
-	if err != nil {
-		t.Skip("not root and no sudo")
+	if _, err := runCreds(cmd, "--with-key=null", "--allow-null", "encrypt", "--name=probe", "/dev/null", "-"); err != nil {
+		t.Skipf("systemd-creds too old for the null key (needs systemd >= 256): %v", err)
 	}
-	if err := exec.Command(sudo, "-n", "true").Run(); err != nil {
-		t.Skip("not root and sudo needs a password")
-	}
-	return []string{sudo, "-n", bin}
+	return cmd
 }
 
 func runCreds(cmd []string, args ...string) ([]byte, error) {
