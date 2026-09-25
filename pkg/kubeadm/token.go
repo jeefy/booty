@@ -453,10 +453,12 @@ func (m *Minter) do(ctx context.Context, method, path string, body []byte) (*htt
 	if err != nil {
 		return nil, fmt.Errorf("reading service account token: %w", err)
 	}
+	// The timeout must outlive this function: callers stream the body after
+	// we return, and cancelling here would abort that read mid-way.
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(m.cfg.APIServer, "/")+path, bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
@@ -466,9 +468,22 @@ func (m *Minter) do(ctx context.Context, method, path string, body []byte) (*htt
 	}
 	resp, err := client.Do(req) //nolint:bodyclose // callers close via drain/closeBody
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
+}
+
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 func drain(resp *http.Response) error {
