@@ -1,6 +1,7 @@
-package http
+package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,8 +9,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
-	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/state"
@@ -72,7 +73,9 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 	if saved.OSTreeImage != "" {
 		image := saved.OSTreeImage
 		go func() {
-			if err := versions.OSTreeImagePull(image); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			if _, err := versions.OSTreeImagePull(ctx, image); err != nil {
 				slog.Error("Error pulling OCI image", "image", image, "error", err)
 			}
 		}()
@@ -227,50 +230,22 @@ func handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type Image struct {
-	Registry string `json:"registry"`
-	Image    string `json:"image"`
-	Tag      string `json:"tag"`
-	Digest   string `json:"digest"`
-	UpToDate bool   `json:"upToDate"`
-}
-
 func handleRegistryRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	registry := fmt.Sprintf("%s:%d", viper.GetString(config.ServerIP), viper.GetInt(config.HttpPort))
-	images, err := crane.Catalog(registry)
+	images, err := versions.ListCachedImages(r.Context())
 	if err != nil {
-		slog.Error("Registry catalog failed", "registry", registry, "error", err)
-		writeError(w, http.StatusBadGateway, "could not list local registry catalog")
-		return
-	}
-
-	imageList := []Image{}
-	for _, image := range images {
-		tags, err := crane.ListTags(fmt.Sprintf("%s/%s", registry, image))
-		if err != nil {
-			slog.Error("Registry tag listing failed", "image", image, "error", err)
-			writeError(w, http.StatusBadGateway, "could not list tags for "+image)
+		var lre *versions.LocalRegistryError
+		if errors.As(err, &lre) {
+			slog.Error("Local registry query failed", "error", err)
+			writeError(w, http.StatusBadGateway, "could not query local registry")
 			return
 		}
-		for _, tag := range tags {
-			cacheDesc, err := crane.Get(fmt.Sprintf("%s/%s:%s", registry, image, tag))
-			if err != nil {
-				slog.Error("Reading cached image failed", "image", image, "tag", tag, "error", err)
-				writeError(w, http.StatusBadGateway, fmt.Sprintf("could not read cached image %s:%s", image, tag))
-				return
-			}
-			entry := Image{Registry: registry, Image: image, Tag: tag, Digest: cacheDesc.Digest.String()}
-			if remoteDesc, err := crane.Get(fmt.Sprintf("%s:%s", image, tag)); err != nil {
-				slog.Warn("Upstream image lookup failed; reporting as out of date", "image", image, "tag", tag, "error", err)
-			} else {
-				entry.UpToDate = cacheDesc.Digest == remoteDesc.Digest
-			}
-			imageList = append(imageList, entry)
-		}
+		slog.Error("Listing cached images failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list cached images")
+		return
 	}
-	writeJSON(w, http.StatusOK, imageList)
+	writeJSON(w, http.StatusOK, images)
 }

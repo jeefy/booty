@@ -1,7 +1,8 @@
-package http
+package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,7 +14,7 @@ import (
 
 	butaneConfig "github.com/coreos/butane/config"
 	butaneCommon "github.com/coreos/butane/config/common"
-	coreOSType "github.com/coreos/ignition/v2/config/v3_5_experimental/types"
+	coreOSType "github.com/coreos/ignition/v2/config/v3_5/types"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
@@ -77,16 +78,14 @@ func resolveOSTreeImage(host *hardware.Host) string {
 		return ""
 	}
 	local := versions.LocalImageRef(host.OSTreeImage)
-	digest, err := digestLookup(local)
-	if err != nil {
-		slog.Warn("OSTree image not available from local cache, using upstream", "image", local, "error", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	digest, err := digestLookup(local, versions.LocalOptions(ctx)...)
+	if err != nil || digest == "" {
+		slog.Warn("OSTree image not in local cache yet, using upstream", "image", local, "error", err)
 		return host.OSTreeImage
 	}
-	if digest == "" {
-		slog.Warn("OSTree image not in local cache yet, using upstream", "image", local)
-		return host.OSTreeImage
-	}
-	return local
+	return versions.ClientImageRef(host.OSTreeImage)
 }
 
 func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +199,7 @@ func renderIgnition(ignitionFile string, host *hardware.Host) ([]byte, error) {
 		Hostname    string
 	}{
 		JoinString:  viper.GetString(config.JoinString),
-		ServerIP:    fmt.Sprintf("%s:%d", viper.GetString(config.ServerIP), viper.GetInt(config.ServerHttpPort)),
+		ServerIP:    config.ClientRegistry(),
 		Hostname:    host.Hostname,
 		OSTreeImage: resolveOSTreeImage(host),
 	}

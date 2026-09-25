@@ -13,7 +13,7 @@ import (
 	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
-	"github.com/pin/tftp"
+	"github.com/pin/tftp/v3"
 	"github.com/spf13/viper"
 )
 

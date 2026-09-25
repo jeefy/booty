@@ -1,4 +1,4 @@
-package http
+package server
 
 import (
 	"encoding/json"
@@ -16,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
 
@@ -94,7 +95,7 @@ func NewHandler(o Options) http.Handler {
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
 
-	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(config.DataPath("registry"))))
+	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(versions.RegistryBlobDir())))
 	mux.Handle("/v2/", ociRegistry)
 
 	return logRequest(mux)

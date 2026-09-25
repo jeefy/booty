@@ -1,10 +1,10 @@
-package http
+package server
 
 import (
 	"encoding/json"
 	"testing"
 
-	ignitionConfig "github.com/coreos/ignition/v2/config/v3_5_experimental"
+	ignitionConfig "github.com/coreos/ignition/v2/config/v3_5"
 )
 
 func TestBrigIgnitionConfigIsValid(t *testing.T) {

@@ -1,4 +1,4 @@
-package http
+package server
 
 import (
 	"encoding/json"
@@ -34,7 +34,7 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.IgnitionFile, "config/ignition.yaml")
 	viper.Set(config.ServerIP, "192.168.1.10")
 	viper.Set(config.ServerHttpPort, 8080)
-	viper.Set(config.HttpPort, 8080)
+	viper.Set(config.HttpPort, 18099)
 	viper.Set(config.CoreOSChannel, "stable")
 	viper.Set(config.CoreOSArchitecture, "x86_64")
 
@@ -238,6 +238,18 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	if h, _ := hardware.Get("aa:bb:cc:dd:ee:ff"); !h.DoInstall {
 		t.Fatal("doInstall must not flip on the iPXE fetch")
 	}
+
+	digestLookup = func(ref string, _ ...crane.Option) (string, error) {
+		if ref != "127.0.0.1:18099/ghcr.io/ublue-os/bazzite:stable" {
+			t.Errorf("digest lookup must target the loopback registry, got %q", ref)
+		}
+		return "sha256:abc", nil
+	}
+	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:ff", "")
+	if !strings.Contains(r.body, "set OSTREE_IMAGE 192.168.1.10:8080/ghcr.io/ublue-os/bazzite:stable") {
+		t.Fatalf("cached image must be rendered with the client-facing registry:\n%s", r.body)
+	}
+	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:ff", "")
 	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") {

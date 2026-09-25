@@ -7,7 +7,7 @@ COPY web/ .
 RUN npm run build
 
 ### Stage Two: build the Go binary (web/dist is embedded via //go:embed)
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build-go
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build-go
 
 ARG TARGETARCH
 ARG BOOTY_VERSION=dev
