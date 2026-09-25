@@ -9,6 +9,16 @@
 // systemd only imports /loader/credentials/*.cred through
 // /run/credentials/@encrypted, and plaintext files there fail with
 // "Failed to set up credentials: Invalid argument".
+//
+// Null-key credentials are only decrypted for ImportCredential= consumers
+// (systemd-tmpfiles, sysusers, the network generator, udev): those read with
+// CREDENTIAL_ALLOW_NULL. PID 1 and the generators do not, so
+// systemd.extra-unit.*, systemd.unit-dropin.* and system.hostname fail with
+// "Operation not supported" (verified on Bluefin Server 26.08.0, systemd
+// 257, no TPM, Secure Boot off). Everything Booty wants on the node
+// therefore travels inside tmpfiles.extra: files, unit files under
+// /etc/systemd/system plus the .wants/ symlinks systemctl enable would
+// have made, and /etc/hostname.
 package creds
 
 import (
@@ -26,22 +36,44 @@ import (
 )
 
 const (
+	// HostnameCredential is read by systemd-firstboot. The installer-v26.08.0
+	// image ships bluefin-firstboot-credentials.service but not the
+	// systemd-firstboot binary, so it is a no-op there; it stays in the
+	// bundle for images that have it. TmpfilesRules carries the hostname too.
 	HostnameCredential = "firstboot.hostname"
+	// TmpfilesCredential is applied by systemd-tmpfiles-setup.service on
+	// every boot (ImportCredential=tmpfiles.*).
 	TmpfilesCredential = "tmpfiles.extra"
 
-	// ExtraUnitPrefix and UnitDropinPrefix are the systemd-debug-generator(8)
-	// credentials that add a unit file, respectively a drop-in for one, to the
-	// booted system. Units written to /etc/systemd/system by tmpfiles.extra
-	// are not loaded (tmpfiles runs after the unit tree is read), and the
-	// generator ignores [Install], so each unit gets a Wants= drop-in on the
-	// target that would have enabled it.
-	ExtraUnitPrefix  = "systemd.extra-unit."
-	UnitDropinPrefix = "systemd.unit-dropin."
-	dropinName       = "booty"
+	// HostnameUnitName is the Bluefin-only oneshot that copies /etc/hostname
+	// into the kernel, see hostnameUnit.
+	HostnameUnitName = "booty-hostname.service"
 
-	credSuffix = ".cred"
-	credMode   = 0o600
+	credSuffix   = ".cred"
+	credMode     = 0o600
+	unitDir      = "/etc/systemd/system"
+	hostnamePath = "/etc/hostname"
 )
+
+// hostnameUnit applies /etc/hostname to the running kernel. PID 1 only
+// reads /etc/hostname at boot, before tmpfiles has written it, so on the
+// very first boot the name is set by this unit instead -- and only once the
+// image's k0s-first-boot.service daemon-reload has made the unit visible,
+// so first-boot DHCP may still announce "localhost". From the second boot on
+// PID 1 applies the file itself and this unit is a no-op.
+const hostnameUnit = `[Unit]
+Description=Apply Booty hostname
+DefaultDependencies=no
+Before=network-pre.target
+ConditionPathExists=/etc/hostname
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'h=$(cat /etc/hostname); [ "$(cat /proc/sys/kernel/hostname)" = "$h" ] || echo "$h" > /proc/sys/kernel/hostname'
+
+[Install]
+WantedBy=sysinit.target
+`
 
 // Input is everything the bundle depends on. Server is the host[:port]
 // clients use to reach Booty.
@@ -99,50 +131,62 @@ func Sum(data []byte) string {
 }
 
 // Credentials maps credential names (without .cred) to their plaintext
-// contents; Bundle encrypts them.
+// contents; Bundle encrypts them. The set is at most firstboot.hostname and
+// tmpfiles.extra.
 func Credentials(in Input, f ign.Features) map[string]string {
 	out := map[string]string{}
-	if f[ign.FeatureHostname] && in.Hostname != "" {
+	if hasHostname(in, f) {
 		out[HostnameCredential] = in.Hostname + "\n"
 	}
 	if rules := TmpfilesRules(in, f); rules != "" {
 		out[TmpfilesCredential] = rules
 	}
-	wants := map[string][]string{}
-	addUnit := func(name, contents, wantedBy string) {
-		out[ExtraUnitPrefix+name] = contents
-		if wantedBy != "" {
-			wants[wantedBy] = append(wants[wantedBy], name)
-		}
-	}
-	if f[ign.FeatureBooted] {
-		addUnit(ign.BootedUnitName, ign.BootedUnit(in.Server), "multi-user.target")
-	}
-	if f[ign.FeatureUpdate] {
-		addUnit(ign.UpdateServiceName, ign.UpdateService, "")
-		addUnit(ign.UpdateTimerName, ign.UpdateTimer, "timers.target")
-	}
-	for target, units := range wants {
-		out[UnitDropinPrefix+target+"~"+dropinName] = "[Unit]\nWants=" + strings.Join(units, " ") + "\n"
-	}
 	return out
 }
 
 // TmpfilesRules renders the tmpfiles.extra credential: systemd-tmpfiles(5)
-// lines that write the SSH keys and the update-check script on first boot.
-// "f~" takes the file contents base64 encoded.
+// lines that write /etc/hostname, the SSH keys, Booty's units and the
+// update-check script. "f+" overwrites, "f~" creates with base64 contents,
+// "L+" replaces an existing symlink.
+//
+// Units land in /etc/systemd/system with the .wants/ symlink systemctl
+// enable would create. PID 1 has read the unit tree before tmpfiles runs,
+// so on the first boot they are only picked up by the daemon-reload the
+// image's k0s-first-boot.service issues (observed before multi-user.target
+// is reached); every later boot loads them from /etc like any other unit.
 func TmpfilesRules(in Input, f ign.Features) string {
 	var b strings.Builder
+	if hasHostname(in, f) {
+		fmt.Fprintf(&b, "f+ %s 0644 root root - %s\n", hostnamePath, in.Hostname)
+		writeUnit(&b, HostnameUnitName, hostnameUnit, "sysinit.target")
+	}
 	if f[ign.FeatureSSHKeys] && len(in.SSHKeys) > 0 {
 		b.WriteString("d /home/core/.ssh 0700 core core -\n")
 		writeFile(&b, "/home/core/.ssh/authorized_keys", "0600", "core", strings.Join(in.SSHKeys, "\n")+"\n")
 	}
+	if f[ign.FeatureBooted] {
+		writeUnit(&b, ign.BootedUnitName, ign.BootedUnit(in.Server), "multi-user.target")
+	}
 	if f[ign.FeatureUpdate] {
+		writeUnit(&b, ign.UpdateServiceName, ign.UpdateService, "")
+		writeUnit(&b, ign.UpdateTimerName, ign.UpdateTimer, "timers.target")
 		writeFile(&b, ign.UpdateCheckScriptPath, "0755", "root", ign.UpdateCheckScript(in.Server))
 	}
 	return b.String()
 }
 
+func hasHostname(in Input, f ign.Features) bool {
+	return f[ign.FeatureHostname] && in.Hostname != ""
+}
+
 func writeFile(b *strings.Builder, path, mode, owner, contents string) {
 	fmt.Fprintf(b, "f~ %s %s %s %s - %s\n", path, mode, owner, owner, base64.StdEncoding.EncodeToString([]byte(contents)))
+}
+
+func writeUnit(b *strings.Builder, name, contents, wantedBy string) {
+	path := unitDir + "/" + name
+	writeFile(b, path, "0644", "root", contents)
+	if wantedBy != "" {
+		fmt.Fprintf(b, "L+ %s/%s.wants/%s - - - - %s\n", unitDir, wantedBy, name, path)
+	}
 }

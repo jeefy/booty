@@ -133,11 +133,20 @@ func TestBluefinIPXEAndCreds(t *testing.T) {
 		t.Fatalf("hostname credential: %q (entries %v)", names["firstboot.hostname.cred"], names)
 	}
 	rules := names["tmpfiles.extra.cred"]
-	if !strings.Contains(rules, "/home/core/.ssh/authorized_keys") || !strings.Contains(rules, "/opt/booty/update-check") {
-		t.Fatalf("tmpfiles rules incomplete:\n%s", rules)
+	for _, want := range []string{
+		"f+ /etc/hostname 0644 root root - srv1\n",
+		"L+ /etc/systemd/system/sysinit.target.wants/booty-hostname.service - - - - /etc/systemd/system/booty-hostname.service\n",
+		"/home/core/.ssh/authorized_keys",
+		"L+ /etc/systemd/system/multi-user.target.wants/booty-booted.service - - - - /etc/systemd/system/booty-booted.service\n",
+		"L+ /etc/systemd/system/timers.target.wants/booty-update.timer - - - - /etc/systemd/system/booty-update.timer\n",
+		"/opt/booty/update-check",
+	} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("tmpfiles rules missing %q:\n%s", want, rules)
+		}
 	}
-	if !strings.Contains(names["systemd.extra-unit.booty-booted.service.cred"], "/booted?mac=") || !strings.Contains(names["systemd.unit-dropin.multi-user.target~booty.cred"], "Wants=booty-booted.service") {
-		t.Fatalf("booted unit must be delivered as systemd.extra-unit + drop-in (entries %v)", names)
+	if len(names) != 2 {
+		t.Fatalf("bundle must hold exactly firstboot.hostname and tmpfiles.extra, got %v", names)
 	}
 
 	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/creds/aa:bb:cc:dd:ee:99.tar", ""), http.StatusNotFound)
