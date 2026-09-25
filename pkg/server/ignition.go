@@ -164,15 +164,10 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := hardware.MarkBooted(mac, ip, time.Now()); err != nil {
-		slog.Error("Could not record boot", "mac", mac, "error", err)
-	}
-	if host.DoInstall {
-		if _, err := hardware.Update(mac, func(h *hardware.Host) { h.DoInstall = false }); err != nil {
-			slog.Error("Could not clear doInstall", "mac", mac, "error", err)
-		} else {
-			slog.Info("Cleared doInstall after ignition fetch", "mac", mac)
-		}
+	if isPreview(r) {
+		slog.Debug("Ignition preview; not recording boot", "mac", mac, "ip", ip)
+	} else {
+		recordBoot(mac, ip, host)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -250,4 +245,25 @@ WantedBy=multi-user.target
 		Contents: &contents,
 	})
 	return cfg
+}
+
+// isPreview reports whether the request is an operator looking at a rendered
+// config (UI link, curl) rather than a machine booting. Previews must not
+// stamp booted/ip or clear a pending doInstall.
+func isPreview(r *http.Request) bool {
+	return r.URL.Query().Get("preview") != ""
+}
+
+func recordBoot(mac, ip string, host *hardware.Host) {
+	if err := hardware.MarkBooted(mac, ip, time.Now()); err != nil {
+		slog.Error("Could not record boot", "mac", mac, "error", err)
+	}
+	if !host.DoInstall {
+		return
+	}
+	if _, err := hardware.Update(mac, func(h *hardware.Host) { h.DoInstall = false }); err != nil {
+		slog.Error("Could not clear doInstall", "mac", mac, "error", err)
+		return
+	}
+	slog.Info("Cleared doInstall after ignition fetch", "mac", mac)
 }

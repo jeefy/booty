@@ -73,7 +73,7 @@ describe('HostsView', () => {
     expect(rows[1]!.text()).toContain('bravo')
 
     const link = rows[0]!.find('a')
-    expect(link.attributes('href')).toBe('/ignition.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01')
+    expect(link.attributes('href')).toBe('/ignition.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01&preview=1')
     expect(link.attributes('target')).toBe('_blank')
     expect(link.attributes('rel')).toBe('noopener noreferrer')
 

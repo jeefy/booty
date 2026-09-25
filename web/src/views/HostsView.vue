@@ -117,7 +117,7 @@ async function remove(mac: string) {
 }
 
 function ignitionUrl(mac: string) {
-  return `/ignition.json?mac=${encodeURIComponent(mac)}`
+  return `/ignition.json?mac=${encodeURIComponent(mac)}&preview=1`
 }
 
 onMounted(() => {

@@ -251,6 +251,14 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	}
 	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
 
+	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:ff&preview=1", "")
+	if r.status != 200 || !strings.Contains(r.body, "node1") {
+		t.Fatalf("ignition preview: %+v", r)
+	}
+	if h, _ := hardware.Get("aa:bb:cc:dd:ee:ff"); !h.DoInstall || h.Booted != "" {
+		t.Fatalf("a preview must not flip doInstall or stamp booted, got %+v", h)
+	}
+
 	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:ff", "")
 	if r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") {
 		t.Fatalf("ignition: %+v", r)
