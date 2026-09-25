@@ -23,6 +23,10 @@ const (
 	FeatureSSHKeys  = "sshkeys"
 	FeatureNone     = "none"
 
+	BootedUnitName    = "booty-booted.service"
+	UpdateServiceName = "booty-update.service"
+	UpdateTimerName   = "booty-update.timer"
+
 	// /usr is a read-only partition on Flatcar (Ignition gets EROFS writing
 	// under it), so everything Booty installs lives under /opt like the
 	// kubeadm profile does. /opt is writable on Flatcar and FCOS alike.
@@ -96,13 +100,13 @@ func Fragment(in Input, f Features) types.Config {
 		cfg.Passwd.Users = append(cfg.Passwd.Users, user)
 	}
 	if f[FeatureBooted] {
-		cfg.Systemd.Units = append(cfg.Systemd.Units, Unit("booty-booted.service", true, bootedUnit(in.Server)))
+		cfg.Systemd.Units = append(cfg.Systemd.Units, Unit(BootedUnitName, true, BootedUnit(in.Server)))
 	}
 	if f[FeatureUpdate] {
 		cfg.Storage.Files = append(cfg.Storage.Files, InlineFile(UpdateCheckScriptPath, UpdateCheckScript(in.Server), 0o755))
 		cfg.Systemd.Units = append(cfg.Systemd.Units,
-			Unit("booty-update.service", false, updateService),
-			Unit("booty-update.timer", true, updateTimer),
+			Unit(UpdateServiceName, false, UpdateService),
+			Unit(UpdateTimerName, true, UpdateTimer),
 		)
 	}
 	return cfg
@@ -137,9 +141,10 @@ func Unit(name string, enabled bool, contents string) types.Unit {
 	return u
 }
 
-// bootedUnit calls POST /booted once the installed system is up. systemd
+// BootedUnit calls POST /booted once the installed system is up. systemd
 // expands $VAR in ExecStart itself, hence $$ for everything meant for bash.
-func bootedUnit(server string) string {
+// The Bluefin credentials bundle ships the same text as a plain unit file.
+func BootedUnit(server string) string {
 	return `[Unit]
 Description=Tell Booty this host finished installing (clears doInstall)
 After=network-online.target
@@ -155,7 +160,9 @@ WantedBy=multi-user.target
 `
 }
 
-const updateService = `[Unit]
+// UpdateService runs UpdateCheckScriptPath; UpdateTimer fires it every 10
+// minutes. Both are shared with the Bluefin credentials bundle.
+const UpdateService = `[Unit]
 Description=Ask Booty whether this host needs a reboot to pick up an update
 After=network-online.target
 Wants=network-online.target
@@ -165,7 +172,7 @@ Type=oneshot
 ExecStart=` + UpdateCheckScriptPath + `
 `
 
-const updateTimer = `[Unit]
+const UpdateTimer = `[Unit]
 Description=Run the Booty update check every 10 minutes
 
 [Timer]
