@@ -2,12 +2,14 @@ package http
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"text/template"
+	"time"
 
 	butaneConfig "github.com/coreos/butane/config"
 	butaneCommon "github.com/coreos/butane/config/common"
@@ -16,41 +18,180 @@ import (
 	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/state"
+	"github.com/jeefy/booty/pkg/tftp"
+	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
 
+var arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
+	hw, _, err := arping.Ping(ip)
+	return hw, err
+}
+
+var digestLookup = crane.Digest
+
+// identifyClient returns the normalized MAC for the request, preferring the
+// ?mac= query parameter and falling back to an ARP lookup of RemoteAddr.
+// ok is false when the query parameter is present but invalid.
+func identifyClient(r *http.Request) (mac string, ok bool) {
+	mac, err := hostFromQuery(r)
+	if err != nil {
+		return "", false
+	}
+	if mac != "" {
+		slog.Debug("MAC address from query", "mac", mac)
+		return mac, true
+	}
+	ip := net.ParseIP(remoteIP(r))
+	if ip == nil {
+		slog.Warn("Cannot determine client IP for ARP lookup", "remote", r.RemoteAddr)
+		return "", true
+	}
+	hw, err := arpLookup(ip)
+	if err != nil {
+		slog.Error("ARP lookup failed", "ip", ip, "error", err)
+		return "", true
+	}
+	slog.Debug("MAC address from ARP", "mac", hw.String())
+	return hw.String(), true
+}
+
+func lookupHost(mac, ip string) *hardware.Host {
+	if mac == "" {
+		return nil
+	}
+	host, found := hardware.Get(mac)
+	if !found {
+		hardware.Observe(mac, ip)
+		slog.Warn("Unknown host detected", "mac", mac, "ip", ip)
+		return nil
+	}
+	return host
+}
+
+// resolveOSTreeImage prefers the locally cached copy of the host's OSTree
+// image when the embedded registry already has it.
+func resolveOSTreeImage(host *hardware.Host) string {
+	if host == nil || host.OSTreeImage == "" {
+		return ""
+	}
+	local := versions.LocalImageRef(host.OSTreeImage)
+	digest, err := digestLookup(local)
+	if err != nil {
+		slog.Warn("OSTree image not available from local cache, using upstream", "image", local, "error", err)
+		return host.OSTreeImage
+	}
+	if digest == "" {
+		slog.Warn("OSTree image not in local cache yet, using upstream", "image", local)
+		return host.OSTreeImage
+	}
+	return local
+}
+
+func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mac, ok := identifyClient(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid mac address")
+		return
+	}
+	host := lookupHost(mac, remoteIP(r))
+
+	vars := tftp.TemplateVars{
+		Server:        config.ServerHostPort(),
+		MenuDefault:   tftp.MenuDefaultForHost(host),
+		CoreOSChannel: viper.GetString(config.CoreOSChannel),
+		CoreOSArch:    viper.GetString(config.CoreOSArchitecture),
+		CoreOSVersion: state.CurrentCoreOSVersion(),
+		OSTreeImage:   resolveOSTreeImage(host),
+	}
+	os := tftp.OSForHost(host)
+	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault)
+	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
+}
+
+func readIgnitionTemplate(name string) (string, error) {
+	rel, err := config.CleanRelPath(name)
+	if err != nil {
+		return "", fmt.Errorf("ignition file %q: %w", name, err)
+	}
+	root, err := os.OpenRoot(viper.GetString(config.DataDir))
+	if err != nil {
+		return "", err
+	}
+	defer config.CloseQuietly(root, "data root")
+	f, err := root.Open(rel)
+	if err != nil {
+		return "", err
+	}
+	defer config.CloseQuietly(f, rel)
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
-	// If we don't identify the host, tell FlatCar to reboot
-	// Reboot the host till we identify it
-	// Cool so, we want to have logic based around a recognized MAC address
-	// Therefore what we need to do is collect the MAC address
-
-	slog.Info("Ignition request", "uri", r.RequestURI)
-
-	macAddress := ""
-
-	if r.URL.Query().Get("mac") == "" {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			slog.Error("Error splitting user ip", "remote_addr", r.RemoteAddr)
-		}
-		remoteIP := net.ParseIP(ip)
-
-		if hwAddr, _, err := arping.Ping(remoteIP); err != nil {
-			slog.Error("Error with ARP request", "error", err)
-		} else {
-			slog.Debug("Mac address from ARP", "mac", macAddress)
-			macAddress = hwAddr.String()
-		}
-	} else {
-		macAddress = r.URL.Query().Get("mac")
-		slog.Debug("Mac address url override", "mac", macAddress)
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mac, ok := identifyClient(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid mac address")
+		return
+	}
+	ip := remoteIP(r)
+	host := lookupHost(mac, ip)
+	if host == nil {
+		slog.Info("Serving brig ignition to unregistered host", "mac", mac, "ip", ip)
+		writeJSON(w, http.StatusOK, brigIgnitionConfig())
+		return
 	}
 
-	slog.Debug("Using mac address", "mac", macAddress)
-	host := hardware.GetMacAddress(macAddress)
+	ignitionFile := viper.GetString(config.IgnitionFile)
+	if host.IgnitionFile != "" {
+		ignitionFile = host.IgnitionFile
+	}
+	rendered, err := renderIgnition(ignitionFile, host)
+	if err != nil {
+		slog.Error("Rendering ignition failed", "mac", mac, "file", ignitionFile, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
+		return
+	}
 
-	var tpl bytes.Buffer
+	if err := hardware.MarkBooted(mac, ip, time.Now()); err != nil {
+		slog.Error("Could not record boot", "mac", mac, "error", err)
+	}
+	if host.DoInstall {
+		if _, err := hardware.Update(mac, func(h *hardware.Host) { h.DoInstall = false }); err != nil {
+			slog.Error("Could not clear doInstall", "mac", mac, "error", err)
+		} else {
+			slog.Info("Cleared doInstall after ignition fetch", "mac", mac)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(rendered); err != nil {
+		slog.Debug("Writing ignition response failed", "error", err)
+	}
+}
+
+func renderIgnition(ignitionFile string, host *hardware.Host) ([]byte, error) {
+	src, err := readIgnitionTemplate(ignitionFile)
+	if err != nil {
+		return nil, err
+	}
+	t, err := template.New(ignitionFile).Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("parsing template: %w", err)
+	}
 
 	templateData := struct {
 		JoinString  string
@@ -58,83 +199,32 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		OSTreeImage string
 		Hostname    string
 	}{
-		JoinString: viper.GetString(config.JoinString),
-		ServerIP:   fmt.Sprintf("%s:%s", viper.GetString(config.ServerIP), viper.GetString(config.ServerHttpPort)),
+		JoinString:  viper.GetString(config.JoinString),
+		ServerIP:    fmt.Sprintf("%s:%d", viper.GetString(config.ServerIP), viper.GetInt(config.ServerHttpPort)),
+		Hostname:    host.Hostname,
+		OSTreeImage: resolveOSTreeImage(host),
 	}
 
-	ignitionFile := viper.GetString(config.IgnitionFile)
-	if host != nil {
-		if host.IgnitionFile != "" {
-			ignitionFile = host.IgnitionFile
-		}
-		templateData.Hostname = host.Hostname
-
-		// Ingelligently rewrite what image to send to the client depending on cache state
-		// First, default to the remote image location
-		templateData.OSTreeImage = host.OSTreeImage
-
-		// If we have a local image, use that instead
-		if host.OSTreeImage != "" {
-			localImage := fmt.Sprintf("%s:%s/%s", viper.GetString(config.ServerIP), viper.GetString(config.HttpPort), host.OSTreeImage)
-			digest, err := crane.Digest(localImage)
-			if err != nil {
-				slog.Error("Error getting image from cache", "image", localImage, "error", err)
-			}
-			if digest == "" {
-				slog.Warn("Image not found in local cache yet", "image", localImage)
-			} else {
-				templateData.OSTreeImage = localImage
-			}
-		}
+	var tpl bytes.Buffer
+	if err := t.Execute(&tpl, templateData); err != nil {
+		return nil, fmt.Errorf("executing template: %w", err)
 	}
-	t, err := template.ParseFiles(fmt.Sprintf("%s/%s", viper.GetString(config.DataDir), ignitionFile))
+
+	ignCfg, report, err := butaneConfig.TranslateBytes(tpl.Bytes(), butaneCommon.TranslateBytesOptions{Pretty: true})
 	if err != nil {
-		w.Write([]byte(err.Error()))
-		return
-	}
-
-	err = t.Execute(&tpl, templateData)
-	if err != nil {
-		w.Write([]byte(err.Error()))
-		return
-	}
-
-	if host == nil {
-		dataOut, err := json.Marshal(brigIgnitionConfig())
-		if err != nil {
-			w.Write([]byte(fmt.Sprintf("Failed to marshal output: %v", err)))
-			return
-		}
-		w.Write(dataOut)
-		return
-	}
-
-	ignCfg, report, err := butaneConfig.TranslateBytes(tpl.Bytes(), butaneCommon.TranslateBytesOptions{
-		Pretty: true,
-	})
-	if err != nil {
-		slog.Error("Error parsing coreos ignition", "error", err)
-		slog.Error("Butane template contents", "template", string(tpl.Bytes()))
+		slog.Error("Butane template contents", "template", tpl.String())
 		for _, entry := range report.Entries {
 			slog.Error("Butane report entry", "entry", entry.String())
 		}
-		w.Write([]byte(fmt.Sprintf("Error parsing coreos ignition: %s", err.Error())))
-		return
+		return nil, fmt.Errorf("translating butane: %w", err)
 	}
 	if len(report.Entries) > 0 {
-		slog.Warn("Problems parsing coreos ignition", "report", report.String())
-		slog.Warn("Butane template contents", "template", string(tpl.Bytes()))
-		for _, entry := range report.Entries {
-			slog.Warn("Butane report entry", "entry", entry.String())
-		}
+		slog.Warn("Problems translating butane config", "report", report.String())
 		if report.IsFatal() {
-			w.Write([]byte(fmt.Sprintf("Problems parsing coreos ignition: %s", report.String())))
-			return
-
+			return nil, fmt.Errorf("butane report is fatal: %s", report.String())
 		}
 	}
-
-	w.Write(ignCfg)
+	return ignCfg, nil
 }
 
 // brigIgnitionConfig is served to unregistered hosts: a single systemd unit
