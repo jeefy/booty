@@ -1,6 +1,6 @@
 # Booty
 
-A simple (i)PXE Server for booting Flatcar-Linux, CoreOS, and [Universal Blue](https://universal-blue.org)
+A simple iPXE server for booting Flatcar-Linux, CoreOS, and [Universal Blue](https://universal-blue.org) on BIOS and x86-64 UEFI machines.
 
 ```
 > booty --help
@@ -35,13 +35,13 @@ Flags:
       --webDir string                  Directory with the built Web UI, used when no UI is embedded in the binary (default "./web/dist")
 ```
 
-Every flag can also be set through the environment as `BOOTY_<FLAGNAME>` (upper-cased, e.g. `BOOTY_SERVERIP=192.168.1.10`, `BOOTY_JOINSTRING=...`). The older `IGNITION_FILE`, `HARDWARE_MAP`, `FLATCAR_VERSION_PIN`, `DEPS_PXELINUX_URL` and `DEPS_LDLINUX_URL` names still work.
+Every flag can also be set through the environment as `BOOTY_<FLAGNAME>` (upper-cased, e.g. `BOOTY_SERVERIP=192.168.1.10`, `BOOTY_JOINSTRING=...`). The older `IGNITION_FILE`, `HARDWARE_MAP` and `FLATCAR_VERSION_PIN` names still work.
 
 `--serverIP` is the address booting machines use to reach Booty. When left empty it is autodetected at startup from the default route (logged as `serverIP autodetected`). Set it explicitly whenever that address is not what clients should use -- behind a MetalLB/keepalived VIP, a NAT or a hostPort mapping the node IP is the wrong answer. `--serverHttpPort` only matters when clients reach Booty on a different port than it listens on (port mapping); it defaults to `--httpPort`, and `:80` is omitted from generated URLs.
 
 ## Features
 
-* (i)PXE boot into the latest Flatcar-Linux or CoreOS
+* iPXE boot (BIOS and x86-64 UEFI) into the latest Flatcar-Linux or CoreOS
 * MAC address based hostnames
 * Automatic conversion of Butane YAML to Ignition JSON
   * Variable injection in Butane/Ignition
@@ -56,18 +56,62 @@ Every flag can also be set through the environment as `BOOTY_<FLAGNAME>` (upper-
 * **EXPERIMENTAL**: Support for per-ostree images per machine (in conjunction with [ignition rebase scripts](examples/bazzite.but))
   * Auto-caches OCI images used for hosts (and has a page listing cached artifacts)
   * When "Install" is set to Y, it auto-flips to N once the host fetches its Ignition config (i.e. the installer has started)
-* Self-contained binary: `undionly.kpxe` and the Web UI are embedded, so it starts without network access
+* Self-contained binary: the iPXE bootloaders (`undionly.kpxe`, `ipxe.efi`, `snponly.efi`) and the Web UI are embedded, so it starts without network access
 * `/healthz` for liveness/readiness probes; graceful shutdown on SIGTERM
 
-## How a host boots
+## Booting: DHCP and the iPXE bootloaders
 
-1. DHCP hands the machine `next-server` = Booty and `filename` = `undionly.kpxe` (iPXE) or `pxelinux.0` (legacy PXE).
-2. iPXE fetches `booty.ipxe` over TFTP. That file is only a stub that chains to `http://<serverIP>/booty.ipxe?mac=${mac}` -- iPXE fills in its own MAC, so identification does not depend on ARP working across routers.
+Booty ships three iPXE bootloaders, built from a pinned upstream release (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [`boot/VERSION`](boot/VERSION)) and embedded in the binary. They are served at the root of the TFTP namespace and over HTTP as `GET /boot/<name>`, and are also copied into `--dataDir` on start-up if missing (so `/data/<name>` keeps working for anyone who pointed DHCP there):
+
+| DHCP client architecture (option 93) | Firmware | `filename` |
+|---|---|---|
+| `00:00` | BIOS / legacy PC | `undionly.kpxe` |
+| `00:07`, `00:09` | x86-64 UEFI | `ipxe.efi` (or `snponly.efi`) |
+
+`ipxe.efi` carries iPXE's own network drivers and works on most hardware; `snponly.efi` only talks to the firmware's UEFI network stack (SNP), so prefer it on machines whose NIC misbehaves with `ipxe.efi` (no link, hangs after "Initialising devices", or firmware that refuses to hand over the NIC) -- it is smaller and boots through whatever driver the firmware already brought up. Legacy pxelinux/syslinux booting is not supported; only iPXE.
+
+All three carry the same embedded script ([`boot/embed.ipxe`](boot/embed.ipxe)): it runs DHCP (retrying every 5 s until it gets a lease), then chains `tftp://${next-server}/booty.ipxe`, falls back to `http://${next-server}/booty.ipxe?mac=${mac}` and, if neither is reachable, prints a message and drops to the iPXE shell. `${next-server}` is the DHCP `next-server`/`siaddr`, i.e. Booty, so no `user-class = "iPXE"` chainload-loop trickery is needed in the DHCP config: the bootloader never asks for the DHCP `filename` again.
+
+Point your DHCP server at Booty:
+
+**ISC dhcpd**
+
+```
+option architecture-type code 93 = unsigned integer 16;
+
+subnet 192.168.1.0 netmask 255.255.255.0 {
+  range 192.168.1.100 192.168.1.200;
+  next-server 192.168.1.10;                      # Booty
+  if option architecture-type = 00:00 {
+    filename "undionly.kpxe";
+  } elsif option architecture-type = 00:07 or option architecture-type = 00:09 {
+    filename "ipxe.efi";                         # or "snponly.efi"
+  }
+}
+```
+
+**dnsmasq**
+
+```
+dhcp-match=set:efi-x86_64,option:client-arch,7
+dhcp-match=set:efi-x86_64,option:client-arch,9
+dhcp-boot=tag:efi-x86_64,ipxe.efi,,192.168.1.10
+dhcp-boot=undionly.kpxe,,192.168.1.10
+```
+
+**UniFi / UDM** -- the Network application only allows one "Network Boot" filename per network, so pick the bootloader matching your fleet: `undionly.kpxe` for BIOS machines or `ipxe.efi` for UEFI machines, with the "Network Boot server" set to Booty's IP. Mixed fleets need a DHCP server that can branch on option 93 (above), or a second network.
+
+If Booty listens on a non-standard TFTP port (`--tftpPort`), UEFI firmware cannot fetch the bootloader from it -- run a TFTP relay or serve the bootloader from another TFTP server (`GET /boot/<name>` gives you the exact bytes); the embedded script still reaches Booty over HTTP through `--serverHttpPort`.
+
+### How a host boots
+
+1. DHCP hands the machine `next-server` = Booty and `filename` = `undionly.kpxe` / `ipxe.efi` as above; the firmware fetches it over TFTP.
+2. The embedded script chains `booty.ipxe` over TFTP. That file is only a stub that chains to `http://<serverIP>/booty.ipxe?mac=${mac}` -- iPXE fills in its own MAC, so identification does not depend on ARP working across routers.
 3. `/booty.ipxe` looks the MAC up in the hardware database and renders the boot script for that host's OS (`flatcar`, `coreos` or `ublue`). Unregistered hosts get an interactive menu (boot from disk / reboot) and show up under "Unknown hosts" in the UI so you can register them with one click.
 4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`. For a registered host that is a tiny wrapper whose `ignition.config.merge` points at two children: Booty's builtin fragment (`/ignition/builtin.json`) and the host's Butane template rendered to Ignition (`/ignition/user.json`; variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`). Ignition fetches and merges them itself, later entries winning, so your template overrides the builtin. The wrapper fetch records `booted`/`ip` for the host and, by default, clears a pending `doInstall`; the child fetches have no side effects. With `--doInstallClearOn=booted` the flag instead stays set until the installed system calls `POST http://<serverIP>/booted?mac=<mac>` (the builtin `booty-booted.service` does exactly that), so a failed install keeps the host in install mode. Add `&preview=1` (the UI does) to look at a config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
 5. Kernel/initrd/rootfs are served from `/data/`. Flatcar artifacts live in `data/flatcar/<version>/` behind symlinks at the old paths, so the kernel and initrd always come from the same release and updates are atomic.
 
-Legacy PXE clients ask for `pxelinux.cfg/01-<mac>` before `pxelinux.cfg/default`; Booty uses that MAC the same way.
+`/booty.ipxe` and `/ignition.json` fall back to an ARP lookup of the requesting IP when called without `?mac=`; the shipped scripts always pass it.
 
 ## Composition
 
@@ -109,7 +153,7 @@ What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` 
 
 ## Running as root / capabilities
 
-Binding UDP 69 needs `CAP_NET_BIND_SERVICE`; the ARP fallback used when a client does not supply its MAC needs `CAP_NET_RAW`. The container image runs as root for that reason -- drop everything else:
+Binding UDP 69 needs `CAP_NET_BIND_SERVICE`; the ARP fallback used when `/booty.ipxe` or `/ignition.json` is called without `?mac=` needs `CAP_NET_RAW`. The container image runs as root for that reason -- drop everything else:
 
 ```
 docker run --rm --network=host \
@@ -144,14 +188,6 @@ docker run --rm -it \
 
 This creates a configmap with the example ignition yaml config, scripts, a deployment of booty, and a service.
 
-### PXE vs iPXE
-
-The boot target file is different depending on whether you want to use PXE or iPXE. While iPXE is recommended due to performance, there may be some use cases where PXE is required.
-
-To boot into PXE, use `pxelinux.cfg/default`
-
-To boot into iPXE, use `undionly.kpxe`
-
 ## Development
 
 ```
@@ -160,7 +196,10 @@ make run        # build + run against ./data with --debug
 make test       # go test -race + Vitest
 make lint       # golangci-lint + eslint + vue-tsc
 make image      # multi-stage container build (VERSION/TIMESTAMP stamped into /info)
+make ipxe       # rebuild boot/*.kpxe|*.efi from the pinned iPXE release in a container (only when bumping iPXE or editing boot/embed.ipxe)
 ```
+
+The iPXE binaries in `boot/` are committed, so a plain `go build` needs no cross toolchain and works air-gapped. `make ipxe` (see [hack/build-ipxe.sh](hack/build-ipxe.sh)) rebuilds them reproducibly; verify with `cd boot && sha256sum -c SHA256SUMS`. Licensing details are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The Web UI lives in `web/` (Vue 3 + Vite). `cd web && npm run dev` starts a dev server that proxies API calls to a Booty running on `localhost:8080` (override with `VITE_API_TARGET`). See [web/README.md](web/README.md).
 
@@ -168,7 +207,7 @@ The Web UI lives in `web/` (Vue 3 + Vite). `cd web && npm run dev` starts a dev 
 
 **Why?**
 
-I like treating (most of) my machines like cattle. This is an easier and more lightweight way to tackle PXE booting and patch management.
+I like treating (most of) my machines like cattle. This is an easier and more lightweight way to tackle network booting and patch management.
 
 **Can you make it do X?**
 
