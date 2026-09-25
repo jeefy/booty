@@ -2,3 +2,7 @@ bin/
 data/
 .vscode/*
 *.DS_Store*
+jeefy/
+*.log
+/booty
+.sisyphus/
