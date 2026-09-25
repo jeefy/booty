@@ -3,22 +3,29 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"text/template"
 	"time"
 
 	butaneConfig "github.com/coreos/butane/config"
 	butaneCommon "github.com/coreos/butane/config/common"
+	ignTypes "github.com/coreos/ignition/v2/config/v3_4/types"
+	v3_5 "github.com/coreos/ignition/v2/config/v3_5"
 	coreOSType "github.com/coreos/ignition/v2/config/v3_5/types"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	ign "github.com/jeefy/booty/pkg/ignition"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/tftp"
 	"github.com/jeefy/booty/pkg/versions"
@@ -135,6 +142,94 @@ func readIgnitionTemplate(name string) (string, error) {
 	return string(data), nil
 }
 
+// defaultButane is rendered when the operator never created
+// config/ignition.yaml. The builtin fragment supplies hostname, keys and
+// units, so this only needs to be a valid, near-empty config.
+const defaultButane = `variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: "{{ .Hostname }}\n"
+`
+
+// DefaultTemplateInUse reports whether Booty will fall back to the embedded
+// Butane template because the default config/ignition.yaml is absent.
+func DefaultTemplateInUse() bool {
+	if viper.GetString(config.IgnitionFile) != config.DefaultIgnitionFile {
+		return false
+	}
+	_, err := os.Stat(config.DataPath(config.DefaultIgnitionFile))
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+func loadIgnitionTemplate(host *hardware.Host) (name, src string, err error) {
+	name = viper.GetString(config.IgnitionFile)
+	if host.IgnitionFile != "" {
+		name = host.IgnitionFile
+	}
+	src, err = readIgnitionTemplate(name)
+	if err != nil && host.IgnitionFile == "" && name == config.DefaultIgnitionFile && errors.Is(err, fs.ErrNotExist) {
+		return "embedded-default", defaultButane, nil
+	}
+	return name, src, err
+}
+
+type ignitionPart string
+
+const (
+	partWrapper ignitionPart = ""
+	partUser    ignitionPart = "user"
+	partBuiltin ignitionPart = "builtin"
+	partMerged  ignitionPart = "merged"
+)
+
+func builtinFeatures() ign.Features {
+	f, err := ign.ParseFeatures(viper.GetString(config.Builtin))
+	if err != nil {
+		slog.Error("Invalid --builtin value; disabling builtin fragment", "error", err)
+		return ign.Features{}
+	}
+	return f
+}
+
+// identifyRegisteredClient resolves the request to a registered host. It
+// writes 400 for an invalid MAC and 404 when the host is unknown, returning
+// ok=false in both cases. Unknown hosts are not recorded as unknownHosts:
+// only /ignition.json and /booty.ipxe do that.
+func identifyRegisteredClient(w http.ResponseWriter, r *http.Request) (mac string, host *hardware.Host, ok bool) {
+	mac, ok = identifyClient(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid mac address")
+		return "", nil, false
+	}
+	if mac == "" {
+		writeError(w, http.StatusNotFound, "host not registered")
+		return "", nil, false
+	}
+	host, found := hardware.Get(mac)
+	if !found {
+		writeError(w, http.StatusNotFound, "host not registered")
+		return mac, nil, false
+	}
+	return mac, host, true
+}
+
+func writeRawJSON(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		slog.Debug("Writing ignition response failed", "error", err)
+	}
+}
+
+// handleIgnitionRequest serves the config a booting machine fetches. For a
+// registered host it is a wrapper that tells Ignition to merge Booty's
+// builtin fragment and then the user's rendered config (later entries win),
+// unless --builtin=none in which case the user config is returned directly.
+// Unregistered hosts get the brig. Boot side effects fire here only.
 func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -153,36 +248,166 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ignitionFile := viper.GetString(config.IgnitionFile)
-	if host.IgnitionFile != "" {
-		ignitionFile = host.IgnitionFile
-	}
-	rendered, err := renderIgnition(ignitionFile, host)
+	user, err := renderUserIgnition(mac, host)
 	if err != nil {
-		slog.Error("Rendering ignition failed", "mac", mac, "file", ignitionFile, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
 		return
 	}
 
-	if isPreview(r) {
-		slog.Debug("Ignition preview; not recording boot", "mac", mac, "ip", ip)
-	} else {
+	features := builtinFeatures()
+	preview := isPreview(r)
+	part := ignitionPart(r.URL.Query().Get("part"))
+	if !preview {
+		part = partWrapper
 		recordBoot(mac, ip, host)
+	} else {
+		slog.Debug("Ignition preview; not recording boot", "mac", mac, "ip", ip, "part", part)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(rendered); err != nil {
-		slog.Debug("Writing ignition response failed", "error", err)
+	if !features.Enabled() {
+		writeRawJSON(w, user)
+		return
+	}
+
+	switch part {
+	case partWrapper:
+		version, err := ignitionVersion(user)
+		if err != nil {
+			slog.Error("Rendered ignition has no version", "mac", mac, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to render ignition config")
+			return
+		}
+		writeJSON(w, http.StatusOK, mergeWrapper(version, mac))
+	case partUser:
+		writeRawJSON(w, user)
+	case partBuiltin:
+		writeJSON(w, http.StatusOK, builtinFragment(host, features))
+	case partMerged:
+		builtin, err := json.Marshal(builtinFragment(host, features))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode builtin fragment")
+			return
+		}
+		merged, err := mergePreview(builtin, user)
+		if err != nil {
+			slog.Error("Merging ignition preview failed", "mac", mac, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to merge ignition configs: "+err.Error())
+			return
+		}
+		writeRawJSON(w, merged)
+	default:
+		writeError(w, http.StatusBadRequest, "part must be user, builtin or merged")
 	}
 }
 
-func renderIgnition(ignitionFile string, host *hardware.Host) ([]byte, error) {
-	src, err := readIgnitionTemplate(ignitionFile)
+func handleIgnitionUserRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mac, host, ok := identifyRegisteredClient(w, r)
+	if !ok {
+		return
+	}
+	user, err := renderUserIgnition(mac, host)
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
+		return
+	}
+	writeRawJSON(w, user)
+}
+
+func handleIgnitionBuiltinRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	_, host, ok := identifyRegisteredClient(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, builtinFragment(host, builtinFeatures()))
+}
+
+func builtinFragment(host *hardware.Host, features ign.Features) ignTypes.Config {
+	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
+	if err != nil {
+		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
+	}
+	return ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, features)
+}
+
+type mergeSource struct {
+	Source string `json:"source"`
+}
+
+type ignitionWrapper struct {
+	Ignition struct {
+		Version string `json:"version"`
+		Config  struct {
+			Merge []mergeSource `json:"merge"`
+		} `json:"config"`
+	} `json:"ignition"`
+}
+
+func mergeWrapper(version, mac string) ignitionWrapper {
+	base := "http://" + config.ServerHostPort() + "/ignition/"
+	q := "?mac=" + url.QueryEscape(mac)
+	var w ignitionWrapper
+	w.Ignition.Version = version
+	w.Ignition.Config.Merge = []mergeSource{
+		{Source: base + "builtin.json" + q},
+		{Source: base + "user.json" + q},
+	}
+	return w
+}
+
+func ignitionVersion(rendered []byte) (string, error) {
+	var probe struct {
+		Ignition struct {
+			Version string `json:"version"`
+		} `json:"ignition"`
+	}
+	if err := json.Unmarshal(rendered, &probe); err != nil {
+		return "", err
+	}
+	if probe.Ignition.Version == "" {
+		return "", errors.New("ignition.version missing")
+	}
+	return probe.Ignition.Version, nil
+}
+
+// mergePreview is a display-only approximation of what Ignition does on the
+// node: both children are upconverted to spec 3.5 and merged with the
+// builtin fragment as parent so the user's config wins on conflict.
+func mergePreview(builtin, user []byte) ([]byte, error) {
+	parent, rpt, err := v3_5.ParseCompatibleVersion(builtin)
+	if err != nil {
+		return nil, fmt.Errorf("builtin fragment: %w (%s)", err, rpt.String())
+	}
+	child, rpt, err := v3_5.ParseCompatibleVersion(user)
+	if err != nil {
+		return nil, fmt.Errorf("user config: %w (%s)", err, rpt.String())
+	}
+	return json.MarshalIndent(v3_5.Merge(parent, child), "", "  ")
+}
+
+func renderUserIgnition(mac string, host *hardware.Host) ([]byte, error) {
+	name, src, err := loadIgnitionTemplate(host)
+	if err != nil {
+		slog.Error("Reading ignition template failed", "mac", mac, "file", name, "error", err)
 		return nil, err
 	}
-	t, err := template.New(ignitionFile).Parse(src)
+	rendered, err := renderIgnition(name, src, host)
+	if err != nil {
+		slog.Error("Rendering ignition failed", "mac", mac, "file", name, "error", err)
+		return nil, err
+	}
+	return rendered, nil
+}
+
+func renderIgnition(name, src string, host *hardware.Host) ([]byte, error) {
+	t, err := template.New(name).Parse(src)
 	if err != nil {
 		return nil, fmt.Errorf("parsing template: %w", err)
 	}

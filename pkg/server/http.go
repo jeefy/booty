@@ -82,6 +82,9 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/ignition.json", handleIgnitionRequest)
+	mux.HandleFunc("/ignition/user.json", handleIgnitionUserRequest)
+	mux.HandleFunc("/ignition/builtin.json", handleIgnitionBuiltinRequest)
+	mux.HandleFunc("/update-check", handleUpdateCheckRequest)
 	mux.HandleFunc("/booty.ipxe", handleIPXERequest)
 	mux.HandleFunc("/version.txt", handleVersionRequest)
 	mux.HandleFunc("/version.json", handleVersionRequest)
@@ -131,7 +134,7 @@ func Start(o Options, errCh chan<- error) (*http.Server, error) {
 }
 
 func logRequest(handler http.Handler) http.Handler {
-	quiet := []string{"/healthz", "/ui/", "/data/", "/v2/"}
+	quiet := []string{"/healthz", "/ui/", "/data/", "/v2/", "/update-check"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		level := slog.LevelInfo
 		for _, prefix := range quiet {
