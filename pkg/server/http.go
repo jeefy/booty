@@ -58,11 +58,13 @@ func remoteIP(r *http.Request) string {
 	return host
 }
 
-// Options selects where the Web UI is served from: the embedded build when
-// it contains index.html, otherwise WebDir on disk.
+// Options selects where the Web UI is served from (the embedded build when
+// it contains index.html, otherwise WebDir on disk) and which embedded iPXE
+// binaries /boot/ exposes.
 type Options struct {
-	WebFS  fs.FS
-	WebDir string
+	WebFS     fs.FS
+	WebDir    string
+	BootFiles fs.FS
 }
 
 func uiFileSystem(o Options) http.FileSystem {
@@ -97,6 +99,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/flatcar/pin", handleFlatcarPinRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
+	mux.Handle("/boot/", http.StripPrefix("/boot/", bootHandler{files: o.BootFiles}))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
 
 	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(versions.RegistryBlobDir())))
@@ -134,7 +137,7 @@ func Start(o Options, errCh chan<- error) (*http.Server, error) {
 }
 
 func logRequest(handler http.Handler) http.Handler {
-	quiet := []string{"/healthz", "/ui/", "/data/", "/v2/", "/update-check"}
+	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/v2/", "/update-check"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		level := slog.LevelInfo
 		for _, prefix := range quiet {
@@ -212,6 +215,41 @@ func (h *dataHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.files.ServeHTTP(w, r)
+}
+
+// bootHandler serves the embedded iPXE binaries (config.BootFileNames) as
+// application/octet-stream for firmware and iPXE clients that chain over
+// HTTP instead of TFTP.
+type bootHandler struct {
+	files fs.FS
+}
+
+func (h bootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	name := r.URL.Path
+	if h.files == nil || !config.IsBootFile(name) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	data, err := fs.ReadFile(h.files, name)
+	if err != nil {
+		slog.Error("Embedded boot file unreadable", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "boot file unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := w.Write(data); err != nil {
+		slog.Debug("Writing boot file failed", "name", name, "error", err)
+	}
 }
 
 func hostFromQuery(r *http.Request) (string, error) {

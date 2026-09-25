@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/jeefy/booty/pkg/config"
@@ -75,9 +76,15 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	pullImage = func(string) {}
 	t.Cleanup(func() { arpLookup, digestLookup, pullImage = origARP, origDigest, origPull })
 
-	srv := httptest.NewServer(NewHandler(Options{WebDir: dir}))
+	srv := httptest.NewServer(NewHandler(Options{WebDir: dir, BootFiles: testBootFiles}))
 	t.Cleanup(srv.Close)
 	return srv, dir
+}
+
+var testBootFiles = fstest.MapFS{
+	"undionly.kpxe": {Data: []byte("BIOS-IPXE")},
+	"ipxe.efi":      {Data: []byte("EFI-IPXE")},
+	"snponly.efi":   {Data: []byte("SNP-IPXE")},
 }
 
 type response struct {
@@ -463,4 +470,42 @@ func TestDataHandler(t *testing.T) {
 			t.Errorf("%s: %+v", path, r)
 		}
 	}
+}
+
+func TestBootHandler(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for name, want := range map[string]string{
+		"undionly.kpxe": "BIOS-IPXE",
+		"ipxe.efi":      "EFI-IPXE",
+		"snponly.efi":   "SNP-IPXE",
+	} {
+		r := do(t, http.MethodGet, srv.URL+"/boot/"+name, "")
+		if r.status != http.StatusOK || r.body != want {
+			t.Errorf("/boot/%s: status %d body %q", name, r.status, r.body)
+		}
+		if r.contentType != "application/octet-stream" {
+			t.Errorf("/boot/%s: content-type %q", name, r.contentType)
+		}
+	}
+
+	head, err := http.Head(srv.URL + "/boot/ipxe.efi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := head.Body.Close(); err != nil {
+		t.Errorf("close: %v", err)
+	}
+	if head.StatusCode != http.StatusOK || head.ContentLength != int64(len("EFI-IPXE")) {
+		t.Errorf("HEAD /boot/ipxe.efi: status %d length %d", head.StatusCode, head.ContentLength)
+	}
+
+	for _, p := range []string{"/boot/", "/boot/pxelinux.0", "/boot/../boot/ipxe.efi/x", "/boot/ipxe.efi/", "/boot/booty.ipxe"} {
+		assertJSONError(t, do(t, http.MethodGet, srv.URL+p, ""), http.StatusNotFound)
+	}
+	assertJSONError(t, do(t, http.MethodPost, srv.URL+"/boot/ipxe.efi", ""), http.StatusMethodNotAllowed)
+
+	noFiles := httptest.NewServer(NewHandler(Options{WebDir: t.TempDir()}))
+	t.Cleanup(noFiles.Close)
+	assertJSONError(t, do(t, http.MethodGet, noFiles.URL+"/boot/ipxe.efi", ""), http.StatusNotFound)
 }

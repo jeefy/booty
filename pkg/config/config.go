@@ -1,15 +1,14 @@
 package config
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,14 +41,22 @@ const (
 	OCIGC               = "ociGC"
 	OCIGCEmpty          = "ociGCEmpty"
 	DoInstallClearOn    = "doInstallClearOn"
-	DepsPxelinuxURL     = "depsPxelinuxURL"
-	DepsLdlinuxURL      = "depsLdlinuxURL"
 	Builtin             = "builtin"
 	SSHAuthorizedKeys   = "sshAuthorizedKeys"
 	SSHAuthorizedKeysFl = "sshAuthorizedKeysFile"
 	Version             = "version"
 	Timestamp           = "timestamp"
 )
+
+// BootFileNames are the iPXE binaries embedded in the Booty binary and served
+// at the root of the TFTP namespace and under /boot/ over HTTP:
+// undionly.kpxe for BIOS clients, ipxe.efi and snponly.efi for x86-64 UEFI.
+var BootFileNames = []string{"undionly.kpxe", "ipxe.efi", "snponly.efi"}
+
+// IsBootFile reports whether name is one of BootFileNames.
+func IsBootFile(name string) bool {
+	return slices.Contains(BootFileNames, name)
+}
 
 // FlatcarPinFile is the file (relative to DataDir) that persists a Flatcar
 // version pin set via the Web UI.
@@ -113,13 +120,6 @@ func LoadConfig() {
 	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
 	// https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt
 
-	// The dated installer directories get removed on point releases; "current"
-	// always resolves.
-	viper.SetDefault(DepsPxelinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/current/images/netboot/pxelinux.0")
-	viper.SetDefault(DepsLdlinuxURL, "http://ftp.us.debian.org/debian/dists/stable/main/installer-amd64/current/images/netboot/debian-installer/amd64/boot-screens/ldlinux.c32")
-
-	bindEnv(DepsPxelinuxURL, "DEPS_PXELINUX_URL")
-	bindEnv(DepsLdlinuxURL, "DEPS_LDLINUX_URL")
 	bindEnv(FlatcarVersion, "FLATCAR_VERSION_PIN")
 	bindEnv(IgnitionFile, "IGNITION_FILE")
 	bindEnv(HardwareMap, "HARDWARE_MAP")
@@ -251,32 +251,6 @@ func CleanRelPath(p string) (string, error) {
 		}
 	}
 	return clean, nil
-}
-
-// EnsureDeps makes sure the legacy PXE bootloader files (pxelinux.0 and
-// ldlinux.c32) are present in DataDir, downloading them when missing. Failures
-// are not fatal: Booty keeps working for iPXE clients (undionly.kpxe is
-// embedded in the binary) and only legacy PXE becomes unavailable.
-func EnsureDeps(ctx context.Context) {
-	legacyOK := true
-	for _, key := range []string{DepsPxelinuxURL, DepsLdlinuxURL} {
-		url := viper.GetString(key)
-		if url == "" {
-			continue
-		}
-		dest := DataPath(path.Base(url))
-		if _, err := os.Stat(dest); err == nil {
-			slog.Debug("Dependency already present", "path", dest)
-			continue
-		}
-		if err := Download(ctx, DownloadClient, url, dest, 0, ""); err != nil {
-			slog.Debug("Dependency download failed", "url", url, "error", err)
-			legacyOK = false
-		}
-	}
-	if !legacyOK {
-		slog.Warn("Legacy PXE unavailable: could not fetch pxelinux.0/ldlinux.c32 (iPXE via undionly.kpxe still works)")
-	}
 }
 
 // EnsureFile writes data to path only when the file does not exist yet.

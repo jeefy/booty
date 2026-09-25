@@ -2,11 +2,11 @@ package tftp
 
 import (
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
@@ -72,7 +72,7 @@ func TestOpenRequestRejectsTraversal(t *testing.T) {
 		"sub",
 		"missing.bin",
 	} {
-		r, err := openRequest(name, nil)
+		r, err := openRequest(name)
 		if err == nil {
 			readAll(t, r)
 			t.Errorf("%q should have been rejected", name)
@@ -84,7 +84,7 @@ func TestOpenRequestRejectsTraversal(t *testing.T) {
 		"sub/inner.txt": "inner",
 		"inside":        "plain",
 	} {
-		r, err := openRequest(name, nil)
+		r, err := openRequest(name)
 		if err != nil {
 			t.Errorf("%q should be served: %v", name, err)
 			continue
@@ -95,23 +95,70 @@ func TestOpenRequestRejectsTraversal(t *testing.T) {
 	}
 }
 
-func TestOpenRequestServesEmbeddedUndionly(t *testing.T) {
-	setupDataDir(t)
-	cfg = Config{UndionlyKPXE: []byte("EMBEDDED")}
+func TestOpenRequestServesEmbeddedBootFiles(t *testing.T) {
+	dir := setupDataDir(t)
+	if err := os.WriteFile(filepath.Join(dir, "ipxe.efi"), []byte("STALE ON DISK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = Config{BootFiles: fstest.MapFS{
+		"undionly.kpxe": {Data: []byte("BIOS")},
+		"ipxe.efi":      {Data: []byte("EFI")},
+		"snponly.efi":   {Data: []byte("SNP")},
+	}}
 	t.Cleanup(func() { cfg = Config{} })
 
-	r, err := openRequest("undionly.kpxe", nil)
+	for name, want := range map[string]string{
+		"undionly.kpxe": "BIOS",
+		"ipxe.efi":      "EFI",
+		"snponly.efi":   "SNP",
+	} {
+		r, err := openRequest(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := readAll(t, r); got != want {
+			t.Errorf("%s: got %q want %q", name, got, want)
+		}
+	}
+}
+
+func TestOpenRequestBootFilesFallBackToDataDir(t *testing.T) {
+	dir := setupDataDir(t)
+	if err := os.WriteFile(filepath.Join(dir, "undionly.kpxe"), []byte("FROM DISK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = Config{}
+
+	r, err := openRequest("undionly.kpxe")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := readAll(t, r); got != "EMBEDDED" {
+	if got := readAll(t, r); got != "FROM DISK" {
 		t.Fatalf("got %q", got)
+	}
+	if _, err := openRequest("ipxe.efi"); err == nil {
+		t.Fatal("ipxe.efi should be not found without embedded files or a copy in DataDir")
+	}
+}
+
+func TestOpenRequestNoPxelinux(t *testing.T) {
+	setupDataDir(t)
+	for _, name := range []string{
+		"pxelinux.cfg/default",
+		"pxelinux.cfg/01-aa-bb-cc-dd-ee-ff",
+		"pxelinux.0",
+		"ldlinux.c32",
+	} {
+		if r, err := openRequest(name); err == nil {
+			readAll(t, r)
+			t.Errorf("%q should be a file-not-found: pxelinux support was removed", name)
+		}
 	}
 }
 
 func TestOpenRequestBootyIPXEStub(t *testing.T) {
 	setupDataDir(t)
-	r, err := openRequest("booty.ipxe", nil)
+	r, err := openRequest("booty.ipxe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,87 +166,6 @@ func TestOpenRequestBootyIPXEStub(t *testing.T) {
 	want := "#!ipxe\nchain http://192.168.1.10:8080/booty.ipxe?mac=${mac}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
-	}
-}
-
-func TestParsePXELinuxMAC(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-		ok   bool
-	}{
-		{"pxelinux.cfg/01-aa-bb-cc-dd-ee-ff", "aa:bb:cc:dd:ee:ff", true},
-		{"pxelinux.cfg/01-AA-BB-CC-DD-EE-FF", "aa:bb:cc:dd:ee:ff", true},
-		{"pxelinux.cfg/01-aa-bb-cc-dd-ee", "", false},
-		{"pxelinux.cfg/01-zz-bb-cc-dd-ee-ff", "", false},
-		{"pxelinux.cfg/default", "", false},
-		{"pxelinux.cfg/C0A8000A", "", false},
-		{"01-aa-bb-cc-dd-ee-ff", "", false},
-	}
-	for _, tc := range tests {
-		got, ok := ParsePXELinuxMAC(tc.in)
-		if ok != tc.ok || got != tc.want {
-			t.Errorf("ParsePXELinuxMAC(%q)=(%q,%v) want (%q,%v)", tc.in, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
-func TestLegacyPXEByMAC(t *testing.T) {
-	setupDataDir(t)
-	if _, err := hardware.Put(hardware.Host{MAC: "aa:bb:cc:dd:ee:01", OS: "ublue"}); err != nil {
-		t.Fatal(err)
-	}
-
-	r, err := openRequest("pxelinux.cfg/01-aa-bb-cc-dd-ee-01", net.ParseIP("10.0.0.5"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := readAll(t, r)
-	if !strings.Contains(got, "ignition.config.url=http://192.168.1.10:8080/ignition.json") {
-		t.Fatalf("registered ublue host should fall back to flatcar legacy config, got:\n%s", got)
-	}
-	if strings.Contains(got, "[[") {
-		t.Fatalf("unsubstituted placeholder:\n%s", got)
-	}
-
-	r, err = openRequest("pxelinux.cfg/01-aa-bb-cc-dd-ee-02", net.ParseIP("10.0.0.6"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := readAll(t, r); !strings.Contains(got, "localboot 0") {
-		t.Fatalf("unknown host should get local boot config, got:\n%s", got)
-	}
-	unknown := hardware.Snapshot().UnknownHosts["aa:bb:cc:dd:ee:02"]
-	if unknown == nil || unknown.IP != "10.0.0.6" {
-		t.Fatalf("unknown host should have been observed, got %+v", unknown)
-	}
-}
-
-func TestLegacyPXEDefaultUsesARP(t *testing.T) {
-	setupDataDir(t)
-	if _, err := hardware.Put(hardware.Host{MAC: "aa:bb:cc:dd:ee:01", OS: "flatcar"}); err != nil {
-		t.Fatal(err)
-	}
-	orig := arpLookup
-	t.Cleanup(func() { arpLookup = orig })
-	arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
-		return net.HardwareAddr{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01}, nil
-	}
-
-	r, err := openRequest("pxelinux.cfg/default", net.ParseIP("10.0.0.5"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := readAll(t, r); !strings.Contains(got, "label flatcar") {
-		t.Fatalf("expected flatcar config, got:\n%s", got)
-	}
-
-	r, err = openRequest("pxelinux.cfg/default", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := readAll(t, r); !strings.Contains(got, "localboot 0") {
-		t.Fatalf("nil remote IP must not call arping and should serve unknown config, got:\n%s", got)
 	}
 }
 
@@ -255,8 +221,14 @@ func TestIPXEScriptRendering(t *testing.T) {
 	}
 
 	for key, tmpl := range PXEConfig {
+		if !strings.HasSuffix(key, ".ipxe") {
+			t.Errorf("template %q is not an iPXE script; pxelinux configs were removed", key)
+		}
+		if !strings.HasPrefix(tmpl, "#!ipxe\n") {
+			t.Errorf("template %q must start with #!ipxe", key)
+		}
 		for _, line := range strings.Split(tmpl, "\n") {
-			if strings.HasPrefix(line, "\t") && strings.HasSuffix(key, ".ipxe") {
+			if strings.HasPrefix(line, "\t") {
 				t.Errorf("template %q has a leading tab line %q", key, line)
 			}
 		}
