@@ -19,6 +19,10 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # vue-tsc 2.x cannot type-check with the TypeScript 7 native compiler yet.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -34,3 +38,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Track Node LTS (even majors) only.
+      - dependency-name: library/node
+        versions: ["25", "27", "29"]

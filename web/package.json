@@ -18,19 +18,19 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4",
+    "@types/node": "^26.6.2",
     "@vitejs/plugin-vue": "^6.0.9",
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.9.0",
     "@vue/test-utils": "^2.4.6",
-    "@vue/tsconfig": "^0.8.1",
-    "eslint": "^9.39.5",
+    "@vue/tsconfig": "^0.9.1",
+    "eslint": "^10.11.0",
     "eslint-plugin-vue": "^10.11.1",
     "jsdom": "^26.1.0",
     "prettier": "^3.9.9",
     "typescript": "~5.9.3",
     "vite": "^7.3.6",
-    "vitest": "^3.2.7",
+    "vitest": "^5.0.1",
     "vue-tsc": "^2.2.12"
   }
 }
