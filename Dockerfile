@@ -1,5 +1,5 @@
 ### Stage One: build the web UI
-FROM node:22-alpine AS build-web
+FROM docker.io/library/node:22-alpine AS build-web
 WORKDIR /app
 COPY web/package*.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY web/ .
 RUN npm run build
 
 ### Stage Two: build the Go binary (web/dist is embedded via //go:embed)
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build-go
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25-alpine AS build-go
 
 ARG TARGETARCH
 ARG BOOTY_VERSION=dev
