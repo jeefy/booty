@@ -31,6 +31,14 @@ vet:
 fmt:
 	gofmt -l -w cmd pkg embed.go
 
+# Rebuilds the embedded iPXE binaries in boot/ from the pinned upstream ref
+# (see hack/build-ipxe.sh and THIRD_PARTY_NOTICES.md). Run this only when
+# bumping the iPXE version or changing boot/embed.ipxe, then commit boot/.
+# Not part of `make build`: the binaries are checked in so `go build` needs
+# no cross toolchain and works air-gapped.
+ipxe:
+	CONTAINER_DNS=$(CONTAINER_DNS) ./hack/build-ipxe.sh
+
 image:
 	docker build --build-arg BOOTY_VERSION=$(VERSION) --build-arg BOOTY_TIMESTAMP=$(TIMESTAMP) -t $(IMAGE) .
 
@@ -49,4 +57,4 @@ image-run: image
 clean:
 	rm -rf bin/ web/dist/
 
-.PHONY: web build build-go run test lint vet fmt image image-push image-run clean
+.PHONY: web build build-go run test lint vet fmt ipxe image image-push image-run clean

@@ -122,9 +122,11 @@ func run(cmd *cobra.Command, argv []string) error {
 	if server.DefaultTemplateInUse() {
 		slog.Info("No Butane template found; serving the embedded default", "path", config.DataPath(config.DefaultIgnitionFile))
 	}
-	if err := config.EnsureFile(config.DataPath("undionly.kpxe"), booty.UndionlyKPXE, 0o644); err != nil {
-		slog.Warn("Could not write undionly.kpxe to data dir", "error", err)
+	bootFiles, err := fs.Sub(booty.BootFiles, "boot")
+	if err != nil {
+		return fmt.Errorf("embedded boot files: %w", err)
 	}
+	ensureBootFilesInDataDir(bootFiles)
 	if err := versions.EnsureOCIFolders(); err != nil {
 		slog.Warn("Could not prepare OCI registry folders", "error", err)
 	}
@@ -133,9 +135,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	ready := make(chan struct{})
 
 	tftpServer, err := tftp.Start(tftp.Config{
-		Port:         viper.GetInt(config.TFTPPort),
-		BlockSize:    viper.GetInt(config.TFTPBlockSize),
-		UndionlyKPXE: booty.UndionlyKPXE,
+		Port:      viper.GetInt(config.TFTPPort),
+		BlockSize: viper.GetInt(config.TFTPBlockSize),
+		BootFiles: bootFiles,
 	}, errCh)
 	if err != nil {
 		return err
@@ -145,18 +147,12 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("embedded web ui: %w", err)
 	}
-	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir)}, errCh)
+	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles}, errCh)
 	if err != nil {
 		tftpServer.Shutdown(5 * time.Second)
 		return err
 	}
 	close(ready)
-
-	go func() {
-		depsCtx, cancelDeps := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancelDeps()
-		config.EnsureDeps(depsCtx)
-	}()
 
 	go func() {
 		versions.FlatcarVersionCheck()
@@ -195,6 +191,22 @@ func run(cmd *cobra.Command, argv []string) error {
 	tftpServer.Shutdown(10 * time.Second)
 	slog.Info("Booty stopped")
 	return runErr
+}
+
+// ensureBootFilesInDataDir copies the embedded iPXE binaries into DataDir when
+// absent so DHCP setups pointing at /data/<name> keep working; the TFTP and
+// /boot/ endpoints always serve the embedded copies.
+func ensureBootFilesInDataDir(bootFiles fs.FS) {
+	for _, name := range config.BootFileNames {
+		data, err := fs.ReadFile(bootFiles, name)
+		if err != nil {
+			slog.Warn("Embedded boot file missing", "name", name, "error", err)
+			continue
+		}
+		if err := config.EnsureFile(config.DataPath(name), data, 0o644); err != nil {
+			slog.Warn("Could not write boot file to data dir", "name", name, "error", err)
+		}
+	}
 }
 
 func configureLogging(debug bool) {

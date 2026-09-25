@@ -1,41 +1,31 @@
 package tftp
 
 import (
-	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/config"
-	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/pin/tftp/v3"
 	"github.com/spf13/viper"
 )
 
-const (
-	bootyIPXE    = "booty.ipxe"
-	undionlyKPXE = "undionly.kpxe"
-	pxelinuxDflt = "pxelinux.cfg/default"
-)
+const bootyIPXE = "booty.ipxe"
 
 type Config struct {
-	Port         int
-	BlockSize    int
-	UndionlyKPXE []byte
+	Port      int
+	BlockSize int
+	// BootFiles serves the embedded iPXE binaries (config.BootFileNames) from
+	// the root of the TFTP namespace, taking precedence over DataDir.
+	BootFiles fs.FS
 }
 
-var (
-	cfg       Config
-	arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
-		hw, _, err := arping.Ping(ip)
-		return hw, err
-	}
-)
+var cfg Config
 
 type Server struct {
 	srv  *tftp.Server
@@ -91,7 +81,7 @@ func readHandler(filename string, rf io.ReaderFrom) error {
 	}
 	slog.Info("TFTP get", "filename", filename, "from", remoteIP)
 
-	r, err := openRequest(filename, remoteIP)
+	r, err := openRequest(filename)
 	if err != nil {
 		slog.Warn("TFTP request rejected", "filename", filename, "from", remoteIP, "error", err)
 		return err
@@ -111,9 +101,9 @@ func stringReader(s string) io.ReadCloser {
 	return io.NopCloser(strings.NewReader(s))
 }
 
-// openRequest resolves a TFTP filename to its content: generated boot
-// scripts, the embedded iPXE binary, or a file confined to DataDir.
-func openRequest(filename string, remoteIP net.IP) (io.ReadCloser, error) {
+// openRequest resolves a TFTP filename to its content: the generated
+// booty.ipxe stub, an embedded iPXE binary, or a file confined to DataDir.
+func openRequest(filename string) (io.ReadCloser, error) {
 	if strings.ContainsRune(filename, 0) {
 		return nil, fmt.Errorf("filename contains NUL byte")
 	}
@@ -121,25 +111,11 @@ func openRequest(filename string, remoteIP net.IP) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("absolute paths are not served")
 	}
 
-	switch {
-	case filename == undionlyKPXE && len(cfg.UndionlyKPXE) > 0:
-		return io.NopCloser(bytes.NewReader(cfg.UndionlyKPXE)), nil
-
-	case filename == bootyIPXE:
+	if filename == bootyIPXE {
 		return stringReader(IPXEStub(config.ServerHostPort())), nil
-
-	case filename == pxelinuxDflt:
-		host := identifyByARP(remoteIP)
-		return stringReader(LegacyPXEConfig(OSForHost(host), legacyVars())), nil
 	}
-
-	if mac, ok := ParsePXELinuxMAC(filename); ok {
-		host, found := hardware.Get(mac)
-		if !found {
-			hardware.Observe(mac, ipString(remoteIP))
-			slog.Warn("Unknown host requested legacy PXE config", "mac", mac)
-		}
-		return stringReader(LegacyPXEConfig(OSForHost(host), legacyVars())), nil
+	if cfg.BootFiles != nil && config.IsBootFile(filename) {
+		return cfg.BootFiles.Open(filename)
 	}
 
 	root, err := os.OpenRoot(viper.GetString(config.DataDir))
@@ -167,35 +143,4 @@ func openRequest(filename string, remoteIP net.IP) (io.ReadCloser, error) {
 // ${mac} itself and chains to the HTTP endpoint which does the real work.
 func IPXEStub(serverHostPort string) string {
 	return fmt.Sprintf("#!ipxe\nchain http://%s/booty.ipxe?mac=${mac}\n", serverHostPort)
-}
-
-func legacyVars() TemplateVars {
-	return TemplateVars{Server: config.ServerHostPort()}
-}
-
-func ipString(ip net.IP) string {
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
-}
-
-func identifyByARP(remoteIP net.IP) *hardware.Host {
-	if remoteIP == nil {
-		slog.Warn("No remote IP available for ARP lookup")
-		return nil
-	}
-	hw, err := arpLookup(remoteIP)
-	if err != nil {
-		slog.Error("ARP lookup failed", "ip", remoteIP, "error", err)
-		return nil
-	}
-	mac := hw.String()
-	host, ok := hardware.Get(mac)
-	if !ok {
-		hardware.Observe(mac, remoteIP.String())
-		slog.Warn("Unknown host detected via ARP", "mac", mac, "ip", remoteIP)
-		return nil
-	}
-	return host
 }

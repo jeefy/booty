@@ -1,0 +1,8 @@
+source:      https://github.com/ipxe/ipxe
+commit:      12798ec29aa8a64d8675c4378b99f5fe28447afb
+tag:         v2.0.0
+commit-date: 2026-03-06T15:48:55Z
+build-date:  2026-09-25T18:04:35Z
+builder:     Debian GNU/Linux 13 (trixie), gcc (Debian 14.2.0-19) 14.2.0
+embed:       boot/embed.ipxe (sha256 250ce4a37cf0463e9978a2037bd3dcfa3cd2d9ca0ccd2a7cc5b41b662c069366)
+make:        make -C src bin/undionly.kpxe bin-x86_64-efi/ipxe.efi bin-x86_64-efi/snponly.efi EMBED=/out/embed.ipxe BUILD_ID=0x12798ec2

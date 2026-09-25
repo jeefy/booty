@@ -9,32 +9,9 @@ import (
 
 const DefaultOS = "flatcar"
 
-// PXEConfig holds the boot script templates. Keys ending in ".ipxe" are iPXE
-// scripts (served over HTTP from /booty.ipxe), bare keys are legacy pxelinux
-// configs (served over TFTP as pxelinux.cfg/*). Placeholders use [[name]].
+// PXEConfig holds the iPXE script templates served from /booty.ipxe, keyed
+// by "<os>.ipxe". Placeholders use [[name]].
 var PXEConfig = map[string]string{
-	"flatcar": `default flatcar
-prompt 1
-timeout 5
-
-display boot.msg
-
-label flatcar
-	menu default
-	kernel flatcar_production_pxe.vmlinuz
-	initrd flatcar_production_pxe_image.cpio.gz
-	append flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json
-`,
-
-	"unknown": `default local
-prompt 1
-timeout 300
-
-label local
-	menu default
-	localboot 0
-`,
-
 	"flatcar.ipxe": `#!ipxe
 echo Hello from Booty!
 kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json?mac=${mac}
@@ -136,31 +113,4 @@ func IPXEScript(os string, v TemplateVars) string {
 		tmpl = PXEConfig["unknown.ipxe"]
 	}
 	return Render(tmpl, v)
-}
-
-// LegacyPXEConfig renders the pxelinux config for os. Only flatcar has a
-// legacy config; other registered OSes fall back to it with a warning.
-func LegacyPXEConfig(os string, v TemplateVars) string {
-	tmpl, ok := PXEConfig[os]
-	if !ok {
-		slog.Warn("No legacy PXE config for OS, falling back to flatcar", "os", os)
-		tmpl = PXEConfig[DefaultOS]
-	}
-	return Render(tmpl, v)
-}
-
-const pxelinuxMACPrefix = "pxelinux.cfg/01-"
-
-// ParsePXELinuxMAC extracts the client MAC from a pxelinux.cfg/01-<mac> request
-// (dash-separated hex, as sent by pxelinux before falling back to "default").
-func ParsePXELinuxMAC(filename string) (string, bool) {
-	if !strings.HasPrefix(filename, pxelinuxMACPrefix) {
-		return "", false
-	}
-	raw := strings.TrimPrefix(filename, pxelinuxMACPrefix)
-	mac, err := hardware.NormalizeMAC(strings.ReplaceAll(raw, "-", ":"))
-	if err != nil {
-		return "", false
-	}
-	return mac, true
 }
