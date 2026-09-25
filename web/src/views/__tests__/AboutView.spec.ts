@@ -39,4 +39,28 @@ describe('AboutView', () => {
     expect(wrapper.find('[data-testid="about-fleet"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('v0.9.0')
   })
+
+  it('shows the Bluefin version only when /info reports a bluefin block', async () => {
+    const without = mountAbout(baseInfo)
+    await flushPromises()
+    expect(without.find('[data-testid="about-bluefin"]').exists()).toBe(false)
+
+    vi.unstubAllGlobals()
+    const pinned = mountAbout({
+      ...baseInfo,
+      bluefin: { version: '42.20260901', pinnedVersion: '42.20260901' }
+    })
+    await flushPromises()
+    const stat = pinned.find('[data-testid="about-bluefin"]')
+    expect(stat.exists()).toBe(true)
+    expect(stat.find('.stat-value').text()).toBe('42.20260901')
+    expect(stat.text()).toContain('Pinned to 42.20260901')
+
+    vi.unstubAllGlobals()
+    const empty = mountAbout({ ...baseInfo, bluefin: { version: '0.0.0', pinnedVersion: '' } })
+    await flushPromises()
+    const emptyStat = empty.find('[data-testid="about-bluefin"]')
+    expect(emptyStat.find('.stat-value').text()).toBe('—')
+    expect(emptyStat.text()).toContain('Not downloaded yet')
+  })
 })

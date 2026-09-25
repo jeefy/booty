@@ -39,6 +39,16 @@ Hosts table opens the merged Ignition preview
 (`/ignition.json?mac=<mac>&preview=1&part=merged`); the small "user config" and
 "builtin" links underneath open `part=user` and `part=builtin`.
 
+## Install disk
+
+`Host.installDisk` (e.g. `/dev/sda`, normalised to `""` when the server omits
+it) is the target disk for the installer; empty lets it pick the first writable
+disk. `HostForm` shows the **Install disk** input only for `bluefin` and
+`coreos` hosts (the two OSes whose installer accepts a target), and the Hosts
+table folds a set value into the Host cell as `disk /dev/sda`. The Overview and
+About pages show the cached Bluefin release from `GET /info`'s `bluefin` block
+(`—` until Booty has downloaded one).
+
 ## Development
 
 ```sh

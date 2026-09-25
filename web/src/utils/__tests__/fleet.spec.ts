@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BootyData, Host } from '@/types'
 import {
+  bluefinVersion,
   fleetSummary,
   hostStatus,
   ignitionPreviewUrl,
@@ -17,6 +18,7 @@ function host(overrides: Partial<Host>): Host {
     hostname: '',
     ip: '',
     booted: '',
+    installDisk: '',
     running: '',
     lastCheck: '',
     rebootPending: false,
@@ -50,13 +52,13 @@ describe('splitRunning', () => {
   })
 
   it('splits image@digest and shortens the digest to 12 hex chars', () => {
-    const label = splitRunning(`ghcr.io/ublue-os/bazzite@${DIGEST}`)
+    const label = splitRunning(`ghcr.io/projectbluefin/bluefin@${DIGEST}`)
     expect(label).toEqual({
-      image: 'ghcr.io/ublue-os/bazzite',
+      image: 'ghcr.io/projectbluefin/bluefin',
       digest: DIGEST,
       shortDigest: '0123456789ab',
-      short: 'ghcr.io/ublue-os/bazzite@0123456789ab',
-      full: `ghcr.io/ublue-os/bazzite@${DIGEST}`
+      short: 'ghcr.io/projectbluefin/bluefin@0123456789ab',
+      full: `ghcr.io/projectbluefin/bluefin@${DIGEST}`
     })
   })
 })
@@ -73,17 +75,32 @@ describe('hostStatus', () => {
 describe('targetVersion', () => {
   const info = {
     flatcar: { version: '3815.2.0', pinnedVersion: '' },
-    coreos: { version: '40.1' }
+    coreos: { version: '40.1' },
+    bluefin: { version: '42.20260901', pinnedVersion: '' }
   }
 
   it('picks the per-OS target and prefers a Flatcar pin', () => {
     expect(targetVersion(host({ os: 'flatcar' }), info)).toBe('3815.2.0')
     expect(targetVersion(host({ os: '' }), info)).toBe('3815.2.0')
     expect(targetVersion(host({ os: 'coreos' }), info)).toBe('40.1')
-    expect(targetVersion(host({ os: 'ublue', ostreeImage: 'img:tag' }), info)).toBe('img:tag')
+    expect(targetVersion(host({ os: 'bluefin' }), info)).toBe('42.20260901')
     expect(
       targetVersion(host({ os: 'flatcar' }), { flatcar: { version: '3815.2.0', pinnedVersion: '3760.2.0' } })
     ).toBe('3760.2.0')
+  })
+
+  it('has no bluefin target until Booty has downloaded a release', () => {
+    expect(targetVersion(host({ os: 'bluefin' }), {})).toBe('')
+    expect(targetVersion(host({ os: 'bluefin' }), { bluefin: { version: '0.0.0' } })).toBe('')
+  })
+})
+
+describe('bluefinVersion', () => {
+  it('treats a missing block, "" and the 0.0.0 sentinel as not downloaded', () => {
+    expect(bluefinVersion({})).toBe('')
+    expect(bluefinVersion({ bluefin: { version: '' } })).toBe('')
+    expect(bluefinVersion({ bluefin: { version: '0.0.0' } })).toBe('')
+    expect(bluefinVersion({ bluefin: { version: '42.20260901' } })).toBe('42.20260901')
   })
 })
 

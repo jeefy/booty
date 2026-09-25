@@ -79,6 +79,7 @@ function startRegister(mac: string, unknown: UnknownHost) {
     ignitionFile: '',
     os: '',
     ostreeImage: '',
+    installDisk: '',
     doInstall: false,
     running: '',
     lastCheck: '',
@@ -231,6 +232,14 @@ onMounted(() => {
                       :title="`OSTree image: ${host.ostreeImage}`"
                     >
                       {{ host.ostreeImage }}
+                    </span>
+                    <span
+                      v-if="host.installDisk"
+                      class="mono install-disk"
+                      :title="`Install disk: ${host.installDisk} (wiped on install)`"
+                      data-testid="host-install-disk"
+                    >
+                      disk {{ host.installDisk }}
                     </span>
                     <span v-if="host.doInstall" class="badge text-bg-warning">Install</span>
                   </div>
@@ -458,6 +467,11 @@ onMounted(() => {
 
 .ostree {
   max-width: 12rem;
+}
+
+.install-disk {
+  color: var(--booty-muted);
+  white-space: nowrap;
 }
 
 .running {
