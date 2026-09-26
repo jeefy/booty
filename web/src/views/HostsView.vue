@@ -242,6 +242,14 @@ onMounted(() => {
                       disk {{ host.installDisk }}
                     </span>
                     <span v-if="host.doInstall" class="badge text-bg-warning">Install</span>
+                    <span
+                      v-if="host.role === 'control-plane'"
+                      class="badge text-bg-light border"
+                      title="Cluster role"
+                      data-testid="host-role"
+                    >
+                      control-plane
+                    </span>
                   </div>
                 </td>
                 <td class="mono">{{ host.ip || '—' }}</td>
