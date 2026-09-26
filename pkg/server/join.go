@@ -7,6 +7,7 @@ import (
 
 	ignTypes "github.com/coreos/ignition/v2/config/v3_4/types"
 	"github.com/jeefy/booty/pkg/cluster"
+	"github.com/jeefy/booty/pkg/cluster/k0s"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/kubeadm"
@@ -38,10 +39,25 @@ func setJoinMinter(m *kubeadm.Minter) {
 // server exists, so it is not a warning. Failures are logged and reported
 // through the warning header, never as an HTTP error: a worker that boots
 // without joining beats one that does not boot at all. A managed
-// control-plane host gets "" without minting: it initialises, it never joins.
+// control-plane host gets "" without minting: it initialises, it never
+// joins. Under k0s nothing is minted either and no warning is raised: k0s
+// workers join with /etc/k0s/token, so only an explicit static
+// --joinString (a template variable the operator asked for) passes
+// through.
 func resolveJoinString(ctx context.Context, w http.ResponseWriter, mac string, host *hardware.Host, mint bool) string {
 	if host.IsControlPlane() && clusterManager != nil && clusterManager.Settings.Managed() {
 		return ""
+	}
+	if clusterManager != nil && clusterManager.Settings.Distribution == cluster.K0s {
+		if viper.GetString(config.KubeadmJoin) == config.KubeadmJoinAuto {
+			return ""
+		}
+		join, err := config.StaticJoinString()
+		if err != nil {
+			slog.Error("Static kubeadm join string unavailable", "mac", mac, "error", err)
+			w.Header().Set(WarningHeader, joinUnavailableWarning)
+		}
+		return join
 	}
 	if viper.GetString(config.KubeadmJoin) != config.KubeadmJoinAuto {
 		join, err := config.StaticJoinString()
@@ -93,11 +109,12 @@ func managedJoinString(mac string) string {
 	return join
 }
 
-// profileOptions builds the profile input for host. A managed kubeadm
-// cluster implies the kubeadm-worker profile for its workers, and a
-// role: control-plane host gets the control-plane options. The error is a
-// render refusal (400): unsupported OS, missing --controlPlaneDisk, no
-// endpoint.
+// profileOptions builds the profile input for host. Under k0s the host
+// becomes a k0s node (controller or worker, from the cluster Manager) and
+// no kubeadm profile applies. A managed kubeadm cluster implies the
+// kubeadm-worker profile for its workers, and a role: control-plane host
+// gets the control-plane options. The error is a render refusal (400):
+// unsupported OS, missing --controlPlaneDisk, no endpoint.
 func profileOptions(host *hardware.Host, joinString string) (profile.Options, error) {
 	opts := profile.Options{
 		Profile:         viper.GetString(config.Profile),
@@ -109,6 +126,23 @@ func profileOptions(host *hardware.Host, joinString string) (profile.Options, er
 		JoinString:      joinString,
 	}
 	m := clusterManager
+	if m != nil && m.Settings.Distribution == cluster.K0s {
+		opts.Profile = ""
+		if !profile.AppliesTo(host.OS) {
+			return opts, nil
+		}
+		node, err := m.K0sNodeFiles(hardware.Snapshot().Hosts, host, config.ServerHostPort())
+		if err != nil || node == nil {
+			return opts, err
+		}
+		opts.K0s = &profile.K0sOptions{
+			Node:             node,
+			Version:          m.Settings.K0sVersion,
+			SHA256:           k0s.PinnedSHA256(m.Settings.K0sVersion),
+			ControlPlaneDisk: m.Settings.ControlPlaneDisk,
+		}
+		return opts, nil
+	}
 	if m == nil || !m.Settings.ManagedKubeadm() {
 		return opts, nil
 	}

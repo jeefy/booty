@@ -64,6 +64,7 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.PodCIDR, config.DefaultPodCIDR)
 	viper.Set(config.ServiceCIDR, config.DefaultServiceCIDR)
 	viper.Set(config.K0sTokenFile, "")
+	viper.Set(config.K0sVersion, config.DefaultK0sVersion)
 	viper.Set(config.Kubeconfig, "")
 
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {

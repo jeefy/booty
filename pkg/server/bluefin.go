@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/creds"
 	"github.com/jeefy/booty/pkg/hardware"
@@ -27,13 +28,25 @@ func credsURL(mac string) string {
 }
 
 // hostCredentials renders the credentials bundle for host with the current
-// --builtin toggles and SSH keys.
+// --builtin toggles, SSH keys and, under --clusterDistribution=k0s, the
+// host's k0s node. A k0s render refusal (no endpoint yet, unreadable
+// --k0sTokenFile) is logged and the bundle served without the k0s pieces:
+// a 4xx here would abort the Bluefin install itself, and GET /cluster
+// carries the warning.
 func hostCredentials(host *hardware.Host) ([]byte, error) {
 	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
-	return creds.Bundle(creds.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, builtinFeatures())
+	in := creds.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}
+	if m := clusterManager; m != nil && m.Settings.Distribution == cluster.K0s {
+		node, err := m.K0sNodeFiles(hardware.Snapshot().Hosts, host, config.ServerHostPort())
+		if err != nil {
+			slog.Error("k0s node unavailable; serving the credentials bundle without it", "mac", host.MAC, "role", cluster.RoleOf(host), "error", err)
+		}
+		in.K0s = node
+	}
+	return creds.Bundle(in, builtinFeatures())
 }
 
 // handleCredsRequest serves GET /creds/<mac>.tar (the bundle) and
