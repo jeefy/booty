@@ -49,6 +49,9 @@ type Options struct {
 	// ControlPlane renders a role: control-plane host as the managed
 	// kubeadm control plane; nil leaves such a host without any units.
 	ControlPlane *ControlPlaneOptions
+	// K0s renders the host as a k0s node instead of anything kubeadm; it
+	// is set under --clusterDistribution=k0s and Profile is then empty.
+	K0s *K0sOptions
 }
 
 // Validate rejects unknown --profile values.
@@ -73,20 +76,26 @@ func AppliesTo(os string) bool {
 }
 
 // Fragment builds the profile's Ignition config for host. It is always a
-// valid spec 3.4.0 config; it is empty when no profile is selected or the
-// host's OS is out of scope.
+// valid spec 3.4.0 config; it is empty when no profile is selected and no
+// k0s node is requested, or the host's OS is out of scope.
 func Fragment(host *hardware.Host, opts Options) (types.Config, error) {
 	cfg := types.Config{}
 	cfg.Ignition.Version = types.MaxVersion.String()
 	if err := Validate(opts.Profile); err != nil {
 		return cfg, err
 	}
-	if opts.Profile == "" || host == nil {
+	if (opts.Profile == "" && opts.K0s == nil) || host == nil {
 		return cfg, nil
 	}
 	if !AppliesTo(host.OS) {
 		slog.Debug("Profile skipped: host OS out of scope", "profile", opts.Profile, "mac", host.MAC, "os", host.OS)
 		return cfg, nil
+	}
+	if opts.K0s != nil {
+		if opts.Profile != "" {
+			return cfg, fmt.Errorf("profile %q and a k0s node are mutually exclusive", opts.Profile)
+		}
+		return k0sFragment(cfg, opts)
 	}
 	opts = withDefaults(opts)
 	if host.IsControlPlane() {
