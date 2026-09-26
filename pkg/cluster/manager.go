@@ -16,6 +16,11 @@ import (
 // and no single control-plane host can stand in for it.
 var ErrNoControlPlane = errors.New("no control-plane host registered")
 
+// ErrNoControlPlaneDisk is the render-time refusal for a managed kubeadm
+// control plane on a PXE-booted OS without --controlPlaneDisk: the root
+// filesystem is RAM, so etcd and the kubelet state would vanish on reboot.
+var ErrNoControlPlaneDisk = fmt.Errorf("control-plane host needs --%s on a PXE-booted OS", config.ControlPlaneDisk)
+
 // Manager ties the settings to the cluster CA (nil unless the control
 // plane is managed) and the persisted bootstrap tokens.
 type Manager struct {
@@ -96,10 +101,21 @@ func (m *Manager) Endpoint(hosts map[string]*hardware.Host) (string, error) {
 	return "", fmt.Errorf("%d control-plane hosts registered; set --%s to the address they share", len(cps), config.ControlPlaneEndpt)
 }
 
+// NeedsControlPlaneDisk reports whether rendering a kubeadm control plane
+// for a host running os requires --controlPlaneDisk. Flatcar and Fedora
+// CoreOS run from RAM when PXE-booted; Bluefin installs to disk.
+func NeedsControlPlaneDisk(os string) bool {
+	switch os {
+	case "", "flatcar", "coreos":
+		return true
+	}
+	return false
+}
+
 // Warnings lists configuration problems that are not startup errors
 // because hosts can be registered later: a managed control plane without
-// a control-plane host, more than one, and hosts whose OS cannot run the
-// chosen distribution.
+// a control-plane host, more than one, hosts whose OS cannot run the
+// chosen distribution and a kubeadm control plane without a disk.
 func (m *Manager) Warnings(hosts map[string]*hardware.Host) []string {
 	warnings := []string{}
 	if m.Settings.Managed() {
@@ -109,6 +125,13 @@ func (m *Manager) Warnings(hosts map[string]*hardware.Host) []string {
 			warnings = append(warnings, ErrNoControlPlane.Error())
 		case len(cps) > 1 && m.Settings.Endpoint == "":
 			warnings = append(warnings, fmt.Sprintf("%d control-plane hosts registered but --%s is not set", len(cps), config.ControlPlaneEndpt))
+		}
+		if m.Settings.Distribution == Kubeadm && m.Settings.ControlPlaneDisk == "" {
+			for _, cp := range cps {
+				if NeedsControlPlaneDisk(cp.OS) {
+					warnings = append(warnings, fmt.Sprintf("host %s (%s): %s", cp.MAC, cp.OS, ErrNoControlPlaneDisk))
+				}
+			}
 		}
 	}
 	macs := make([]string, 0, len(hosts))
