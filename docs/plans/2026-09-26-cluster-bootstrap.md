@@ -245,6 +245,96 @@ the same device (startup error). Bluefin installs to disk and is exempt
   therefore moot; the kubelet unit templates rewritten to `/opt/bin/kubelet`
   were checked against the current krel `master` templates.
 
+### H3 implementation notes (decided where the plan was silent)
+
+- The shared k0s renderer lives in its own package `pkg/cluster/k0s`
+  (`Render(Options) (*Node, error)`, `Node{Files, Units, DropIns}`) rather
+  than as a function on `pkg/cluster`, because `pkg/cluster` imports
+  `pkg/profile` and `pkg/profile` must import the renderer too (an import
+  cycle otherwise). `cluster.Manager.K0sNodeFiles(hosts, host, server)` is
+  the single entry point that gathers PKI, tokens, endpoint and CNI and
+  calls it; `pkg/profile/k0s.go` (Ignition) and `pkg/creds` (Bluefin
+  `tmpfiles.extra`) only translate the `Node`. It returns `nil, nil` for a
+  control-plane host under an external control plane and for a worker
+  without `--k0sTokenFile` in external mode (plain builtin fragment, as
+  before); errors are render refusals (400 on the Ignition endpoints, logged
+  and dropped on `/creds/` so the Bluefin install itself is not aborted).
+- `--k0sVersion` (new, default `v1.36.4+k0s.0` = Bluefin 26.08.0's
+  `/usr/bin/k0s`) is validated as a k0s tag at startup when the distribution
+  is k0s. Asset facts verified on 2026-09-26 with `gh api
+  repos/k0sproject/k0s/releases/tags/v1.36.4%2Bk0s.0`: the binary is
+  `k0s-v1.36.4+k0s.0-amd64` (262445792 bytes,
+  `https://github.com/k0sproject/k0s/releases/download/v1.36.4%2Bk0s.0/k0s-v1.36.4%2Bk0s.0-amd64`),
+  the checksums are in `sha256sums.txt` (there is no per-asset `.sha256`;
+  `.sig` files are cosign signatures) and the amd64 line reads
+  `ca1e9e68107335846e8296777fce2ccd654284e6265b4b5d32c34ead872af98f`, equal
+  to GitHub's asset `digest`. That value is pinned in `k0s.DefaultSHA256`;
+  any other `--k0sVersion` makes the install script fetch that release's
+  `sha256sums.txt` and verify against it, refusing to install on a mismatch
+  or a missing line.
+- `--cni` on k0s: `none` -> `spec.network.provider: kuberouter` (k0s's
+  default, node Ready out of the box; the plan said `custom`, which would
+  have left the node without a network), `calico` -> built-in `calico`,
+  `cilium`/`flannel` -> `custom` plus the existing `booty-cni-apply.service`.
+  `pkg/cni.Render` now takes a `Target{After, Weak, Kubectl, Kubeconfig,
+  Marker}`; the kubeadm target (`cni.Kubeadm(after)`) renders exactly the
+  bytes it did before, the k0s target prepends a `kubectl() { <binary>
+  kubectl "$@"; }` shell function so the plugin scripts themselves are
+  unchanged, uses `Wants=` instead of `Requires=` on `k0scontroller.service`
+  (a `Restart=always` service must not take the oneshot down with it) and
+  the marker `/var/lib/booty/cni-applied` on Bluefin.
+- PXE controller disks: `/var/lib/k0s` is bind-mounted from
+  `/var/lib/booty-cp/k0s` (`var-lib-k0s.mount`) after `booty-cp-seed.service`
+  ran `k0s-seed.sh` (`cp -an` of the Ignition-written `/var/lib/k0s/.`, then
+  a forced copy of `manifests/booty/` so a controller reboot re-applies the
+  Secret Booty currently renders). `--containerdDisk`, when set, is mounted
+  at `/var/lib/k0s/containerd` (`var-lib-k0s-containerd.mount`, label `ssd`,
+  wiped per boot) like the kubeadm control plane's `/var/lib/containerd`.
+  A PXE worker mounts the wiped `--containerdDisk` at `/var/lib/k0s` itself
+  (k0s's extracted binaries, containerd and kubelet state all live there and
+  do not fit a 3 GiB tmpfs root). The `RenderCheck`/`Warnings` disk rule is
+  now distribution-agnostic (`NeedsControlPlaneDisk(os)` already exempted
+  Bluefin).
+- All six PKI files are 0600 (also `ca.crt`/`sa.pub`); k0s runs as root
+  and does not mind. The tokens manifest carries both the worker and the
+  controller Secret (two documents, `---`).
+- PXE units follow the template `k0s install` writes (`Delegate=yes`,
+  `KillMode=process`, `LimitNOFILE`, `Restart=always RestartSec=10`) with
+  `Requires=/After=booty-k0s-install.service` and
+  `RequiresMountsFor=/var/lib/k0s`. `booty-k0s-install.service` is a
+  `Restart=on-failure RestartSec=15s` oneshot: a matching `/opt/bin/k0s` is
+  left alone, downloads go to a temp file next to it and are `mv`ed only
+  after the checksum passes.
+- Bluefin: the k0s pieces ride in `tmpfiles.extra` after the existing rules
+  (the non-k0s output is byte-identical, asserted by the old exact-match
+  test), with `d` lines for `/etc/k0s`, `/var/lib/k0s{,/pki,/pki/etcd,
+  /manifests,/manifests/booty}` (0755; files carry their own modes). The
+  `k0scontroller.service.d` directory is created once and holds both
+  `booty-role.conf` (`[Service]\nExecStart=\nExecStart=...`, no `--single`)
+  and the existing `booty.conf` (`Wants=`, now also listing
+  `booty-cluster-ready.service` and, when custom, `booty-cni-apply.service`).
+  Like `--profile`, the k0s pieces are off under `--builtin=none`.
+- `resolveJoinString` under k0s: never mints, never warns, never falls back
+  to the kubeadm pre-generated string; a static `--joinString` still passes
+  through as the template variable the operator asked for. `profileOptions`
+  dispatches on distribution before the kubeadm branch and forces
+  `Profile=""` (startup already refuses `--profile` with k0s).
+- Known gap (documented in the README): the k0s worker token rotates with
+  the 7-day store TTL, but Booty has no k0s equivalent of the kubeadm
+  `Minter` to re-apply the Secret through the API. PXE workers rejoin on
+  every boot; after a rotation they need the controller rebooted (PXE
+  controllers re-seed `manifests/booty/`) or the Secret re-applied by hand.
+  Candidate for H4: apply the Secret with an admin kubeconfig from Booty's
+  CA when `/cluster/ready` is set.
+- Verified during H3: `podman run --rm -v k0s.yaml:/k0s.yaml:ro,Z
+  docker.io/k0sproject/k0s:v1.36.4-k0s.0 k0s config validate -c /k0s.yaml`
+  exits 0 for all eight rendered configs (4 providers x endpoint with/without
+  port) and rejects `provider: bogus` (`Unsupported value: "bogus": supported
+  values: "kuberouter", "calico", "custom"`), so the check is real; the test
+  `TestConfigValidatesWithK0s` runs it whenever the image is cached
+  (`K0S_PULL=1` pulls). The plan's `v1.36.4-k0s.1` image tag is not what
+  Bluefin runs; `v1.36.4-k0s.0` is.
+
 ## Evidence: H2 QEMU run (Sisyphus, 2026-09-25/26, bridged lab `br-booty` 10.77.0.0/24)
 
 Booty `feat/cluster-h2` on the host, `--controlPlane=managed --controlPlaneEndpoint=10.77.0.30 --containerdDisk=/dev/vda --controlPlaneDisk=/dev/vdb --cni=cilium --profile=kubeadm-worker --kubeadmJoin=auto --flatcarVersion=4757.2.0`. Three OVMF/KVM VMs powered on together: `cp1` (Flatcar, `role: control-plane`, 4 GiB, two 20 GiB disks), `w-flatcar` (Flatcar, 3 GiB, one disk), `w-fcos` (Fedora CoreOS 44, 3.5 GiB, one disk). Flatcar and FCOS PXE-boot from RAM; dnsmasq reserved 10.77.0.30 for the CP MAC.
