@@ -101,7 +101,7 @@ func (m *Manager) Endpoint(hosts map[string]*hardware.Host) (string, error) {
 // a control-plane host, more than one, and hosts whose OS cannot run the
 // chosen distribution.
 func (m *Manager) Warnings(hosts map[string]*hardware.Host) []string {
-	var warnings []string
+	warnings := []string{}
 	if m.Settings.Managed() {
 		cps := ControlPlaneHosts(hosts)
 		switch {
