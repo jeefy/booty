@@ -355,3 +355,27 @@ Findings that changed the code or docs:
 - cilium-cli needs `HOME` → `Environment=HOME=/root XDG_CACHE_HOME=/var/cache/booty-cni` on `booty-cni-apply.service`.
 - Without `--containerdDisk`, a 3 GiB PXE worker's tmpfs root filled to 96 % with images (`ImagePullBackOff`) → documented; the lab now gives every node a containerd disk, as the homelab does.
 - Lab-only: VM disks on a tmpfs `/tmp` under memory pressure produced ext4 journal aborts on the guests; disks moved to real storage.
+
+## Evidence: H3 QEMU runs (Sisyphus, 2026-09-26, same bridged lab)
+
+Booty `feat/cluster-h3`, `--clusterDistribution=k0s --controlPlane=managed --containerdDisk=/dev/vda --controlPlaneDisk=/dev/vdb --cni=none` (k0s default kube-router). Bluefin hosts PXE-install with the patched `installer-v26.08.0` initrd (fork branches `fix/pxe-netinstall` + `pxe-creds-url`), then boot from disk.
+
+**Bluefin controller + Flatcar worker** (`--controlPlaneEndpoint=10.77.0.40`): the installer fetched and placed the k0s bundle (`tmpfiles.extra` carries the six PKI files, `k0s.yaml`, `tokens.yaml`, the `ExecStart=` drop-in without `--single`); `k0scontroller.service` runs `/usr/bin/k0s controller -c /etc/k0s/k0s.yaml --enable-worker --disable-components=helm,autopilot`; the Flatcar worker's `k0sworker.service` joined with the pre-shared token, `/var/lib/k0s` on `/dev/vda`. 7 minutes after power-on:
+
+```
+NAME        STATUS   ROLES           AGE     VERSION       INTERNAL-IP   OS-IMAGE
+bf-cp       Ready    control-plane   6m49s   v1.36.4+k0s   10.77.0.40    Flatcar Container Linux by Kinvolk 4593.2.5 (Oklo)
+w-flatcar   Ready    <none>          6m43s   v1.36.4+k0s   10.77.0.149   Flatcar Container Linux by Kinvolk 4757.2.0
+```
+12 pods Running; both Booty bootstrap-token Secrets present. Bluefin's own argocd/kubestellar stacks also deploy on the controller (kubeflex/postgres pods were still crash-looping at 7 min — the appliance's payload, not Booty's).
+
+**Flatcar controller + Bluefin worker** (`--controlPlaneEndpoint=10.77.0.44`): controller on the `booty-cp` disk with `/var/lib/k0s` bind-mounted and `/var/lib/k0s/containerd` on the wiped disk; Bluefin worker drop-in turns `k0scontroller.service` into `k0s worker --token-file /etc/k0s/token`.
+
+```
+NAME        STATUS   ROLES           AGE     VERSION       INTERNAL-IP   OS-IMAGE
+fc-cp       Ready    control-plane   17m     v1.36.4+k0s   10.77.0.44    Flatcar Container Linux by Kinvolk 4757.2.0
+w-bluefin   Ready    <none>          3m52s   v1.36.4+k0s   10.77.0.154   Flatcar Container Linux by Kinvolk 4593.2.5 (Oklo)
+```
+9 pods Running. **Reboot idempotence**: both VMs `system_reset`; 5 minutes later both `Ready`, `kube-system` UID unchanged (`b612b051-8856-4d5d-a0e5-5c43d227784d`).
+
+Upstream finding: the installer wrapper's `command -v systemd-networkd-wait-online` guard never fires (the binary is at `/usr/lib/systemd/`, not on PATH), so the DDI download raced DHCP on a bridged network (`curl: (7)` at 11 s). Fixed by absolute path in the fork's `fix/pxe-netinstall` (`c66f210`), `pxe-creds-url` rebased on it, both force-pushed.
