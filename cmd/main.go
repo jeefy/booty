@@ -77,7 +77,7 @@ func init() {
 	flags.String(config.HostnameTemplate, config.DefaultHostnameTemplate, "Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP")
 	flags.String(config.JoinStringFile, "", "File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString")
 	flags.String(config.KubeadmJoin, config.KubeadmJoinStatic, "Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot: in-cluster, via --kubeconfig, or with Booty's own CA when --controlPlane=managed)")
-	flags.Duration(config.JoinTokenTTL, config.DefaultJoinTokenTTL, "Lifetime of bootstrap tokens minted with --kubeadmJoin=auto; expired ones are deleted on the --updateSchedule tick")
+	flags.Duration(config.JoinTokenTTL, config.DefaultJoinTokenTTL, "Lifetime of bootstrap tokens minted through the Kubernetes API (--kubeadmJoin=auto, k0s worker tokens); expired ones are deleted on the --updateSchedule tick")
 	flags.String(config.Profile, "", "Node profile appended to the builtin Ignition fragment for flatcar/coreos hosts: '' or 'kubeadm-worker' (CNI plugins, kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot)")
 	flags.String(config.K8sVersion, config.DefaultK8sVersion, "Kubernetes release installed by the kubeadm-worker profile")
 	flags.String(config.CNIVersion, config.DefaultCNIVersion, "containernetworking/plugins release installed by the kubeadm-worker profile")
@@ -92,8 +92,8 @@ func init() {
 	flags.String(config.CNIRelease, "", "Overrides the pinned release of the selected --cni (--cniVersion keeps meaning containernetworking/plugins)")
 	flags.String(config.PodCIDR, config.DefaultPodCIDR, "Pod network CIDR of the cluster")
 	flags.String(config.ServiceCIDR, config.DefaultServiceCIDR, "Service network CIDR of the cluster")
-	flags.String(config.K0sTokenFile, "", "File holding a pre-made k0s worker join token for an external k0s control plane")
-	flags.String(config.Kubeconfig, "", "Kubeconfig for minting --kubeadmJoin=auto tokens against an external kubeadm control plane from outside the cluster")
+	flags.String(config.K0sTokenFile, "", "File holding a pre-made k0s worker join token for an external k0s control plane; the fallback when --kubeconfig is not set or minting fails")
+	flags.String(config.Kubeconfig, "", "Kubeconfig for minting join tokens against an external control plane from outside the cluster: kubeadm with --kubeadmJoin=auto, k0s worker tokens always")
 	flags.String(config.ControlPlaneDisk, "", "Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk")
 	flags.String(config.K0sVersion, config.DefaultK0sVersion, "k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt)")
 
@@ -167,8 +167,8 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	if clusterSettings.Distribution == cluster.K0s {
 		slog.Info("k0s nodes", "k0sVersion", clusterSettings.K0sVersion, "provider", k0s.Provider(string(clusterSettings.CNI)), "bluefinBinary", k0s.BluefinBinary, "pxeBinary", k0s.PXEBinary)
-		if clusterSettings.ControlPlane == cluster.External && clusterSettings.K0sTokenFile == "" {
-			slog.Warn("--clusterDistribution=k0s with an external control plane but no --k0sTokenFile; workers get no k0s units")
+		if clusterSettings.ControlPlane == cluster.External && clusterSettings.K0sTokenFile == "" && clusterSettings.Kubeconfig == "" {
+			slog.Warn("--clusterDistribution=k0s with an external control plane but neither --k0sTokenFile nor --kubeconfig; workers get no k0s units")
 		}
 	}
 	if !builtin.Enabled() {
@@ -208,6 +208,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	minter, err := newJoinMinter(clusterManager)
 	if err != nil {
 		return err
+	}
+	if clusterManager.Settings.Distribution == cluster.K0s {
+		clusterManager.Minter = minter
 	}
 	if minter == nil {
 		if file := viper.GetString(config.JoinStringFile); file != "" {
@@ -276,7 +279,7 @@ func run(cmd *cobra.Command, argv []string) error {
 
 	var extraJobs []versions.Job
 	if minter != nil {
-		extraJobs = append(extraJobs, versions.Job{Name: "kubeadm-token-cleanup", Fn: func() { cleanupJoinTokens(ctx, minter) }})
+		extraJobs = append(extraJobs, versions.Job{Name: "bootstrap-token-cleanup", Fn: func() { cleanupJoinTokens(ctx, minter) }})
 	}
 	scheduler, err := versions.StartScheduler(viper.GetString(config.UpdateSchedule), extraJobs...)
 	if err != nil {
@@ -342,14 +345,20 @@ func startProxyDHCP(errCh chan<- error) (*dhcp.Server, error) {
 	}, errCh)
 }
 
-// newJoinMinter picks where --kubeadmJoin=auto tokens are minted: through
+// newJoinMinter picks where bootstrap tokens are minted. Under kubeadm that
+// is --kubeadmJoin=auto's business (nil in static mode): through
 // --kubeconfig when set, with Booty's own CA for a managed control plane,
-// otherwise in-cluster as before. It returns nil in static mode.
+// otherwise in-cluster as before. Under k0s no flag is needed: workers get
+// a per-boot token through --kubeconfig (external) or Booty's CA (managed)
+// and fall back to the pre-shared token; nil when neither applies.
 func newJoinMinter(m *cluster.Manager) (*kubeadm.Minter, error) {
+	ttl := viper.GetDuration(config.JoinTokenTTL)
+	if m.Settings.Distribution == cluster.K0s {
+		return newK0sMinter(m, ttl)
+	}
 	if viper.GetString(config.KubeadmJoin) != config.KubeadmJoinAuto {
 		return nil, nil
 	}
-	ttl := viper.GetDuration(config.JoinTokenTTL)
 	switch {
 	case m.Settings.Kubeconfig != "":
 		minter, err := kubeadm.FromKubeconfig(m.Settings.Kubeconfig, ttl)
@@ -380,13 +389,41 @@ func newJoinMinter(m *cluster.Manager) (*kubeadm.Minter, error) {
 	return minter, nil
 }
 
+func newK0sMinter(m *cluster.Manager, ttl time.Duration) (*kubeadm.Minter, error) {
+	switch {
+	case m.Settings.Kubeconfig != "":
+		minter, err := kubeadm.FromKubeconfig(m.Settings.Kubeconfig, ttl)
+		if err != nil {
+			return nil, fmt.Errorf("--%s: %w", config.Kubeconfig, err)
+		}
+		if minter.CACert() == nil {
+			return nil, fmt.Errorf("--%s: the cluster entry needs a certificate-authority(-data) for k0s worker tokens to embed", config.Kubeconfig)
+		}
+		slog.Info("Minting k0s worker join tokens through --kubeconfig", "apiServer", minter.APIServer(), "ttl", ttl)
+		return minter, nil
+	case m.Settings.Managed() && m.PKI != nil:
+		endpoint, err := m.Endpoint(hardware.Snapshot().Hosts)
+		if err != nil {
+			slog.Warn("Managed k0s control plane without an endpoint yet; workers get the pre-shared token until Booty restarts with one", "error", err)
+			return nil, nil
+		}
+		minter, err := kubeadm.FromCA(m.PKI, endpoint, ttl)
+		if err != nil {
+			return nil, err
+		}
+		slog.Info("Minting k0s worker join tokens with the Booty cluster CA; the pre-shared token stays the fallback while the controller is down", "apiServer", minter.APIServer(), "ttl", ttl)
+		return minter, nil
+	}
+	return nil, nil
+}
+
 func cleanupJoinTokens(ctx context.Context, minter *kubeadm.Minter) {
 	deleted, err := minter.Cleanup(ctx)
 	if err != nil {
-		slog.Warn("Expired kubeadm token cleanup incomplete", "deleted", deleted, "error", err)
+		slog.Warn("Expired bootstrap token cleanup incomplete", "deleted", deleted, "error", err)
 		return
 	}
-	slog.Debug("Expired kubeadm token cleanup done", "deleted", deleted)
+	slog.Debug("Expired bootstrap token cleanup done", "deleted", deleted)
 }
 
 func configureLogging(debug bool) {
