@@ -390,3 +390,135 @@ func TestBadCAFile(t *testing.T) {
 		t.Fatal("server not signed by the configured CA must be rejected")
 	}
 }
+
+func TestMintK0sWorkerSpec(t *testing.T) {
+	api, m, _ := newFakeAPI(t)
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return now }
+
+	tok, err := m.Mint(context.Background(), "aa:bb:cc:dd:ee:01", "w1", K0sWorkerSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.String() != tok.ID+"."+tok.Secret || !regexp.MustCompile(`^[a-z0-9]{6}\.[a-z0-9]{16}$`).MatchString(tok.String()) {
+		t.Fatalf("token %+v", tok)
+	}
+	if !tok.Expires.Equal(now.Add(time.Hour)) {
+		t.Fatalf("expires %s", tok.Expires)
+	}
+	s, ok := api.secrets["bootstrap-token-"+tok.ID]
+	if !ok {
+		t.Fatalf("secret not created; have %v", api.secrets)
+	}
+	if s.Type != SecretType || s.Metadata.Namespace != "kube-system" || s.Metadata.Name != "bootstrap-token-"+tok.ID {
+		t.Fatalf("envelope %+v", s)
+	}
+	want := map[string]string{
+		"token-id":                       tok.ID,
+		"token-secret":                   tok.Secret,
+		"expiration":                     "2026-09-26T13:00:00Z",
+		"usage-bootstrap-authentication": "true",
+		"description":                    "booty: w1 aa:bb:cc:dd:ee:01",
+	}
+	if len(s.StringData) != len(want) {
+		t.Fatalf("a k0s worker token has exactly the k0s keys, got %v", s.StringData)
+	}
+	for k, v := range want {
+		if s.StringData[k] != v {
+			t.Errorf("stringData[%s] = %q want %q", k, s.StringData[k], v)
+		}
+	}
+	for _, absent := range []string{"auth-extra-groups", "usage-bootstrap-signing"} {
+		if _, ok := s.StringData[absent]; ok {
+			t.Errorf("k0s worker tokens must not carry %s", absent)
+		}
+	}
+	if api.infoHits != 0 {
+		t.Fatal("Mint never reads cluster-info")
+	}
+	if _, ok := m.Cached("aa:bb:cc:dd:ee:01"); ok {
+		t.Fatal("Mint does not populate the cache")
+	}
+}
+
+func TestRenderedCachesPerMAC(t *testing.T) {
+	api, m, _ := newFakeAPI(t)
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return now }
+	render := func(tok Token) (string, error) { return "k0s:" + tok.String(), nil }
+
+	first, err := m.Rendered(context.Background(), "aa:bb:cc:dd:ee:01", "w1", K0sWorkerSpec, render)
+	if err != nil || !strings.HasPrefix(first, "k0s:") {
+		t.Fatalf("%q %v", first, err)
+	}
+	again, err := m.Rendered(context.Background(), "aa:bb:cc:dd:ee:01", "w1", K0sWorkerSpec, render)
+	if err != nil || again != first || api.posts != 1 {
+		t.Fatalf("second call within ttl/2 is served from the cache: %q posts=%d err=%v", again, api.posts, err)
+	}
+	if cached, ok := m.Cached("aa:bb:cc:dd:ee:01"); !ok || cached != first {
+		t.Fatalf("Cached: %q %v", cached, ok)
+	}
+	other, err := m.Rendered(context.Background(), "aa:bb:cc:dd:ee:02", "w2", K0sWorkerSpec, render)
+	if err != nil || other == first || api.posts != 2 {
+		t.Fatalf("another MAC mints its own: %q posts=%d err=%v", other, api.posts, err)
+	}
+	now = now.Add(31 * time.Minute)
+	third, err := m.Rendered(context.Background(), "aa:bb:cc:dd:ee:01", "w1", K0sWorkerSpec, render)
+	if err != nil || third == first || api.posts != 3 {
+		t.Fatalf("expired cache mints again: %q posts=%d err=%v", third, api.posts, err)
+	}
+
+	failing := func(Token) (string, error) { return "", errors.New("encode failed") }
+	if _, err := m.Rendered(context.Background(), "aa:bb:cc:dd:ee:03", "w3", K0sWorkerSpec, failing); err == nil || !strings.Contains(err.Error(), "encode failed") {
+		t.Fatalf("render errors surface: %v", err)
+	}
+	if _, ok := m.Cached("aa:bb:cc:dd:ee:03"); ok {
+		t.Fatal("a failed render caches nothing")
+	}
+	api.failPost = http.StatusForbidden
+	if _, err := m.Rendered(context.Background(), "aa:bb:cc:dd:ee:04", "w4", K0sWorkerSpec, render); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("API failures surface: %v", err)
+	}
+}
+
+func TestCACert(t *testing.T) {
+	_, m, _ := newFakeAPI(t)
+	fromFile, err := os.ReadFile(m.cfg.CAFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.CACert(); string(got) != string(fromFile) {
+		t.Fatalf("CACert must read CAFile: %q", got)
+	}
+	inline := New(KubeConfig{APIServer: "https://x", CAData: []byte("pem")}, time.Hour)
+	got := inline.CACert()
+	if string(got) != "pem" {
+		t.Fatalf("CACert must prefer CAData: %q", got)
+	}
+	got[0] = 'x'
+	if string(inline.cfg.CAData) != "pem" {
+		t.Fatal("CACert returns a copy")
+	}
+	if New(KubeConfig{APIServer: "https://x"}, time.Hour).CACert() != nil {
+		t.Fatal("no CA configured yields nil")
+	}
+	if New(KubeConfig{APIServer: "https://x", CAFile: filepath.Join(t.TempDir(), "missing")}, time.Hour).CACert() != nil {
+		t.Fatal("an unreadable CAFile yields nil")
+	}
+}
+
+func TestCleanupCoversK0sMintedTokens(t *testing.T) {
+	api, m, _ := newFakeAPI(t)
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return now }
+	if _, err := m.Mint(context.Background(), "aa:bb:cc:dd:ee:01", "w1", K0sWorkerSpec); err != nil {
+		t.Fatal(err)
+	}
+	api.addSecret(secret{Metadata: secretMeta{Name: "bootstrap-token-k0spre", Namespace: "kube-system"}, Type: SecretType,
+		StringData: map[string]string{"description": "Worker bootstrap token generated by k0s", "expiration": "2020-01-01T00:00:00Z", "usage-bootstrap-authentication": "true"}})
+	now = now.Add(61 * time.Minute)
+	deleted, err := m.Cleanup(context.Background())
+	if err != nil || deleted != 1 || len(api.deletes) != 1 || !strings.HasPrefix(api.deletes[0], "bootstrap-token-") || api.deletes[0] == "bootstrap-token-k0spre" {
+		t.Fatalf("the expired booty k0s token goes, k0s's own pre-shared token stays: deleted=%d %v err=%v", deleted, api.deletes, err)
+	}
+}
