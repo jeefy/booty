@@ -256,3 +256,14 @@ func TestCrictlVersionFor(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerJoinUnitRestartsAndSkipsWhenJoined(t *testing.T) {
+	cfg, raw := worker(t, &hardware.Host{OS: "flatcar"}, Options{JoinString: "kubeadm join x"})
+	if !strings.Contains(raw, `Restart=on-failure\nRestartSec=30s\n`) {
+		t.Fatalf("join unit must retry:\n%s", raw)
+	}
+	join := decodeFile(t, cfg, JoinScript)
+	if !strings.Contains(join, "if [ -f /etc/kubernetes/kubelet.conf ]; then") || strings.Index(join, "kubelet.conf") > strings.Index(join, "JOIN_STRING") {
+		t.Fatalf("join.sh must skip an already joined node before anything else:\n%s", join)
+	}
+}

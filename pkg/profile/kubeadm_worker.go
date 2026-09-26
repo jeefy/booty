@@ -142,6 +142,8 @@ After=` + UnitKubeletSetup + `
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30s
 Environment="JOIN_STRING=` + systemdQuote(joinString) + `"
 ExecStart=/bin/bash -c 'PATH=/opt/bin:$$PATH exec ` + JoinScript + `'
 
@@ -245,6 +247,10 @@ echo "kubelet started"
 
 const joinScript = `#!/bin/bash
 set -uo pipefail
+if [ -f /etc/kubernetes/kubelet.conf ]; then
+  echo "already joined (/etc/kubernetes/kubelet.conf exists); not joining again"
+  exit 0
+fi
 if [ -z "${JOIN_STRING:-}" ]; then
   echo "JOIN_STRING is empty: Booty could not provide a kubeadm join token; not joining" >&2
   exit 0

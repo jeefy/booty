@@ -72,7 +72,7 @@
         "path": "/opt/booty/join.sh",
         "user": {},
         "contents": {
-          "source": "data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKc2V0IC11byBwaXBlZmFpbAppZiBbIC16ICIke0pPSU5fU1RSSU5HOi19IiBdOyB0aGVuCiAgZWNobyAiSk9JTl9TVFJJTkcgaXMgZW1wdHk6IEJvb3R5IGNvdWxkIG5vdCBwcm92aWRlIGEga3ViZWFkbSBqb2luIHRva2VuOyBub3Qgam9pbmluZyIgPiYyCiAgZXhpdCAwCmZpCm1vZHByb2JlIGJyX25ldGZpbHRlcgpzeXNjdGwgbmV0LmJyaWRnZS5icmlkZ2UtbmYtY2FsbC1pcHRhYmxlcz0xCnN5c2N0bCBuZXQuaXB2NC5pcF9mb3J3YXJkPTEKZXhwb3J0IFBBVEg9L29wdC9iaW4vOiRQQVRICmt1YmVhZG0gcmVzZXQgLWYgfHwgdHJ1ZQpleGVjICR7Sk9JTl9TVFJJTkd9Cg==",
+          "source": "data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKc2V0IC11byBwaXBlZmFpbAppZiBbIC1mIC9ldGMva3ViZXJuZXRlcy9rdWJlbGV0LmNvbmYgXTsgdGhlbgogIGVjaG8gImFscmVhZHkgam9pbmVkICgvZXRjL2t1YmVybmV0ZXMva3ViZWxldC5jb25mIGV4aXN0cyk7IG5vdCBqb2luaW5nIGFnYWluIgogIGV4aXQgMApmaQppZiBbIC16ICIke0pPSU5fU1RSSU5HOi19IiBdOyB0aGVuCiAgZWNobyAiSk9JTl9TVFJJTkcgaXMgZW1wdHk6IEJvb3R5IGNvdWxkIG5vdCBwcm92aWRlIGEga3ViZWFkbSBqb2luIHRva2VuOyBub3Qgam9pbmluZyIgPiYyCiAgZXhpdCAwCmZpCm1vZHByb2JlIGJyX25ldGZpbHRlcgpzeXNjdGwgbmV0LmJyaWRnZS5icmlkZ2UtbmYtY2FsbC1pcHRhYmxlcz0xCnN5c2N0bCBuZXQuaXB2NC5pcF9mb3J3YXJkPTEKZXhwb3J0IFBBVEg9L29wdC9iaW4vOiRQQVRICmt1YmVhZG0gcmVzZXQgLWYgfHwgdHJ1ZQpleGVjICR7Sk9JTl9TVFJJTkd9Cg==",
           "verification": {}
         },
         "mode": 493
@@ -134,7 +134,7 @@
         "name": "booty-kubelet-setup.service"
       },
       {
-        "contents": "[Unit]\nDescription=Join the Kubernetes cluster with kubeadm\nRequires=booty-kubelet-setup.service\nAfter=booty-kubelet-setup.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironment=\"JOIN_STRING=kubeadm join 10.0.0.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\nExecStart=/bin/bash -c 'PATH=/opt/bin:$$PATH exec /opt/booty/join.sh'\n\n[Install]\nWantedBy=multi-user.target\n",
+        "contents": "[Unit]\nDescription=Join the Kubernetes cluster with kubeadm\nRequires=booty-kubelet-setup.service\nAfter=booty-kubelet-setup.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nRestart=on-failure\nRestartSec=30s\nEnvironment=\"JOIN_STRING=kubeadm join 10.0.0.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\nExecStart=/bin/bash -c 'PATH=/opt/bin:$$PATH exec /opt/booty/join.sh'\n\n[Install]\nWantedBy=multi-user.target\n",
         "enabled": true,
         "name": "booty-k8s-join.service"
       }
