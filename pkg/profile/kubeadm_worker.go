@@ -44,6 +44,9 @@ type Options struct {
 	ContainerdDisk  string
 	KubeletUnitsURL string
 	JoinString      string
+	// ControlPlane renders a role: control-plane host as the managed
+	// kubeadm control plane; nil leaves such a host without any units.
+	ControlPlane *ControlPlaneOptions
 }
 
 // Validate rejects unknown --profile values.
@@ -84,27 +87,48 @@ func Fragment(host *hardware.Host, opts Options) (types.Config, error) {
 		return cfg, nil
 	}
 	opts = withDefaults(opts)
+	if host.IsControlPlane() {
+		if opts.ControlPlane == nil {
+			slog.Debug("Profile skipped: control-plane host without a managed control plane gets no worker units", "profile", opts.Profile, "mac", host.MAC)
+			return cfg, nil
+		}
+		return controlPlaneFragment(cfg, opts)
+	}
 
-	cfg.Storage.Files = []types.File{
+	cfg.Storage.Files = append(toolScripts(opts), ign.InlineFile(JoinScript, joinScript, 0o755))
+	cfg.Storage.Filesystems, cfg.Systemd.Units = containerdDisk(opts.ContainerdDisk)
+	cfg.Systemd.Units = append(cfg.Systemd.Units, toolChain(opts, "")...)
+	cfg.Systemd.Units = append(cfg.Systemd.Units, ign.Unit(UnitJoin, true, joinUnit(opts.JoinString)))
+	return cfg, nil
+}
+
+func toolScripts(opts Options) []types.File {
+	return []types.File{
 		ign.InlineFile(CNIScript, cniScript(opts), 0o755),
 		ign.InlineFile(KubeToolsScript, kubeToolsScript(opts), 0o755),
 		ign.InlineFile(SystemdScript, systemdScript(opts), 0o755),
-		ign.InlineFile(JoinScript, joinScript, 0o755),
 	}
-	if opts.ContainerdDisk != "" {
-		cfg.Storage.Filesystems = []types.Filesystem{containerdFilesystem(opts.ContainerdDisk)}
-		cfg.Systemd.Units = append(cfg.Systemd.Units,
-			ign.Unit(ContainerdMountUnit, true, containerdMount),
-			containerdDropin(),
-		)
-	}
-	cfg.Systemd.Units = append(cfg.Systemd.Units,
+}
+
+// toolChain is the CNI plugins -> kube tools -> kubelet units sequence both
+// roles share; kubeletSetupExtra is appended to the [Unit] section of the
+// last one (the control plane orders it after its state mounts).
+func toolChain(opts Options, kubeletSetupExtra string) []types.Unit {
+	return []types.Unit{
 		ign.Unit(UnitCNIInstall, true, oneshot("Install CNI plugins "+opts.CNIVersion, "network-online.target", CNIScript, "Wants=network-online.target\n")),
 		ign.Unit(UnitKubeTools, true, oneshot("Install kubeadm, kubelet, kubectl and crictl "+opts.K8sVersion, UnitCNIInstall, KubeToolsScript, "")),
-		ign.Unit(UnitKubeletSetup, true, oneshot("Install the kubelet systemd units", UnitKubeTools, SystemdScript, "")),
-		ign.Unit(UnitJoin, true, joinUnit(opts.JoinString)),
-	)
-	return cfg, nil
+		ign.Unit(UnitKubeletSetup, true, oneshot("Install the kubelet systemd units", UnitKubeTools, SystemdScript, kubeletSetupExtra)),
+	}
+}
+
+func containerdDisk(device string) ([]types.Filesystem, []types.Unit) {
+	if device == "" {
+		return nil, nil
+	}
+	return []types.Filesystem{containerdFilesystem(device)}, []types.Unit{
+		ign.Unit(ContainerdMountUnit, true, containerdMount),
+		containerdDropin(),
+	}
 }
 
 func withDefaults(o Options) Options {

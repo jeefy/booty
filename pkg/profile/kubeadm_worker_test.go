@@ -3,6 +3,7 @@ package profile
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -47,7 +48,11 @@ func decodeFile(t *testing.T, cfg types.Config, path string) string {
 			return string(b)
 		}
 		if strings.HasPrefix(src, "data:,") {
-			return strings.TrimPrefix(src, "data:,")
+			decoded, err := url.PathUnescape(strings.TrimPrefix(src, "data:,"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return decoded
 		}
 		t.Fatalf("%s is not inline: %s", path, src)
 	}
