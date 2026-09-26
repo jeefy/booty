@@ -445,3 +445,7 @@ w-bluefin   Ready    <none>          3m52s   v1.36.4+k0s   10.77.0.154   Flatcar
 9 pods Running. **Reboot idempotence**: both VMs `system_reset`; 5 minutes later both `Ready`, `kube-system` UID unchanged (`b612b051-8856-4d5d-a0e5-5c43d227784d`).
 
 Upstream finding: the installer wrapper's `command -v systemd-networkd-wait-online` guard never fires (the binary is at `/usr/lib/systemd/`, not on PATH), so the DDI download raced DHCP on a bridged network (`curl: (7)` at 11 s). Fixed by absolute path in the fork's `fix/pxe-netinstall` (`c66f210`), `pxe-creds-url` rebased on it, both force-pushed.
+
+## Evidence: H5 QEMU token-rotation test (Sisyphus, 2026-09-26)
+
+k0s managed cluster (`fc-cp` Flatcar controller + `w1` Flatcar worker, `--controlPlaneEndpoint=10.77.0.44`), both `Ready` at 4 min (w1 joined on the pre-shared token — the API was not up when it rendered). Then on the controller: deleted both pre-shared `bootstrap-token-*` Secrets and `manifests/booty/tokens.yaml` (simulating expiry), registered a new worker `w2` and PXE-booted it. Booty logged `Minted bootstrap token … id=tt3984 usages=[authentication]`; `w2` joined `Ready` within 4 min; the only bootstrap Secret in the cluster is `bootstrap-token-tt3984` with `description: booty: w2 52:54:00:aa:00:47`, `usage-bootstrap-authentication: true` — created via Booty's admin certificate (`system:masters`) against the k0s API.
