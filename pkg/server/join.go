@@ -114,8 +114,10 @@ func managedJoinString(mac string) string {
 // no kubeadm profile applies. A managed kubeadm cluster implies the
 // kubeadm-worker profile for its workers, and a role: control-plane host
 // gets the control-plane options. The error is a render refusal (400):
-// unsupported OS, missing --controlPlaneDisk, no endpoint.
-func profileOptions(host *hardware.Host, joinString string) (profile.Options, error) {
+// unsupported OS, missing --controlPlaneDisk, no endpoint. mint lets a
+// k0s worker's join token be minted through the API (a real boot);
+// previews pass false.
+func profileOptions(ctx context.Context, host *hardware.Host, joinString string, mint bool) (profile.Options, error) {
 	opts := profile.Options{
 		Profile:         viper.GetString(config.Profile),
 		K8sVersion:      viper.GetString(config.K8sVersion),
@@ -131,7 +133,7 @@ func profileOptions(host *hardware.Host, joinString string) (profile.Options, er
 		if !profile.AppliesTo(host.OS) {
 			return opts, nil
 		}
-		node, err := m.K0sNodeFiles(hardware.Snapshot().Hosts, host, config.ServerHostPort())
+		node, err := m.K0sNodeFiles(ctx, hardware.Snapshot().Hosts, host, config.ServerHostPort(), mint)
 		if err != nil || node == nil {
 			return opts, err
 		}
@@ -177,8 +179,8 @@ func renderCheck(w http.ResponseWriter, host *hardware.Host) bool {
 
 // appendProfile adds the selected profile's files, filesystems and units
 // after the builtin ones so the merge order is builtin -> profile -> user.
-func appendProfile(cfg ignTypes.Config, host *hardware.Host, joinString string) ignTypes.Config {
-	opts, err := profileOptions(host, joinString)
+func appendProfile(ctx context.Context, cfg ignTypes.Config, host *hardware.Host, joinString string, mint bool) ignTypes.Config {
+	opts, err := profileOptions(ctx, host, joinString, mint)
 	if err != nil {
 		slog.Error("Cluster options unavailable; serving builtin fragment without the profile", "mac", host.MAC, "error", err)
 		return cfg

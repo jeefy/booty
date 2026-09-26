@@ -10,6 +10,7 @@ import (
 	"github.com/jeefy/booty/pkg/cluster/token"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/kubeadm"
 )
 
 // ErrNoControlPlane is returned by Endpoint when no endpoint flag is set
@@ -23,11 +24,14 @@ var ErrNoControlPlane = errors.New("no control-plane host registered")
 var ErrNoControlPlaneDisk = fmt.Errorf("control-plane host needs --%s on a PXE-booted OS", config.ControlPlaneDisk)
 
 // Manager ties the settings to the cluster CA (nil unless the control
-// plane is managed) and the persisted bootstrap tokens.
+// plane is managed), the persisted bootstrap tokens and, under k0s, the
+// Minter K0sWorkerToken mints per-boot worker tokens with (nil: pre-shared
+// tokens only).
 type Manager struct {
 	Settings Settings
 	PKI      *pki.PKI
 	Tokens   *token.Store
+	Minter   *kubeadm.Minter
 }
 
 // New builds the Manager for settings. With a managed control plane it

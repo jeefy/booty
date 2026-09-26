@@ -1,6 +1,8 @@
 // Package kubeadm mints short-lived bootstrap tokens through the Kubernetes
 // API and turns them into `kubeadm join` command lines, so Booty never has
-// to hand out a long-lived token over the unauthenticated boot network.
+// to hand out a long-lived token over the unauthenticated boot network. The
+// same Secret, shaped by a different Spec, is what a k0s worker join token
+// wraps, so pkg/cluster mints those through the Minter too.
 package kubeadm
 
 import (
@@ -245,6 +247,35 @@ type cachedJoin struct {
 	expires time.Time
 }
 
+// Spec is the part of a bootstrap-token Secret that differs between the
+// flavours Booty mints. Usages become `usage-bootstrap-<usage>: "true"`;
+// ExtraGroups is `auth-extra-groups` and is left out when empty. Token id,
+// secret, expiration and the `booty:` description are the same for all.
+type Spec struct {
+	Usages      []string
+	ExtraGroups string
+}
+
+var (
+	// KubeadmSpec is what `kubeadm token create` writes: authentication
+	// and signing usages, and the group kubeadm's node RBAC is bound to.
+	KubeadmSpec = Spec{Usages: []string{"authentication", "signing"}, ExtraGroups: "system:bootstrappers:kubeadm:default-node-token"}
+	// K0sWorkerSpec is what `k0s token pre-shared --role worker` writes
+	// (k0s pkg/token/manager.go): authentication only and no extra groups,
+	// since k0s binds the implicit system:bootstrappers group.
+	K0sWorkerSpec = Spec{Usages: []string{"authentication"}}
+)
+
+// Token is a minted bootstrap token.
+type Token struct {
+	ID      string
+	Secret  string
+	Expires time.Time
+}
+
+// String is the <id>.<secret> form nodes present as a bearer token.
+func (t Token) String() string { return t.ID + "." + t.Secret }
+
 type clusterInfo struct {
 	endpoint string
 	caHash   string
@@ -284,8 +315,28 @@ func (m *Minter) TTL() time.Duration { return m.ttl }
 // APIServer is the URL the minter talks to; empty outside a cluster.
 func (m *Minter) APIServer() string { return m.cfg.APIServer }
 
-// Cached returns the join string minted earlier for mac if it is still
-// within the cache window. It never talks to the API server.
+// CACert is the PEM CA the minter verifies the API server with: the
+// kubeconfig's certificate-authority(-data), Booty's cluster CA under
+// FromCA, or the service account's ca.crt in-cluster. It is what a k0s
+// join token embeds for the worker. nil when none is configured.
+func (m *Minter) CACert() []byte {
+	if m.cfg.CAData != nil {
+		return bytes.Clone(m.cfg.CAData)
+	}
+	if m.cfg.CAFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(m.cfg.CAFile)
+	if err != nil {
+		slog.Debug("Reading API server CA failed", "file", m.cfg.CAFile, "error", err)
+		return nil
+	}
+	return data
+}
+
+// Cached returns the string minted earlier for mac (a kubeadm join string
+// or a rendered k0s token) if it is still within the cache window. It
+// never talks to the API server.
 func (m *Minter) Cached(mac string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -297,16 +348,34 @@ func (m *Minter) Cached(mac string) (string, bool) {
 	return e.join, true
 }
 
-// JoinString returns the cached join string for mac or mints a new token.
-// hostname only ends up in the Secret's description.
+// JoinString returns the cached join string for mac or mints a new kubeadm
+// token. hostname only ends up in the Secret's description.
 func (m *Minter) JoinString(ctx context.Context, mac, hostname string) (string, error) {
+	return m.cachedOr(mac, func() (string, error) { return m.mint(ctx, mac, hostname) })
+}
+
+// Rendered returns the cached string for mac or mints a token shaped by
+// spec, hands it to render and caches the result for ttl/2, exactly as
+// JoinString does for kubeadm. The render error is returned as-is and
+// nothing is cached then; the Secret it minted expires on its own.
+func (m *Minter) Rendered(ctx context.Context, mac, hostname string, spec Spec, render func(Token) (string, error)) (string, error) {
+	return m.cachedOr(mac, func() (string, error) {
+		tok, err := m.Mint(ctx, mac, hostname, spec)
+		if err != nil {
+			return "", err
+		}
+		return render(tok)
+	})
+}
+
+func (m *Minter) cachedOr(mac string, mint func() (string, error)) (string, error) {
 	lock := m.macLock(mac)
 	lock.Lock()
 	defer lock.Unlock()
 	if join, ok := m.Cached(mac); ok {
 		return join, nil
 	}
-	join, err := m.mint(ctx, mac, hostname)
+	join, err := mint()
 	if err != nil {
 		return "", err
 	}
@@ -332,16 +401,28 @@ func (m *Minter) mint(ctx context.Context, mac, hostname string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("cluster-info: %w", err)
 	}
-	id, secret, err := newToken()
+	tok, err := m.Mint(ctx, mac, hostname, KubeadmSpec)
 	if err != nil {
 		return "", err
 	}
-	expiration := m.now().Add(m.ttl).UTC().Format(time.RFC3339)
-	if err := m.createTokenSecret(ctx, id, secret, expiration, hostname, mac); err != nil {
-		return "", fmt.Errorf("creating bootstrap token: %w", err)
+	return fmt.Sprintf("kubeadm join %s --token %s --discovery-token-ca-cert-hash sha256:%s", info.endpoint, tok, info.caHash), nil
+}
+
+// Mint creates the kube-system Secret for a fresh bootstrap token shaped by
+// spec, expiring after the minter's TTL, with the description
+// `booty: <hostname> <mac>` that Cleanup recognises. It never consults the
+// cache.
+func (m *Minter) Mint(ctx context.Context, mac, hostname string, spec Spec) (Token, error) {
+	id, secret, err := newToken()
+	if err != nil {
+		return Token{}, err
 	}
-	slog.Info("Minted kubeadm bootstrap token", "mac", mac, "hostname", hostname, "id", id, "expiration", expiration)
-	return fmt.Sprintf("kubeadm join %s --token %s.%s --discovery-token-ca-cert-hash sha256:%s", info.endpoint, id, secret, info.caHash), nil
+	tok := Token{ID: id, Secret: secret, Expires: m.now().Add(m.ttl).UTC().Truncate(time.Second)}
+	if err := m.createTokenSecret(ctx, tok, spec, hostname, mac); err != nil {
+		return Token{}, fmt.Errorf("creating bootstrap token: %w", err)
+	}
+	slog.Info("Minted bootstrap token", "mac", mac, "hostname", hostname, "id", id, "usages", spec.Usages, "expiration", tok.Expires.Format(time.RFC3339))
+	return tok, nil
 }
 
 func newToken() (id, secret string, err error) {
@@ -379,21 +460,25 @@ type secret struct {
 	Data       map[string]string `json:"data,omitempty"`
 }
 
-func (m *Minter) createTokenSecret(ctx context.Context, id, secretValue, expiration, hostname, mac string) error {
+func (m *Minter) createTokenSecret(ctx context.Context, tok Token, spec Spec, hostname, mac string) error {
+	data := map[string]string{
+		"token-id":     tok.ID,
+		"token-secret": tok.Secret,
+		"expiration":   tok.Expires.UTC().Format(time.RFC3339),
+		"description":  fmt.Sprintf("%s %s %s", DescriptionPrefix, hostname, mac),
+	}
+	for _, usage := range spec.Usages {
+		data["usage-bootstrap-"+usage] = "true"
+	}
+	if spec.ExtraGroups != "" {
+		data["auth-extra-groups"] = spec.ExtraGroups
+	}
 	body := secret{
 		APIVersion: "v1",
 		Kind:       "Secret",
-		Metadata:   secretMeta{Name: "bootstrap-token-" + id, Namespace: "kube-system"},
+		Metadata:   secretMeta{Name: "bootstrap-token-" + tok.ID, Namespace: "kube-system"},
 		Type:       SecretType,
-		StringData: map[string]string{
-			"token-id":                       id,
-			"token-secret":                   secretValue,
-			"expiration":                     expiration,
-			"usage-bootstrap-authentication": "true",
-			"usage-bootstrap-signing":        "true",
-			"auth-extra-groups":              "system:bootstrappers:kubeadm:default-node-token",
-			"description":                    fmt.Sprintf("%s %s %s", DescriptionPrefix, hostname, mac),
-		},
+		StringData: data,
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -508,9 +593,10 @@ func parseCertificates(pemData []byte) ([]*x509.Certificate, error) {
 	return certs, nil
 }
 
-// Cleanup deletes bootstrap tokens Booty created whose expiration has
-// passed. Tokens without the "booty:" description are never touched. It
-// also drops stale cache entries.
+// Cleanup deletes bootstrap tokens Booty created (kubeadm and k0s flavours
+// alike, they share the description) whose expiration has passed. Tokens
+// without the "booty:" description are never touched. It also drops stale
+// cache entries.
 func (m *Minter) Cleanup(ctx context.Context) (deleted int, err error) {
 	m.mu.Lock()
 	for mac, e := range m.cache {
@@ -550,7 +636,7 @@ func (m *Minter) Cleanup(ctx context.Context) (deleted int, err error) {
 			continue
 		}
 		deleted++
-		slog.Info("Deleted expired kubeadm bootstrap token", "secret", s.Metadata.Name)
+		slog.Info("Deleted expired bootstrap token", "secret", s.Metadata.Name)
 	}
 	return deleted, errors.Join(errs...)
 }

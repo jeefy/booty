@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/cluster/k0s"
@@ -19,6 +21,7 @@ import (
 	"github.com/jeefy/booty/pkg/cni"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/creds"
+	"github.com/jeefy/booty/pkg/kubeadm"
 	"github.com/jeefy/booty/pkg/profile"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/spf13/viper"
@@ -338,5 +341,135 @@ func TestK0sExternal(t *testing.T) {
 	rules, _ = credsRules(t, srv.URL, k0sBluefinCP)
 	if strings.Contains(rules, "booty-role.conf") || strings.Contains(rules, "k0s.yaml") {
 		t.Fatalf("an external control-plane host gets no k0s pieces:\n%s", rules)
+	}
+}
+
+// newK0sFakeMinter is the pkg/kubeadm fake API as a Minter for the k0s
+// paths: a static bearer token and the server's own certificate as CA.
+func newK0sFakeMinter(t *testing.T) (*fakeKubeAPI, *kubeadm.Minter) {
+	t.Helper()
+	api := &fakeKubeAPI{}
+	apiSrv := httptest.NewTLSServer(api)
+	t.Cleanup(apiSrv.Close)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: apiSrv.Certificate().Raw})
+	return api, kubeadm.New(kubeadm.KubeConfig{APIServer: apiSrv.URL, Token: "sa", CAData: caPEM}, time.Hour)
+}
+
+func TestK0sManagedWorkersMintJoinTokens(t *testing.T) {
+	srv, m := newK0sServer(t, "managed")
+	api, minter := newK0sFakeMinter(t)
+	m.Minter = minter
+	registerK0sHosts(t, srv.URL)
+
+	r := do(t, http.MethodGet, srv.URL+"/ignition.json?mac="+k0sFlatcarW+"&preview=1&part=builtin", "")
+	pre, _ := m.Tokens.Peek(token.PurposeK0sWorker)
+	join, err := token.ParseK0s(strings.TrimSpace(ignitionFiles(t, r.body)[k0s.TokenPath]))
+	if err != nil || join.Token != pre.Token || api.posts.Load() != 0 {
+		t.Fatalf("a preview with a cold cache never mints and shows the pre-shared token: %+v %v posts=%d", join, err, api.posts.Load())
+	}
+	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sFlatcarW+"&preview=1", "")
+	if api.posts.Load() != 0 {
+		t.Fatal("the builtin child with preview=1 does not mint either")
+	}
+
+	resp, err := http.Get(srv.URL + "/ignition.json?mac=" + k0sFlatcarW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get(WarningHeader) != "" || api.posts.Load() != 0 {
+		t.Fatalf("the wrapper carries no k0s files and mints nothing: %d %v posts=%d", resp.StatusCode, resp.Header, api.posts.Load())
+	}
+	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sFlatcarW, "")
+	if r.status != 200 || api.posts.Load() != 1 {
+		t.Fatalf("the real builtin fetch mints exactly one token: posts=%d %+v", api.posts.Load(), r)
+	}
+	minted, err := token.ParseK0s(strings.TrimSpace(ignitionFiles(t, r.body)[k0s.TokenPath]))
+	if err != nil || minted.Token == pre.Token || minted.Role != k0s.Worker || minted.User != "kubelet-bootstrap" || minted.Server != "https://10.77.0.40:6443" || string(minted.CACert) != string(m.PKI.CACert()) {
+		t.Fatalf("minted worker token: %+v %v", minted, err)
+	}
+	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sFlatcarW, "")
+	again, _ := token.ParseK0s(strings.TrimSpace(ignitionFiles(t, r.body)[k0s.TokenPath]))
+	if again.Token != minted.Token || api.posts.Load() != 1 {
+		t.Fatalf("a retry within the cache window reuses the token: posts=%d", api.posts.Load())
+	}
+	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac="+k0sFlatcarW+"&preview=1&part=builtin", "")
+	if p, _ := token.ParseK0s(strings.TrimSpace(ignitionFiles(t, r.body)[k0s.TokenPath])); p.Token != minted.Token || api.posts.Load() != 1 {
+		t.Fatal("a preview after the boot shows the cached minted token")
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sCoreOSW, "")
+	other, _ := token.ParseK0s(strings.TrimSpace(ignitionFiles(t, r.body)[k0s.TokenPath]))
+	if other.Token == minted.Token || api.posts.Load() != 2 {
+		t.Fatalf("each MAC gets its own token: posts=%d", api.posts.Load())
+	}
+	if r := do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sBluefinCP+"&preview=1", ""); r.status != 200 || api.posts.Load() != 2 {
+		t.Fatal("a controller never mints")
+	}
+	_, files := credsRules(t, srv.URL, k0sBluefinCP)
+	if !strings.Contains(files["/var/lib/k0s/manifests/booty/tokens.yaml"][1], "bootstrap-token-"+pre.ID()) || api.posts.Load() != 2 {
+		t.Fatal("the controller still applies the pre-shared Secrets, the bootstrap fallback, and mints nothing")
+	}
+}
+
+func TestK0sBluefinBundleIsDeterministicWithMintedToken(t *testing.T) {
+	srv, m := newK0sServer(t, "managed")
+	api, minter := newK0sFakeMinter(t)
+	m.Minter = minter
+	register(t, srv.URL, `{"mac":"`+k0sBluefinW+`","hostname":"w-bluefin","os":"bluefin","doInstall":true,"installDisk":"/dev/vda"}`)
+	installBluefinFixture(t, viper.GetString(config.DataDir))
+
+	r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+k0sBluefinW, "")
+	args := credsArgRe.FindStringSubmatch(r.body)
+	if r.status != 200 || args == nil {
+		t.Fatalf("install stanza with creds args: %+v", r)
+	}
+	if api.posts.Load() != 1 {
+		t.Fatalf("rendering the install stanza mints the worker token once, posts=%d", api.posts.Load())
+	}
+	resp, err := http.Get(srv.URL + strings.TrimPrefix(args[1], "http://192.168.1.10:8080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("creds: %d %v", resp.StatusCode, err)
+	}
+	if creds.Sum(body) != args[2] || api.posts.Load() != 1 {
+		t.Fatalf("the tar the installer fetches has the sha256 the script promised (same cached token): %s vs %s posts=%d", creds.Sum(body), args[2], api.posts.Load())
+	}
+	_, files := credsRules(t, srv.URL, k0sBluefinW)
+	join, err := token.ParseK0s(strings.TrimSpace(files["/etc/k0s/token"][1]))
+	pre, _ := m.Tokens.Peek(token.PurposeK0sWorker)
+	if err != nil || join.Token == pre.Token || join.Server != "https://10.77.0.40:6443" || api.posts.Load() != 1 {
+		t.Fatalf("the bundle carries the minted token: %+v %v posts=%d", join, err, api.posts.Load())
+	}
+	if files["/etc/systemd/system/k0scontroller.service.d/booty-role.conf"][1] != "[Service]\nExecStart=\nExecStart=/usr/bin/k0s worker --token-file /etc/k0s/token\n" {
+		t.Fatal("worker drop-in unchanged")
+	}
+}
+
+func TestK0sExternalKubeconfigMintsWithoutTokenFile(t *testing.T) {
+	srv, m := newK0sServer(t, "external")
+	api, minter := newK0sFakeMinter(t)
+	m.Minter = minter
+	registerK0sHosts(t, srv.URL)
+
+	r := do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sFlatcarW, "")
+	if r.status != 200 || !strings.Contains(r.body, k0s.WorkerUnit) || api.posts.Load() != 1 {
+		t.Fatalf("external worker with --kubeconfig gets k0s units and a minted token: posts=%d %+v", api.posts.Load(), r)
+	}
+	join, err := token.ParseK0s(strings.TrimSpace(ignitionFiles(t, r.body)[k0s.TokenPath]))
+	if err != nil || join.Role != k0s.Worker || join.Server != "https://10.77.0.40:6443" || string(join.CACert) != string(minter.CACert()) {
+		t.Fatalf("external token wraps --controlPlaneEndpoint and the kubeconfig's CA: %+v %v", join, err)
+	}
+	_, files := credsRules(t, srv.URL, k0sBluefinW)
+	if _, ok := files["/etc/k0s/token"]; !ok || api.posts.Load() != 2 {
+		t.Fatalf("bluefin external worker minted its own: posts=%d", api.posts.Load())
+	}
+	r = do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+k0sBluefinCP, "")
+	if r.status != 200 || strings.Contains(r.body, "k0s") || api.posts.Load() != 2 {
+		t.Fatalf("an external control-plane host still renders the plain builtin: %+v", r)
 	}
 }
