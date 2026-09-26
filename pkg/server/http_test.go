@@ -55,6 +55,16 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	viper.Set(config.CrictlVersion, "")
 	viper.Set(config.ContainerdDisk, "")
 	viper.Set(config.KubeletUnitsURL, config.DefaultKubeletUnitsURL)
+	viper.Set(config.ClusterDistribution, config.DefaultClusterDistribution)
+	viper.Set(config.ControlPlane, config.DefaultControlPlane)
+	viper.Set(config.ControlPlaneEndpt, "")
+	viper.Set(config.ClusterCADir, "")
+	viper.Set(config.CNI, config.DefaultCNI)
+	viper.Set(config.CNIRelease, "")
+	viper.Set(config.PodCIDR, config.DefaultPodCIDR)
+	viper.Set(config.ServiceCIDR, config.DefaultServiceCIDR)
+	viper.Set(config.K0sTokenFile, "")
+	viper.Set(config.Kubeconfig, "")
 
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)

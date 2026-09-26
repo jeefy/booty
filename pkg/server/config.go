@@ -18,8 +18,9 @@ import (
 
 const redactedValue = "••••"
 
-// secretSettings are shown redacted by GET /config. joinStringFile is a
-// path, not the secret, and stays visible.
+// secretSettings are shown redacted by GET /config. joinStringFile,
+// clusterCADir, k0sTokenFile and kubeconfig are paths, not the secrets
+// they point at, and stay visible; the file contents never appear.
 var secretSettings = []string{config.JoinString, config.GithubToken}
 
 type settingEntry struct {
