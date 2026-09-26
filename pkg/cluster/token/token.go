@@ -6,6 +6,7 @@ package token
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +35,9 @@ const (
 // Pattern is the kubeadm bootstrap token format: <id>.<secret>.
 var Pattern = regexp.MustCompile(`^[a-z0-9]{6}\.[a-z0-9]{16}$`)
 
+// CertKeyPattern is the kubeadm certificateKey format: 32 bytes as hex.
+var CertKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // Purpose names what a persisted token is for; each purpose has one
 // current token.
 type Purpose string
@@ -42,7 +46,25 @@ const (
 	PurposeKubeadmWorker Purpose = "kubeadm-worker"
 	PurposeK0sWorker     Purpose = "k0s-worker"
 	PurposeK0sController Purpose = "k0s-controller"
+	// PurposeKubeadmCertKey is the key `kubeadm init --upload-certs`
+	// encrypts the control-plane certificates with; it is a 32-byte hex
+	// string rather than a bootstrap token.
+	PurposeKubeadmCertKey Purpose = "kubeadm-cert-key"
 )
+
+func (p Purpose) pattern() *regexp.Regexp {
+	if p == PurposeKubeadmCertKey {
+		return CertKeyPattern
+	}
+	return Pattern
+}
+
+func (p Purpose) generate() (string, error) {
+	if p == PurposeKubeadmCertKey {
+		return NewCertKey()
+	}
+	return New()
+}
 
 // New returns a fresh bootstrap token from crypto/rand.
 func New() (string, error) {
@@ -55,6 +77,15 @@ func New() (string, error) {
 		return "", err
 	}
 	return id + "." + secret, nil
+}
+
+// NewCertKey returns a fresh kubeadm certificateKey: 32 random bytes, hex.
+func NewCertKey() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
+		return "", fmt.Errorf("generating certificate key: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // Split returns the id and secret halves of a bootstrap token.
@@ -122,7 +153,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	for purpose, e := range s.entries {
-		if !Pattern.MatchString(e.Token) {
+		if !purpose.pattern().MatchString(e.Token) {
 			return nil, fmt.Errorf("%s: token for %s is malformed", path, purpose)
 		}
 	}
@@ -141,7 +172,7 @@ func (s *Store) Current(purpose Purpose) (Entry, error) {
 	if e, ok := s.entries[purpose]; ok && e.Expires.Sub(now) > RenewBefore {
 		return e, nil
 	}
-	tok, err := New()
+	tok, err := purpose.generate()
 	if err != nil {
 		return Entry{}, err
 	}

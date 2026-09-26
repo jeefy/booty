@@ -102,6 +102,44 @@ func TestStorePersistsAndRenews(t *testing.T) {
 	}
 }
 
+func TestCertKeyPurpose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.Current(PurposeKubeadmCertKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !CertKeyPattern.MatchString(key.Token) || Pattern.MatchString(key.Token) {
+		t.Fatalf("certificate key %q must be 64 hex chars", key.Token)
+	}
+	if again, _ := s.Current(PurposeKubeadmCertKey); again.Token != key.Token {
+		t.Fatal("certificate key must be stable")
+	}
+	tok, _ := s.Current(PurposeKubeadmWorker)
+	if !Pattern.MatchString(tok.Token) {
+		t.Fatalf("bootstrap token purposes keep the kubeadm format, got %q", tok.Token)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reopened.Peek(PurposeKubeadmCertKey); !ok || got.Token != key.Token {
+		t.Fatalf("reopened store must accept the persisted certificate key: %+v %v", got, ok)
+	}
+	if err := os.WriteFile(path, []byte(`{"kubeadm-cert-key":{"token":"abcdef.0123456789abcdef","expires":"2026-01-01T00:00:00Z"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("a bootstrap token under the cert-key purpose is malformed, got %v", err)
+	}
+	if k, err := NewCertKey(); err != nil || len(k) != 64 {
+		t.Fatalf("NewCertKey = %q %v", k, err)
+	}
+}
+
 func TestEncodeK0sRoundTrip(t *testing.T) {
 	ca := []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
 	tok := "abcdef.0123456789abcdef"
