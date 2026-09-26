@@ -335,6 +335,72 @@ the same device (startup error). Bluefin installs to disk and is exempt
   (`K0S_PULL=1` pulls). The plan's `v1.36.4-k0s.1` image tag is not what
   Bluefin runs; `v1.36.4-k0s.0` is.
 
+### H5 addendum (user, 2026-09-26): k0s worker join-token minting
+
+**Problem.** H3 left k0s workers with the persisted 7-day pre-shared token
+only: the Secret making it valid is applied by the controller from
+`manifests/booty/tokens.yaml`, Booty renewed the token in `tokens.json` but
+nothing renewed the Secret, so a PXE worker re-joining after the rotation
+carried a dead credential until the controller rebooted.
+
+**Design (option A, decided by the user).** A k0s join token is a kubeconfig
+wrapping a Kubernetes bootstrap-token Secret, the same object
+`kubeadm.Minter` already creates, so the minter is generalised instead of a
+second one being written:
+
+- `kubeadm.Spec{Usages, ExtraGroups}` shapes the Secret. `KubeadmSpec`
+  keeps today's fields byte-for-byte (`authentication`+`signing`,
+  `auth-extra-groups: system:bootstrappers:kubeadm:default-node-token`);
+  `K0sWorkerSpec` is `authentication` only with no extra groups, which is
+  what `k0s token pre-shared --role worker` writes (k0s v1.36.4
+  `pkg/token/manager.go` lines 71-88, checked with `gh api`). k0s binds the
+  implicit `system:bootstrappers` group to `system:node-bootstrapper` and
+  the CSR auto-approvers in `pkg/component/controller/systemrbac.yaml`, and
+  `k0s token list` classifies tokens by usage, never by description, so the
+  minted Secrets keep Booty's `booty: <hostname> <mac>` description and the
+  existing expired-`booty:` sweep covers them for free.
+- `Minter.Mint(ctx, mac, hostname, spec) (Token, error)` creates the
+  Secret; `Minter.Rendered(ctx, mac, hostname, spec, render)` wraps it in
+  the per-MAC `ttl/2` cache that `JoinString` uses (JoinString is now that
+  path with `KubeadmSpec`). `Minter.CACert()` exposes the CA the minter
+  trusts (kubeconfig `certificate-authority(-data)`, Booty's CA under
+  `FromCA`, the SA `ca.crt` in-cluster) so external k0s tokens can embed it.
+- `cluster.Manager.Minter` (set by `cmd/main` under k0s only) and
+  `Manager.K0sWorkerToken(ctx, hosts, host, mint)`: mint through the API
+  and `token.EncodeK0s(worker, endpoint, ca, tok)`; endpoint/CA are Booty's
+  under `managed`, `--controlPlaneEndpoint`-or-the-kubeconfig's-server and
+  the kubeconfig's CA under `external`. Any failure falls back to the
+  pre-shared token (managed) or `--k0sTokenFile` (external) at debug level,
+  like `WorkerJoinString`; `mint=false` (previews) consults the cache only.
+  `K0sNodeFiles` gained `ctx` and `mint` and is the only place both render
+  paths go through, so Ignition (`/etc/k0s/token`) and the Bluefin bundle
+  cannot diverge.
+- `cmd/main.newJoinMinter` builds the k0s minter without any flag:
+  `--kubeconfig` (external, must carry a CA; startup error otherwise) or
+  `FromCA(pki, endpoint)` (managed; nil with a startup warning while the
+  endpoint is unresolved, pre-shared tokens then). The cleanup job runs
+  whenever a minter exists. `system:masters` on the admin certificate is
+  cluster-admin on k0s through the API server's bootstrap RBAC; k0s serves
+  the API on `<endpoint>:6443`, which `FromCA` defaults to.
+- Controller tokens stay out of scope (no HA); `tokens.yaml` keeps both
+  pre-shared Secrets as the bootstrap fallback.
+
+**Preview and Bluefin determinism.** Previews (`preview=1`, including the
+`/ignition/builtin.json` child, which used to mint kubeadm tokens even with
+`preview=1`) never mint. The Bluefin install stanza embeds
+`inst.creds_sha256` of the bundle at `/booty.ipxe` render time and the
+installer downloads `/creds/<mac>.tar` seconds later; both are real boot
+steps and both mint, so the second call is served from the per-MAC cache
+and the bytes match as long as both happen within `ttl/2` (30 minutes by
+default). A tar rendered after the window carries a new token and fails the
+installer's digest check, which re-PXEs and renders both afresh; documented
+on `hostCredentials`. Tested: `TestK0sBluefinBundleIsDeterministicWithMintedToken`
+(script sha == tar sha, exactly one POST).
+
+**Not changed.** kubeadm minting, the Secret shape it writes, the legacy
+golden fixtures and the two-credential Bluefin contract; the homelab
+(`external`, kubeadm) is unaffected.
+
 ## Evidence: H2 QEMU run (Sisyphus, 2026-09-25/26, bridged lab `br-booty` 10.77.0.0/24)
 
 Booty `feat/cluster-h2` on the host, `--controlPlane=managed --controlPlaneEndpoint=10.77.0.30 --containerdDisk=/dev/vda --controlPlaneDisk=/dev/vdb --cni=cilium --profile=kubeadm-worker --kubeadmJoin=auto --flatcarVersion=4757.2.0`. Three OVMF/KVM VMs powered on together: `cp1` (Flatcar, `role: control-plane`, 4 GiB, two 20 GiB disks), `w-flatcar` (Flatcar, 3 GiB, one disk), `w-fcos` (Fedora CoreOS 44, 3.5 GiB, one disk). Flatcar and FCOS PXE-boot from RAM; dnsmasq reserved 10.77.0.30 for the CP MAC.
