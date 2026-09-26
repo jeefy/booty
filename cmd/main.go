@@ -93,6 +93,7 @@ func init() {
 	flags.String(config.ServiceCIDR, config.DefaultServiceCIDR, "Service network CIDR of the cluster")
 	flags.String(config.K0sTokenFile, "", "File holding a pre-made k0s worker join token for an external k0s control plane")
 	flags.String(config.Kubeconfig, "", "Kubeconfig for minting --kubeadmJoin=auto tokens against an external kubeadm control plane from outside the cluster")
+	flags.String(config.ControlPlaneDisk, "", "Block device the managed kubeadm control plane formats once (ext4, label booty-cp, never wiped) and keeps /etc/kubernetes, /var/lib/etcd and /var/lib/kubelet on, e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS and must differ from --containerdDisk")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
@@ -155,7 +156,15 @@ func run(cmd *cobra.Command, argv []string) error {
 		return err
 	}
 	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin), "profile", viper.GetString(config.Profile), "kubeadmJoin", viper.GetString(config.KubeadmJoin))
-	slog.Info("Cluster settings", "distribution", clusterSettings.Distribution, "controlPlane", clusterSettings.ControlPlane, "endpoint", clusterSettings.Endpoint, "cni", clusterSettings.CNI)
+	slog.Info("Cluster settings", "distribution", clusterSettings.Distribution, "controlPlane", clusterSettings.ControlPlane, "endpoint", clusterSettings.Endpoint, "cni", clusterSettings.CNI, "controlPlaneDisk", clusterSettings.ControlPlaneDisk)
+	if clusterSettings.ManagedKubeadm() {
+		if clusterSettings.Profile == "" {
+			slog.Info("Managed kubeadm control plane implies the kubeadm-worker profile for worker hosts")
+		}
+		if clusterSettings.ControlPlaneDisk == "" {
+			slog.Warn("--controlPlaneDisk is not set; Flatcar/CoreOS control-plane hosts will be refused at render time (HTTP 400)")
+		}
+	}
 	if !builtin.Enabled() {
 		slog.Info("Builtin Ignition fragment disabled; serving user configs as-is")
 	}
