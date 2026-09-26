@@ -64,7 +64,7 @@ func TestKubeadmWorkerProfileStatic(t *testing.T) {
 	}
 	joined := strings.Join(names, ",")
 	for _, want := range []string{"booty-booted.service", "var-lib-containerd.mount", "containerd.service",
-		"booty-cni-install.service", "booty-kube-tools.service", "booty-kubelet-setup.service", "booty-k8s-join.service"} {
+		"booty-cni-install.service", "booty-kube-tools.service", "booty-containerd-setup.service", "booty-kubelet-setup.service", "booty-k8s-join.service"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("merged units missing %s: %s", want, joined)
 		}

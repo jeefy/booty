@@ -95,7 +95,7 @@ func TestControlPlaneFragment(t *testing.T) {
 			want := []string{
 				ContainerdMountUnit, "containerd.service",
 				ControlPlaneMountUnit, UnitSeed, "etc-kubernetes.mount", "var-lib-etcd.mount", "var-lib-kubelet.mount", "kubelet.service",
-				UnitCNIInstall, UnitKubeTools, UnitKubeletSetup, UnitInit, UnitClusterReady, cni.UnitName,
+				UnitCNIInstall, UnitKubeTools, UnitContainerd, UnitKubeletSetup, UnitInit, UnitClusterReady, cni.UnitName,
 			}
 			if strings.Join(names, ",") != strings.Join(want, ",") {
 				t.Fatalf("units\n got %v\nwant %v", names, want)
@@ -200,8 +200,14 @@ func TestControlPlaneFragment(t *testing.T) {
 			if sh := decodeAnyFile(t, cfg, cni.ScriptPath); !strings.Contains(sh, "cilium install") {
 				t.Errorf("cni script:\n%s", sh)
 			}
-			if tools := decodeAnyFile(t, cfg, KubeToolsScript); !strings.Contains(tools, `RELEASE="v1.34.3"`) {
-				t.Error("tool chain must be shared with the worker")
+			if tools := decodeAnyFile(t, cfg, KubeToolsScript); !strings.Contains(tools, `RELEASE="v1.34.3"`) || strings.Contains(tools, "dnf") {
+				t.Error("tool chain must be shared with the worker and static on every OS")
+			}
+			if c := *units[UnitContainerd].Contents; !strings.Contains(c, "Requires="+UnitKubeTools) || !strings.Contains(c, "ExecStart="+ContainerdScript) {
+				t.Errorf("containerd setup unit:\n%s", c)
+			}
+			if !strings.Contains(*units[UnitKubeletSetup].Contents, "Requires="+UnitContainerd) {
+				t.Error("the kubelet must not start before containerd is up")
 			}
 		})
 	}
