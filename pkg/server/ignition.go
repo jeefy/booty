@@ -162,7 +162,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	}
 	os := tftp.OSForHost(host)
 	if os == "bluefin" {
-		vars.Bluefin = bluefinVars(mac, host)
+		vars.Bluefin = bluefinVars(r.Context(), mac, host)
 		if vars.Bluefin.Vmlinuz != "" {
 			recordInstallServed(mac, host, now)
 		}
@@ -336,9 +336,9 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	case partUser:
 		writeRawJSON(w, user)
 	case partBuiltin:
-		writeJSON(w, http.StatusOK, builtinFragment(host, features, joinString))
+		writeJSON(w, http.StatusOK, builtinFragment(r.Context(), host, features, joinString, !preview))
 	case partMerged:
-		builtin, err := json.Marshal(builtinFragment(host, features, joinString))
+		builtin, err := json.Marshal(builtinFragment(r.Context(), host, features, joinString, !preview))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to encode builtin fragment")
 			return
@@ -381,18 +381,20 @@ func handleIgnitionBuiltinRequest(w http.ResponseWriter, r *http.Request) {
 	if !ok || !renderCheck(w, host) {
 		return
 	}
-	writeJSON(w, http.StatusOK, builtinFragment(host, builtinFeatures(), resolveJoinString(r.Context(), w, mac, host, true)))
+	mint := !isPreview(r)
+	writeJSON(w, http.StatusOK, builtinFragment(r.Context(), host, builtinFeatures(), resolveJoinString(r.Context(), w, mac, host, mint), mint))
 }
 
 // builtinFragment is the /ignition/builtin.json child: Booty's builtin
-// pieces followed by the selected --profile.
-func builtinFragment(host *hardware.Host, features ign.Features, joinString string) ignTypes.Config {
+// pieces followed by the selected --profile. mint is false for previews,
+// which must not create k0s join tokens.
+func builtinFragment(ctx context.Context, host *hardware.Host, features ign.Features, joinString string, mint bool) ignTypes.Config {
 	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
 	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, features)
-	return appendProfile(cfg, host, joinString)
+	return appendProfile(ctx, cfg, host, joinString, mint)
 }
 
 type mergeSource struct {

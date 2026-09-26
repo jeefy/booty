@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,14 +34,22 @@ func credsURL(mac string) string {
 // --k0sTokenFile) is logged and the bundle served without the k0s pieces:
 // a 4xx here would abort the Bluefin install itself, and GET /cluster
 // carries the warning.
-func hostCredentials(host *hardware.Host) ([]byte, error) {
+//
+// It is called twice per install: from /booty.ipxe, which embeds the
+// bundle's sha256 as inst.creds_sha256, and from /creds/<mac>.tar seconds
+// later when the installer downloads it. Both mint, so a k0s worker's join
+// token comes from the Minter's per-MAC cache (ttl/2, 30 minutes by
+// default) on the second call and the bytes match; a bundle rendered
+// after the cache window would carry a new token and fail the installer's
+// digest check, which re-PXEs and renders both afresh.
+func hostCredentials(ctx context.Context, host *hardware.Host) ([]byte, error) {
 	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
 	in := creds.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}
 	if m := clusterManager; m != nil && m.Settings.Distribution == cluster.K0s {
-		node, err := m.K0sNodeFiles(hardware.Snapshot().Hosts, host, config.ServerHostPort())
+		node, err := m.K0sNodeFiles(ctx, hardware.Snapshot().Hosts, host, config.ServerHostPort(), true)
 		if err != nil {
 			slog.Error("k0s node unavailable; serving the credentials bundle without it", "mac", host.MAC, "role", cluster.RoleOf(host), "error", err)
 		}
@@ -78,7 +87,7 @@ func handleCredsRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "host not registered")
 		return
 	}
-	bundle, err := hostCredentials(host)
+	bundle, err := hostCredentials(r.Context(), host)
 	if err != nil {
 		slog.Error("Rendering credentials bundle failed", "mac", mac, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to render credentials")
@@ -103,7 +112,7 @@ func handleCredsRequest(w http.ResponseWriter, r *http.Request) {
 // bluefinVars fills the bluefin.ipxe placeholders from the served release's
 // manifest and the host. Without a cached release it is empty, which makes
 // tftp serve the pending menu.
-func bluefinVars(mac string, host *hardware.Host) tftp.BluefinVars {
+func bluefinVars(ctx context.Context, mac string, host *hardware.Host) tftp.BluefinVars {
 	m, ok := versions.CurrentBluefinManifest()
 	if !ok {
 		return tftp.BluefinVars{}
@@ -116,7 +125,7 @@ func bluefinVars(mac string, host *hardware.Host) tftp.BluefinVars {
 		DDISha256:   m.DDISha256,
 		InstallDisk: host.InstallDisk,
 	}
-	bundle, err := hostCredentials(host)
+	bundle, err := hostCredentials(ctx, host)
 	if err != nil {
 		slog.Error("Rendering credentials bundle failed; serving install without inst.creds_*", "mac", mac, "error", err)
 		return v
