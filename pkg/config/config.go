@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,7 +67,81 @@ const (
 	BluefinVersion      = "bluefinVersion"
 	GithubToken         = "githubToken"
 	InstallMinDuration  = "installMinDuration"
+	ClusterDistribution = "clusterDistribution"
+	ControlPlane        = "controlPlane"
+	ControlPlaneEndpt   = "controlPlaneEndpoint"
+	ClusterCADir        = "clusterCADir"
+	CNI                 = "cni"
+	CNIRelease          = "cniRelease"
+	PodCIDR             = "podCIDR"
+	ServiceCIDR         = "serviceCIDR"
+	K0sTokenFile        = "k0sTokenFile"
+	Kubeconfig          = "kubeconfig"
 )
+
+// Cluster bootstrap defaults and the directory (relative to DataDir) that
+// holds the cluster CA, service-account keys and persisted bootstrap
+// tokens. Everything under it is cluster-admin material and is never
+// served over /data/.
+const (
+	ClusterDir                 = "cluster"
+	ClusterPKIDir              = "pki"
+	ClusterTokensFile          = "tokens.json"
+	DefaultClusterDistribution = "kubeadm"
+	DefaultControlPlane        = "external"
+	DefaultCNI                 = "cilium"
+	DefaultPodCIDR             = "10.244.0.0/16"
+	DefaultServiceCIDR         = "10.96.0.0/12"
+)
+
+// ClusterPath joins elem onto DataDir/cluster.
+func ClusterPath(elem ...string) string {
+	return DataPath(append([]string{ClusterDir}, elem...)...)
+}
+
+// ParseHostPort validates a host[:port] endpoint: host is an IP or a DNS
+// name, port (when given) is 1-65535. It returns the host and the port, 0
+// when absent.
+func ParseHostPort(endpoint string) (host string, port int, err error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", 0, fmt.Errorf("endpoint is empty")
+	}
+	if strings.Contains(endpoint, "://") || strings.Contains(endpoint, "/") {
+		return "", 0, fmt.Errorf("endpoint %q must be host[:port], not a URL", endpoint)
+	}
+	host = endpoint
+	if h, p, splitErr := net.SplitHostPort(endpoint); splitErr == nil {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return "", 0, fmt.Errorf("endpoint %q has an invalid port", endpoint)
+		}
+		host, port = h, n
+	} else if strings.Count(endpoint, ":") > 0 && net.ParseIP(endpoint) == nil {
+		return "", 0, fmt.Errorf("endpoint %q must be host[:port]", endpoint)
+	}
+	if host == "" {
+		return "", 0, fmt.Errorf("endpoint %q has no host", endpoint)
+	}
+	if net.ParseIP(host) == nil && !hostnameRe.MatchString(host) {
+		return "", 0, fmt.Errorf("endpoint %q is neither an IP nor a hostname", endpoint)
+	}
+	return host, port, nil
+}
+
+var hostnameRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.?$`)
+
+// WithDefaultPort appends :port to a host[:port] endpoint that has none.
+func WithDefaultPort(endpoint string, port int) string {
+	host, p, err := ParseHostPort(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	if p == 0 {
+		p = port
+	}
+	return net.JoinHostPort(host, strconv.Itoa(p))
+}
 
 // Bluefin Server defaults: the GitHub repository whose installer-v* releases
 // carry the PXE kernel, initrd and DDI, and how long after serving the
@@ -223,6 +299,16 @@ func LoadConfig() {
 	viper.SetDefault(BluefinVersion, "")
 	viper.SetDefault(GithubToken, "")
 	viper.SetDefault(InstallMinDuration, DefaultInstallMinDuration)
+	viper.SetDefault(ClusterDistribution, DefaultClusterDistribution)
+	viper.SetDefault(ControlPlane, DefaultControlPlane)
+	viper.SetDefault(ControlPlaneEndpt, "")
+	viper.SetDefault(ClusterCADir, "")
+	viper.SetDefault(CNI, DefaultCNI)
+	viper.SetDefault(CNIRelease, "")
+	viper.SetDefault(PodCIDR, DefaultPodCIDR)
+	viper.SetDefault(ServiceCIDR, DefaultServiceCIDR)
+	viper.SetDefault(K0sTokenFile, "")
+	viper.SetDefault(Kubeconfig, "")
 }
 
 func bindEnv(key, env string) {
