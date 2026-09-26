@@ -6,7 +6,7 @@ import (
 )
 
 func TestRenderNoneIsNil(t *testing.T) {
-	got, err := Render(None, "", "10.244.0.0/16", "booty-k8s-init.service")
+	got, err := Render(None, "", "10.244.0.0/16", Kubeadm("booty-k8s-init.service"))
 	if err != nil || got != nil {
 		t.Fatalf("none must render nothing: %+v %v", got, err)
 	}
@@ -19,7 +19,7 @@ func TestRenderErrors(t *testing.T) {
 		{Cilium, `v1.0; rm -rf /`, "10.244.0.0/16"},
 		{Flannel, "$(id)", "10.244.0.0/16"},
 	} {
-		if _, err := Render(tc.name, tc.release, tc.cidr, "x.service"); err == nil {
+		if _, err := Render(tc.name, tc.release, tc.cidr, Kubeadm("x.service")); err == nil {
 			t.Errorf("Render(%q,%q,%q) must fail", tc.name, tc.release, tc.cidr)
 		}
 	}
@@ -41,9 +41,50 @@ func TestPins(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsBadTarget(t *testing.T) {
+	for _, tc := range []Target{
+		{},
+		{After: "x.service", Kubeconfig: "/a", Marker: ""},
+		{After: "x.service", Kubeconfig: "/a b", Marker: "/m"},
+		{After: "x.service", Kubeconfig: "/a", Marker: "/m", Kubectl: "k0s kubectl; rm -rf /"},
+	} {
+		if _, err := Render(Cilium, "", "10.244.0.0/16", tc); err == nil {
+			t.Errorf("Render with target %+v must fail", tc)
+		}
+	}
+}
+
+func TestK0sTargetShape(t *testing.T) {
+	target := Target{After: "k0scontroller.service", Weak: true, Kubectl: "/opt/bin/k0s kubectl", Kubeconfig: "/var/lib/k0s/pki/admin.conf", Marker: "/var/lib/booty-cp/cni-applied"}
+	in, err := Render(Flannel, "", "10.244.0.0/16", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Wants=k0scontroller.service\n", "After=k0scontroller.service\n", "Environment=KUBECONFIG=/var/lib/k0s/pki/admin.conf", "ConditionPathExists=!/var/lib/booty-cp/cni-applied"} {
+		if !strings.Contains(in.Unit, want) {
+			t.Errorf("k0s unit missing %q:\n%s", want, in.Unit)
+		}
+	}
+	if strings.Contains(in.Unit, "Requires=") {
+		t.Errorf("weak target must not Requires= the controller:\n%s", in.Unit)
+	}
+	for _, want := range []string{`kubectl() { /opt/bin/k0s kubectl "$@"; }`, "KUBECONFIG=/var/lib/k0s/pki/admin.conf", "touch /var/lib/booty-cp/cni-applied", "wait_for 300 kubectl get --raw /readyz"} {
+		if !strings.Contains(in.Script, want) {
+			t.Errorf("k0s script missing %q:\n%s", want, in.Script)
+		}
+	}
+	if strings.Contains(in.Script, "/etc/kubernetes") {
+		t.Errorf("k0s script must not reference kubeadm paths:\n%s", in.Script)
+	}
+	kubeadm, err := Render(Flannel, "", "10.244.0.0/16", Kubeadm("booty-k8s-init.service"))
+	if err != nil || strings.Contains(kubeadm.Script, "kubectl() {") || !strings.Contains(kubeadm.Unit, "Requires=booty-k8s-init.service") {
+		t.Fatalf("kubeadm target keeps kubectl from PATH and Requires= init: %v\n%s", err, kubeadm.Script)
+	}
+}
+
 func TestUnitShape(t *testing.T) {
 	for _, name := range []string{Cilium, Calico, Flannel} {
-		in, err := Render(name, "", "10.244.0.0/16", "booty-k8s-init.service")
+		in, err := Render(name, "", "10.244.0.0/16", Kubeadm("booty-k8s-init.service"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +110,7 @@ func TestUnitShape(t *testing.T) {
 }
 
 func TestCiliumScript(t *testing.T) {
-	in, err := Render(Cilium, "", "10.244.0.0/16", "x.service")
+	in, err := Render(Cilium, "", "10.244.0.0/16", Kubeadm("x.service"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,14 +123,14 @@ func TestCiliumScript(t *testing.T) {
 			t.Errorf("cilium script missing %q", want)
 		}
 	}
-	custom, err := Render(Cilium, "v1.19.0", "10.244.0.0/16", "x.service")
+	custom, err := Render(Cilium, "v1.19.0", "10.244.0.0/16", Kubeadm("x.service"))
 	if err != nil || !strings.Contains(custom.Script, `CILIUM_VERSION="v1.19.0"`) || !strings.Contains(custom.Script, `CLI_VERSION="`+CiliumCLIRelease+`"`) {
 		t.Fatalf("--cniRelease must override cilium but keep the cli pin: %v\n%s", err, custom.Script)
 	}
 }
 
 func TestCalicoScript(t *testing.T) {
-	in, err := Render(Calico, "", "10.100.0.0/16", "x.service")
+	in, err := Render(Calico, "", "10.100.0.0/16", Kubeadm("x.service"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +146,7 @@ func TestCalicoScript(t *testing.T) {
 }
 
 func TestFlannelScript(t *testing.T) {
-	in, err := Render(Flannel, "", "10.244.0.0/16", "x.service")
+	in, err := Render(Flannel, "", "10.244.0.0/16", Kubeadm("x.service"))
 	if err != nil {
 		t.Fatal(err)
 	}

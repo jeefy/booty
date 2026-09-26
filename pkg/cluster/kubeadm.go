@@ -93,7 +93,7 @@ func (m *Manager) ControlPlaneOptions(hosts map[string]*hardware.Host, host *har
 	if err != nil {
 		return nil, err
 	}
-	install, err := cni.Render(string(m.Settings.CNI), m.Settings.CNIRelease, m.Settings.PodCIDR, profile.UnitInit)
+	install, err := cni.Render(string(m.Settings.CNI), m.Settings.CNIRelease, m.Settings.PodCIDR, cni.Kubeadm(profile.UnitInit))
 	if err != nil {
 		return nil, err
 	}

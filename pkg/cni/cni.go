@@ -1,8 +1,9 @@
 // Package cni renders the oneshot that installs the cluster network plugin
-// from the first kubeadm control plane: a pinned release per plugin, the
-// script that applies it with the node's admin kubeconfig, and the systemd
-// unit that retries until it succeeds and then leaves a marker so later
-// boots skip it.
+// from the first control plane: a pinned release per plugin, the script
+// that applies it with the node's admin kubeconfig, and the systemd unit
+// that retries until it succeeds and then leaves a marker so later boots
+// skip it. The Target says which control plane it runs on (kubeadm's
+// kubectl and admin.conf, or `k0s kubectl` with k0s's admin.conf).
 package cni
 
 import (
@@ -48,6 +49,29 @@ const (
 	Kubeconfig = "/etc/kubernetes/admin.conf"
 )
 
+// Target is the control plane the install runs against.
+type Target struct {
+	// After is the unit that brings the API server up; the install is
+	// ordered after it and Requires= it, or only Wants= it when Weak is set
+	// (a long-running service with Restart=always must not take the oneshot
+	// down with it).
+	After string
+	Weak  bool
+	// Kubectl replaces the kubectl found on PATH, e.g. "/opt/bin/k0s
+	// kubectl"; empty keeps kubectl.
+	Kubectl string
+	// Kubeconfig is the admin kubeconfig the scripts use.
+	Kubeconfig string
+	// Marker is touched on success; it must live on persistent storage.
+	Marker string
+}
+
+// Kubeadm is the target of the managed kubeadm control plane: kubectl from
+// /opt/bin, kubeadm's admin.conf and the marker on the control-plane disk.
+func Kubeadm(after string) Target {
+	return Target{After: after, Kubeconfig: Kubeconfig, Marker: MarkerPath}
+}
+
 // Install is the rendered unit and script for one plugin.
 type Install struct {
 	Name    string
@@ -70,9 +94,9 @@ func Pin(name string) string {
 }
 
 // Render returns the unit and script installing name at release (the pin
-// when empty) for a cluster whose pods live in podCIDR. after is the unit
-// the install waits for (kubeadm init). It returns nil for None.
-func Render(name, release, podCIDR, after string) (*Install, error) {
+// when empty) for a cluster whose pods live in podCIDR, run against t. It
+// returns nil for None.
+func Render(name, release, podCIDR string, t Target) (*Install, error) {
 	if name == None {
 		return nil, nil
 	}
@@ -88,6 +112,12 @@ func Render(name, release, podCIDR, after string) (*Install, error) {
 	if strings.ContainsAny(release, " \t\r\n\"'`$\\") {
 		return nil, fmt.Errorf("CNI release %q contains shell metacharacters", release)
 	}
+	if t.After == "" || t.Kubeconfig == "" || t.Marker == "" {
+		return nil, fmt.Errorf("CNI target needs After, Kubeconfig and Marker: %+v", t)
+	}
+	if strings.ContainsAny(t.Kubeconfig+t.Marker, " \t\r\n\"'`$\\") || strings.ContainsAny(t.Kubectl, "\t\r\n\"'`$\\;|&") {
+		return nil, fmt.Errorf("CNI target contains shell metacharacters: %+v", t)
+	}
 	var body string
 	switch name {
 	case Cilium:
@@ -102,24 +132,28 @@ func Render(name, release, podCIDR, after string) (*Install, error) {
 	return &Install{
 		Name:    name,
 		Release: release,
-		Unit:    unit(name, release, after),
-		Script:  scriptHeader + body + scriptFooter,
+		Unit:    unit(name, release, t),
+		Script:  scriptHeader(t) + body + scriptFooter(t),
 	}, nil
 }
 
-func unit(name, release, after string) string {
+func unit(name, release string, t Target) string {
+	dep := "Requires="
+	if t.Weak {
+		dep = "Wants="
+	}
 	return `[Unit]
 Description=Install the ` + name + ` ` + release + ` network plugin from this control plane
-Requires=` + after + `
-After=` + after + `
-ConditionPathExists=!` + MarkerPath + `
+` + dep + t.After + `
+After=` + t.After + `
+ConditionPathExists=!` + t.Marker + `
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=30s
-Environment=KUBECONFIG=` + Kubeconfig + `
+Environment=KUBECONFIG=` + t.Kubeconfig + `
 Environment=HOME=/root
 Environment=XDG_CACHE_HOME=/var/cache/booty-cni
 ExecStart=` + ScriptPath + `
@@ -129,10 +163,18 @@ WantedBy=multi-user.target
 `
 }
 
-const scriptHeader = `#!/bin/bash
+// scriptHeader sets up PATH and KUBECONFIG and, for a Target whose kubectl
+// is not the one on PATH, a shell function of that name so the plugin
+// scripts below stay identical across control planes.
+func scriptHeader(t Target) string {
+	kubectl := ""
+	if t.Kubectl != "" {
+		kubectl = "kubectl() { " + t.Kubectl + ` "$@"; }` + "\n"
+	}
+	return `#!/bin/bash
 set -euo pipefail
-export PATH=/opt/bin:$PATH KUBECONFIG=` + Kubeconfig + `
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+export PATH=/opt/bin:$PATH KUBECONFIG=` + t.Kubeconfig + `
+` + kubectl + `TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 wait_for() { # wait_for <seconds> <command...>: retry until it succeeds
   local deadline=$(( $(date +%s) + $1 )); shift
   until "$@"; do
@@ -142,10 +184,13 @@ wait_for() { # wait_for <seconds> <command...>: retry until it succeeds
 }
 wait_for 300 kubectl get --raw /readyz >/dev/null 2>&1
 `
+}
 
-const scriptFooter = `mkdir -p "$(dirname ` + MarkerPath + `)" && touch ` + MarkerPath + `
+func scriptFooter(t Target) string {
+	return `mkdir -p "$(dirname ` + t.Marker + `)" && touch ` + t.Marker + `
 echo "CNI applied"
 `
+}
 
 func ciliumScript(release string) string {
 	return `CLI_VERSION="` + CiliumCLIRelease + `"
