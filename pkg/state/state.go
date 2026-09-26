@@ -70,6 +70,8 @@ func Init() {
 	s.mu.Lock()
 	s.bluefinPin = bluefinPin
 	s.mu.Unlock()
+
+	LoadClusterReady()
 }
 
 // LoadLocalBluefinVersion reads the version recorded in
