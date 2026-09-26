@@ -21,7 +21,9 @@ var Keys = []string{
 	SSHAuthorizedKeys, SSHAuthorizedKeysFl, ProxyDHCP, ProxyDHCPListen,
 	ProxyDHCPRelay, ProxyDHCPPorts, Version, Timestamp, AutoRegister,
 	HostnameTemplate, BluefinRepo, BluefinVersion, GithubToken,
-	InstallMinDuration,
+	InstallMinDuration, ClusterDistribution, ControlPlane, ControlPlaneEndpt,
+	ClusterCADir, CNI, CNIRelease, PodCIDR, ServiceCIDR, K0sTokenFile,
+	Kubeconfig,
 }
 
 // Where a setting's effective value comes from, mirroring viper's

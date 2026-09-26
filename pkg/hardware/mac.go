@@ -27,9 +27,12 @@ type Host struct {
 	InstallDisk     string `json:"installDisk,omitempty"`
 	DoInstall       bool   `json:"doInstall,omitempty"`
 	InstallServedAt string `json:"installServedAt,omitempty"`
-	Running         string `json:"running"`
-	LastCheck       string `json:"lastCheck"`
-	RebootPending   bool   `json:"rebootPending"`
+	// Role is the host's place in the cluster: RoleControlPlane or
+	// RoleWorker; empty means worker.
+	Role          string `json:"role,omitempty"`
+	Running       string `json:"running"`
+	LastCheck     string `json:"lastCheck"`
+	RebootPending bool   `json:"rebootPending"`
 }
 
 type UnknownHost struct {
@@ -52,7 +55,28 @@ var (
 	ErrInvalidMAC     = errors.New("invalid MAC address")
 	ErrNoDatabase     = errors.New("hardware database not loaded")
 	ErrInvalidInstall = errors.New("invalid installDisk")
+	ErrInvalidRole    = errors.New("invalid role")
 )
+
+// Host roles in the cluster Booty provisions. An empty Role is a worker.
+const (
+	RoleControlPlane = "control-plane"
+	RoleWorker       = "worker"
+)
+
+// ValidateRole accepts an empty role, RoleControlPlane or RoleWorker.
+func ValidateRole(role string) error {
+	switch role {
+	case "", RoleControlPlane, RoleWorker:
+		return nil
+	}
+	return fmt.Errorf("%w %q: must be empty, %q or %q", ErrInvalidRole, role, RoleControlPlane, RoleWorker)
+}
+
+// IsControlPlane reports whether h is registered as a control-plane host.
+func (h *Host) IsControlPlane() bool {
+	return h != nil && h.Role == RoleControlPlane
+}
 
 // ValidOSNames are the operating systems a host can be registered with.
 var ValidOSNames = []string{"flatcar", "coreos", "bluefin"}

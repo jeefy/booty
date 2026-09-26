@@ -21,8 +21,14 @@ Flags:
       --bluefinRepo string             GitHub repository whose installer-v* releases provide the Bluefin Server PXE kernel, initrd and DDI (default "projectbluefin/server")
       --bluefinVersion string          Pin a specific Bluefin Server release (e.g. 26.08.0). When empty, tracks the newest installer-v* release
       --builtin string                 Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is (default "hostname,update,booted,sshkeys")
+      --clusterCADir string            Bring-your-own cluster CA directory for --controlPlane=managed (kubeadm: ca.crt/ca.key; k0s: also sa.key, sa.pub, etcd/ca.crt, etcd/ca.key), read-only; empty generates one under --dataDir/cluster/pki
+      --clusterDistribution string     Kubernetes distribution of the cluster Booty provisions: 'kubeadm' or 'k0s' (Bluefin hosts support k0s only) (default "kubeadm")
+      --cni string                     Network plugin installed from the first control plane: 'cilium', 'calico', 'flannel' or 'none' (default "cilium")
+      --cniRelease string              Overrides the pinned release of the selected --cni (--cniVersion keeps meaning containernetworking/plugins)
       --cniVersion string              containernetworking/plugins release installed by the kubeadm-worker profile (default "v1.1.1")
       --containerdDisk string          Block device the kubeadm-worker profile formats (ext4, wiped on every boot) and mounts at /var/lib/containerd, e.g. /dev/sda; empty keeps containerd on the root filesystem
+      --controlPlane string            Who runs the control plane: 'external' (join-only, today's behaviour) or 'managed' (Booty generates the cluster CA under --dataDir/cluster/ and renders the role: control-plane host) (default "external")
+      --controlPlaneEndpoint string    host[:port] every node uses for the API server (VIP or DNS name for HA); with --controlPlane=managed it defaults to the single role: control-plane host's IP
       --coreOSArchitecture string      Architecture to use for CoreOS downloads (default "x86_64")
       --coreOSChannel string           CoreOS channel to look for updates (default "stable")
       --crictlVersion string           cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)
@@ -40,17 +46,21 @@ Flags:
       --joinString string              The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
       --joinStringFile string          File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString
       --joinTokenTTL duration          Lifetime of bootstrap tokens minted with --kubeadmJoin=auto; expired ones are deleted on the --updateSchedule tick (default 1h0m0s)
+      --k0sTokenFile string            File holding a pre-made k0s worker join token for an external k0s control plane
       --k8sVersion string              Kubernetes release installed by the kubeadm-worker profile (default "v1.34.3")
-      --kubeadmJoin string             Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot; in-cluster only) (default "static")
+      --kubeadmJoin string             Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot: in-cluster, via --kubeconfig, or with Booty's own CA when --controlPlane=managed) (default "static")
+      --kubeconfig string              Kubeconfig for minting --kubeadmJoin=auto tokens against an external kubeadm control plane from outside the cluster
       --kubeletUnitsURL string         Base URL the kubeadm-worker profile fetches kubelet/kubelet.service and kubeadm/10-kubeadm.conf from (pin or mirror it) (default "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest")
       --ociGC                          Delete unreferenced OCI blobs from the local registry after a fully successful image sync (default true)
       --ociGCEmpty                     Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image
+      --podCIDR string                 Pod network CIDR of the cluster (default "10.244.0.0/16")
       --profile string                 Node profile appended to the builtin Ignition fragment for flatcar/coreos hosts: '' or 'kubeadm-worker' (CNI plugins, kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot)
       --proxyDHCP                      EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename
       --proxyDHCPListen string         IP or interface name the ProxyDHCP server binds to (default all interfaces)
       --proxyDHCPRelay                 Answer relayed PXE requests (giaddr set) on the ProxyDHCP server
       --serverHttpPort int             HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort
       --serverIP string                IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)
+      --serviceCIDR string             Service network CIDR of the cluster (default "10.96.0.0/12")
       --sshAuthorizedKeys strings      SSH public key added to the 'core' user by the sshkeys builtin (repeatable)
       --sshAuthorizedKeysFile string   File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin
       --tftpBlockSize int              TFTP block size to negotiate with clients (default 1468)
@@ -221,11 +231,19 @@ Flags: `--profile` (`""` or `kubeadm-worker`, validated at start-up), `--k8sVers
   2. creates the Secret `kube-system/bootstrap-token-<id>` (type `bootstrap.kubernetes.io/token`, 6-char id + 16-char secret from `crypto/rand`, `usage-bootstrap-authentication`/`-signing`, `auth-extra-groups: system:bootstrappers:kubeadm:default-node-token`, `expiration` = now + `--joinTokenTTL` (default `1h`), `description: "booty: <hostname> <mac>"`);
   3. renders `kubeadm join <endpoint> --token <id>.<secret> --discovery-token-ca-cert-hash sha256:<hex>` and caches it per MAC for `ttl/2`. The `builtin.json`/`user.json` children Ignition fetches seconds later reuse the cached value (and mint if the cache is cold, e.g. after a Booty restart); retries within a boot do not churn tokens; previews only ever show the cache.
 
-  Booty talks to the API server in-cluster only: `KUBERNETES_SERVICE_HOST`/`_PORT`, the service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token` (re-read per request, it rotates) and the CA from `.../ca.crt`; 10 s timeouts; no client-go, plain `net/http`. RBAC needed (see [examples/k8s.yaml](examples/k8s.yaml)): a Role in `kube-system` on `secrets` with `create`, `list`, `delete`, `get`, and a Role in `kube-public` on `configmaps` named `cluster-info` with `get`.
+  Booty talks to the API server in-cluster by default: `KUBERNETES_SERVICE_HOST`/`_PORT`, the service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token` (re-read per request, it rotates) and the CA from `.../ca.crt`; 10 s timeouts; no client-go, plain `net/http`. Outside the cluster, `--kubeconfig` points it at a kubeconfig (current context; token or client certificate), and with `--controlPlane=managed` it authenticates with an admin certificate from Booty's own CA (see [Cluster bootstrap](#cluster-bootstrap-in-progress)). RBAC needed (see [examples/k8s.yaml](examples/k8s.yaml)): a Role in `kube-system` on `secrets` with `create`, `list`, `delete`, `get`, and a Role in `kube-public` on `configmaps` named `cluster-info` with `get`.
 
   **Cleanup**: on every `--updateSchedule` tick Booty lists `kube-system` Secrets of type `bootstrap.kubernetes.io/token` and deletes the ones whose `description` starts with `booty:` and whose `expiration` has passed. Tokens it did not create are never touched.
 
   **Failure mode**: if minting fails (RBAC, API down, not running in a cluster) Booty logs an error, sets `X-Booty-Warning: kubeadm join token unavailable` on the `/ignition.json` response and still serves the config with an empty `JOIN_STRING`. The node boots but does not join; fix the cause and reboot it.
+
+## Cluster bootstrap (in progress)
+
+Booty is growing from "join workers to a cluster you already have" into provisioning a whole cluster from PXE: a Booty-managed or external control plane, `kubeadm` or `k0s`, on Flatcar, Fedora CoreOS and Bluefin Server, with the CNI installed from the first control plane. The design and the slices it ships in are in [docs/plans/2026-09-26-cluster-bootstrap.md](docs/plans/2026-09-26-cluster-bootstrap.md).
+
+What is in place today (slice H1, no rendering changes yet): every host carries a `role` (`control-plane` or `worker`, default worker; `POST /register`, `/hosts`, `/booty.json`); the flags under "Cluster" above (`--clusterDistribution`, `--controlPlane`, `--controlPlaneEndpoint`, `--clusterCADir`, `--cni`, `--cniRelease`, `--podCIDR`, `--serviceCIDR`, `--k0sTokenFile`, `--kubeconfig`) are validated at startup; `--controlPlane=managed` generates the cluster CA, service-account key pair and etcd CA (RSA 2048, 10 years) under `--dataDir/cluster/pki/` (0700, files 0600, never regenerated) or loads a bring-your-own `--clusterCADir` read-only; `GET /cluster` reports `{distribution, controlPlane, endpoint, cni, ready, caFingerprint, hosts:[{mac,hostname,os,role,booted}], warnings}` with no key material; `--kubeadmJoin=auto` can mint through `--kubeconfig` or with Booty's own CA instead of only in-cluster. The defaults (`kubeadm`, `external`) equal today's behaviour, and a host without a `role` renders byte-identical to before (guarded by a golden test). Rendering of control-plane hosts, k0s and the CNI follows in later slices.
+
+**Trust model.** With `--controlPlane=managed`, `--dataDir/cluster/` holds the cluster CA and its private key, which is cluster-admin: whoever can read that directory (or the node Booty renders it onto) owns the cluster. Booty never serves it over `/data/`, `/config` or `/cluster`, but keep the data directory as private as your kubeconfig, or use `--controlPlane=external` and keep the CA elsewhere.
 
 ## Fleet status
 
@@ -350,7 +368,7 @@ Booty is meant to run on a network you control. It has **no authentication**: an
 
 With `--kubeadmJoin=static` the join string is whatever you configured, typically a never-expiring token that grants node-join to anyone who reads it. Prefer `--kubeadmJoin=auto`: each real boot gets its own token that expires after `--joinTokenTTL` (1 h by default) and is deleted afterwards, so what leaks over the boot VLAN is worth at most one hour of node-join; previews never mint. Booty's own credential for that is its service account, scoped by the Roles in [examples/k8s.yaml](examples/k8s.yaml) to creating/listing/deleting Secrets in `kube-system` and reading `cluster-info`.
 
-What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files and the OCI blob store are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, hostnames, OS names, versions, `installDisk`) are validated. The Bluefin [credentials bundle](#credentials-bundle) at `/creds/<mac>.tar` carries the same SSH public keys and units as `/ignition/builtin.json`, readable by anyone on the boot VLAN (its null-key encryption is a systemd import requirement, not confidentiality), and nothing secret. `--autoRegister` widens this further; read [Auto-registration](#auto-registration) before turning it on.
+What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files, the OCI blob store and everything under `cluster/` (the cluster CA and bootstrap tokens, see [Cluster bootstrap](#cluster-bootstrap-in-progress)) are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, hostnames, OS names, roles, versions, `installDisk`) are validated. The Bluefin [credentials bundle](#credentials-bundle) at `/creds/<mac>.tar` carries the same SSH public keys and units as `/ignition/builtin.json`, readable by anyone on the boot VLAN (its null-key encryption is a systemd import requirement, not confidentiality), and nothing secret. `--autoRegister` widens this further; read [Auto-registration](#auto-registration) before turning it on.
 
 ## Running as root / capabilities
 

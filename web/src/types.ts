@@ -9,6 +9,14 @@ export function acceptsInstallDisk(os: HostOS | '' | undefined): boolean {
   return Boolean(os) && INSTALL_DISK_OS.includes(os as HostOS)
 }
 
+export const ROLE_OPTIONS = ['worker', 'control-plane'] as const
+export type HostRole = (typeof ROLE_OPTIONS)[number]
+
+/** Role for display: the server treats a missing/empty role as `worker`. */
+export function hostRole(role: HostRole | '' | undefined): HostRole {
+  return role === 'control-plane' ? 'control-plane' : 'worker'
+}
+
 export interface Host {
   mac: string
   hostname: string
@@ -24,6 +32,11 @@ export interface Host {
    */
   installDisk: string
   doInstall?: boolean
+  /**
+   * Cluster role; "" (or absent, on older servers) means `worker`. Sent to
+   * `/register` exactly as stored so payloads from older UIs stay identical.
+   */
+  role?: HostRole | ''
   /**
    * Version the host last reported, or `image@digest` for ostree hosts.
    * "" if the host has never checked in.
@@ -231,5 +244,65 @@ export function normalizeBootyData(raw: RawBootyData | null | undefined): BootyD
   return {
     hosts,
     unknownHosts: raw?.unknownHosts ?? {}
+  }
+}
+
+export const CLUSTER_DISTRIBUTIONS = ['kubeadm', 'k0s'] as const
+export type ClusterDistribution = (typeof CLUSTER_DISTRIBUTIONS)[number]
+
+export const CONTROL_PLANE_MODES = ['managed', 'external'] as const
+export type ControlPlaneMode = (typeof CONTROL_PLANE_MODES)[number]
+
+export const CLUSTER_CNIS = ['cilium', 'calico', 'flannel', 'none'] as const
+export type ClusterCNI = (typeof CLUSTER_CNIS)[number]
+
+export interface ClusterHost {
+  mac: string
+  hostname: string
+  os: HostOS | ''
+  role: HostRole
+  /** RFC3339 timestamp of the last Ignition fetch, or "" if never booted. */
+  booted: string
+}
+
+/** GET /cluster response. `caFingerprint` is the public-key hash, never key material. */
+export interface ClusterInfo {
+  distribution: ClusterDistribution
+  controlPlane: ControlPlaneMode
+  endpoint: string
+  cni: ClusterCNI
+  ready: boolean
+  caFingerprint: string
+  hosts: ClusterHost[]
+  warnings: string[]
+}
+
+export type RawClusterHost = Partial<Omit<ClusterHost, 'role'>> & { role?: HostRole | '' }
+
+export type RawClusterInfo = Partial<Omit<ClusterInfo, 'hosts' | 'warnings'>> & {
+  hosts?: RawClusterHost[]
+  warnings?: (string | null)[]
+}
+
+function oneOf<T extends string>(value: string | undefined, options: readonly T[], fallback: T): T {
+  return options.includes(value as T) ? (value as T) : fallback
+}
+
+export function normalizeClusterInfo(raw: RawClusterInfo | null | undefined): ClusterInfo {
+  return {
+    distribution: oneOf(raw?.distribution, CLUSTER_DISTRIBUTIONS, 'kubeadm'),
+    controlPlane: oneOf(raw?.controlPlane, CONTROL_PLANE_MODES, 'external'),
+    endpoint: raw?.endpoint ?? '',
+    cni: oneOf(raw?.cni, CLUSTER_CNIS, 'none'),
+    ready: raw?.ready ?? false,
+    caFingerprint: raw?.caFingerprint ?? '',
+    hosts: (raw?.hosts ?? []).map((h) => ({
+      mac: h.mac ?? '',
+      hostname: h.hostname ?? '',
+      os: h.os ?? '',
+      role: hostRole(h.role),
+      booted: h.booted ?? ''
+    })),
+    warnings: (raw?.warnings ?? []).filter((w): w is string => typeof w === 'string' && w !== '')
   }
 }

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   OS_OPTIONS,
+  ROLE_OPTIONS,
   acceptsInstallDisk,
+  hostRole,
   normalizeBootyData,
+  normalizeClusterInfo,
   normalizeEffectiveConfig,
   normalizeHost,
   normalizeTemplateDocument,
@@ -41,6 +44,29 @@ describe('normalizeHost', () => {
     expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01', installDisk: '/dev/sda' }).installDisk).toBe(
       '/dev/sda'
     )
+  })
+
+  it('passes role through as-is so /register payloads stay byte-for-byte compatible', () => {
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01' })).not.toHaveProperty('role')
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01', role: '' }).role).toBe('')
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01', role: 'control-plane' }).role).toBe(
+      'control-plane'
+    )
+  })
+})
+
+describe('hostRole', () => {
+  it('treats "", undefined and "worker" as worker and keeps control-plane', () => {
+    expect(hostRole(undefined)).toBe('worker')
+    expect(hostRole('')).toBe('worker')
+    expect(hostRole('worker')).toBe('worker')
+    expect(hostRole('control-plane')).toBe('control-plane')
+  })
+})
+
+describe('ROLE_OPTIONS', () => {
+  it('lists worker first so it is the select default', () => {
+    expect([...ROLE_OPTIONS]).toEqual(['worker', 'control-plane'])
   })
 })
 
@@ -149,5 +175,60 @@ describe('normalizeTemplateValidation', () => {
       { kind: 'warning', message: 'w' },
       { kind: 'error', message: 'e' }
     ])
+  })
+})
+
+describe('normalizeClusterInfo', () => {
+  it('returns kubeadm/external/none, not ready and empty lists for a null payload', () => {
+    expect(normalizeClusterInfo(null)).toEqual({
+      distribution: 'kubeadm',
+      controlPlane: 'external',
+      endpoint: '',
+      cni: 'none',
+      ready: false,
+      caFingerprint: '',
+      hosts: [],
+      warnings: []
+    })
+  })
+
+  it('keeps known values, falls back on unknown enums and normalises host roles', () => {
+    const info = normalizeClusterInfo({
+      distribution: 'k0s',
+      controlPlane: 'managed',
+      endpoint: 'https://10.0.0.1:6443',
+      cni: 'cilium',
+      ready: true,
+      caFingerprint: 'sha256:abc',
+      hosts: [
+        { mac: 'aa:bb:cc:dd:ee:01', hostname: 'cp', os: 'flatcar', role: 'control-plane' },
+        { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', role: '' },
+        { mac: 'aa:bb:cc:dd:ee:03' }
+      ],
+      warnings: ['CA key readable on the boot VLAN', '', null]
+    })
+    expect(info).toMatchObject({
+      distribution: 'k0s',
+      controlPlane: 'managed',
+      endpoint: 'https://10.0.0.1:6443',
+      cni: 'cilium',
+      ready: true,
+      caFingerprint: 'sha256:abc'
+    })
+    expect(info.hosts).toEqual([
+      { mac: 'aa:bb:cc:dd:ee:01', hostname: 'cp', os: 'flatcar', role: 'control-plane', booted: '' },
+      { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', os: '', role: 'worker', booted: '' },
+      { mac: 'aa:bb:cc:dd:ee:03', hostname: '', os: '', role: 'worker', booted: '' }
+    ])
+    expect(info.warnings).toEqual(['CA key readable on the boot VLAN'])
+
+    const unknown = normalizeClusterInfo({
+      distribution: 'rke2' as never,
+      controlPlane: 'hosted' as never,
+      cni: 'weave' as never
+    })
+    expect(unknown.distribution).toBe('kubeadm')
+    expect(unknown.controlPlane).toBe('external')
+    expect(unknown.cni).toBe('none')
   })
 })

@@ -13,6 +13,7 @@ const API_ROUTES = [
   '/register',
   '/unregister',
   '/hosts',
+  '/cluster',
   '/config',
   '/ignition.json',
   '/healthz',

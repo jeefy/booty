@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { OS_OPTIONS, acceptsInstallDisk, type Host } from '@/types'
+import { OS_OPTIONS, ROLE_OPTIONS, acceptsInstallDisk, hostRole, type Host, type HostRole } from '@/types'
 
 const draft = defineModel<Host>({ required: true })
 
@@ -16,12 +16,24 @@ const emit = defineEmits<{
 }>()
 
 const showInstallDisk = computed(() => acceptsInstallDisk(draft.value.os))
+
+const ROLE_LABEL: Record<HostRole, string> = {
+  worker: 'Worker',
+  'control-plane': 'Control plane'
+}
+
+const role = computed<HostRole>({
+  get: () => hostRole(draft.value.role),
+  set: (value) => {
+    draft.value.role = value
+  }
+})
 </script>
 
 <template>
   <form class="host-form" @submit.prevent="emit('submit')">
     <div class="row g-2 align-items-start">
-      <div class="col-12 col-md-3">
+      <div class="col-12 col-md-2">
         <label class="form-label small mb-1" :for="`hostname-${draft.mac}`">Hostname</label>
         <input
           :id="`hostname-${draft.mac}`"
@@ -66,8 +78,25 @@ const showInstallDisk = computed(() => acceptsInstallDisk(draft.value.os))
           :disabled="busy"
           :aria-describedby="`disk-help-${draft.mac}`"
         />
-        <div :id="`disk-help-${draft.mac}`" class="form-text install-disk-help">
+        <div :id="`disk-help-${draft.mac}`" class="form-text field-help">
           Target disk for the installer; empty = first writable disk. Wiped on install.
+        </div>
+      </div>
+      <div class="col-12 col-md-2" data-testid="role-field">
+        <label class="form-label small mb-1" :for="`role-${draft.mac}`">Role</label>
+        <select
+          :id="`role-${draft.mac}`"
+          v-model="role"
+          class="form-select form-select-sm"
+          :disabled="busy"
+          :aria-describedby="`role-help-${draft.mac}`"
+        >
+          <option v-for="option in ROLE_OPTIONS" :key="option" :value="option">
+            {{ ROLE_LABEL[option] }}
+          </option>
+        </select>
+        <div :id="`role-help-${draft.mac}`" class="form-text field-help">
+          Control-plane hosts receive the cluster CA when the control plane is Booty-managed.
         </div>
       </div>
       <div class="col-12 col-md">
@@ -136,7 +165,7 @@ const showInstallDisk = computed(() => acceptsInstallDisk(draft.value.os))
   margin-top: var(--booty-space-2);
 }
 
-.install-disk-help {
+.field-help {
   font-size: 0.75rem;
   line-height: 1.3;
   color: var(--booty-muted);

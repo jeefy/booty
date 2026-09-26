@@ -53,10 +53,28 @@ const baseInfo = {
   booty: { version: 'v0.9.0', timestamp: '2026-09-01T00:00:00Z' }
 }
 
+const FINGERPRINT = 'sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
+
+const clusterInfo = {
+  distribution: 'kubeadm',
+  controlPlane: 'managed',
+  endpoint: 'https://10.0.0.1:6443',
+  cni: 'cilium',
+  ready: true,
+  caFingerprint: FINGERPRINT,
+  hosts: [
+    { mac: 'aa:bb:cc:dd:ee:01', hostname: 'alpha', os: 'flatcar', role: 'control-plane', booted: '' },
+    { mac: 'aa:bb:cc:dd:ee:02', hostname: 'bravo', os: 'flatcar', role: 'worker', booted: '' },
+    { mac: 'aa:bb:cc:dd:ee:03', hostname: 'charlie', os: 'coreos', role: '', booted: '' }
+  ],
+  warnings: []
+}
+
 function mountHome(overrides: Handlers = {}) {
   const handlers: Handlers = {
     '/booty.json': () => jsonResponse({ hosts: { a: {} }, unknownHosts: {} }),
     '/info': () => jsonResponse(baseInfo),
+    '/cluster': () => jsonResponse({ error: 'not found' }, 404),
     '/flatcar/pin': (init) => {
       if (init?.method === 'POST') {
         const { version } = requestBody<{ version: string }>(init)
@@ -254,13 +272,130 @@ describe('HomeView', () => {
     const { wrapper, spy } = mountHome()
     await flushPromises()
     const initialCalls = spy.mock.calls.length
-    expect(initialCalls).toBe(3)
+    expect(initialCalls).toBe(4)
 
     await vi.advanceTimersByTimeAsync(30_000)
-    expect(spy.mock.calls.length).toBe(initialCalls + 3)
+    expect(spy.mock.calls.length).toBe(initialCalls + 4)
 
     wrapper.unmount()
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(spy.mock.calls.length).toBe(initialCalls + 3)
+    expect(spy.mock.calls.length).toBe(initialCalls + 4)
+  })
+
+  it('renders the cluster card from /cluster with facts, readiness, role counts and fingerprint', async () => {
+    const { wrapper } = mountHome({ '/cluster': () => jsonResponse(clusterInfo) })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="cluster-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.classes()).toContain('cluster-panel--ready')
+    expect(card.find('.status-dot').classes()).toContain('status-dot--ready')
+    expect(card.find('[data-testid="cluster-state"]').text()).toBe('bootstrapped')
+    expect(card.find('[data-testid="cluster-roles"]').text()).toBe('1 control-plane · 2 workers')
+
+    const facts = card.find('[data-testid="cluster-facts"]')
+    const pairs = facts.findAll('dt').map((dt, i) => [dt.text(), facts.findAll('dd')[i]!.text()])
+    expect(pairs.slice(0, 4)).toEqual([
+      ['Distribution', 'kubeadm'],
+      ['Control plane', 'managed'],
+      ['Endpoint', 'https://10.0.0.1:6443'],
+      ['CNI', 'cilium']
+    ])
+    expect(pairs[4]![0]).toBe('CA fingerprint')
+    const fingerprint = card.find('[data-testid="cluster-fingerprint"]')
+    expect(fingerprint.text()).toBe(FINGERPRINT)
+    expect(fingerprint.classes()).toContain('mono')
+    expect(fingerprint.attributes('title')).toBe(FINGERPRINT)
+    expect(card.find('[data-testid="cluster-warnings"]').exists()).toBe(false)
+  })
+
+  it('copies the CA fingerprint to the clipboard and shows transient feedback', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const { wrapper } = mountHome({ '/cluster': () => jsonResponse(clusterInfo) })
+    await flushPromises()
+
+    const button = wrapper.find('[data-testid="cluster-copy"]')
+    expect(button.text()).toBe('Copy')
+    await button.trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(FINGERPRINT)
+    expect(wrapper.find('[data-testid="cluster-copy"]').text()).toBe('Copied')
+
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(wrapper.find('[data-testid="cluster-copy"]').text()).toBe('Copy')
+  })
+
+  it('shows not-ready state, a dash for missing endpoint/fingerprint and the warnings list', async () => {
+    const { wrapper } = mountHome({
+      '/cluster': () =>
+        jsonResponse({
+          ...clusterInfo,
+          controlPlane: 'external',
+          ready: false,
+          endpoint: '',
+          caFingerprint: '',
+          warnings: ['CA key is served on the boot VLAN', 'no control-plane host registered']
+        })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="cluster-card"]')
+    expect(card.classes()).not.toContain('cluster-panel--ready')
+    expect(card.find('.status-dot').classes()).not.toContain('status-dot--ready')
+    expect(card.find('[data-testid="cluster-state"]').text()).toBe('not ready yet')
+    expect(card.find('[data-testid="cluster-fingerprint"]').exists()).toBe(false)
+    expect(card.find('[data-testid="cluster-copy"]').exists()).toBe(false)
+    expect(card.findAll('[data-testid="cluster-facts"] dd').map((dd) => dd.text())).toEqual([
+      'kubeadm',
+      'external',
+      '—',
+      'cilium',
+      '—'
+    ])
+
+    const warnings = card.find('[data-testid="cluster-warnings"]')
+    expect(warnings.exists()).toBe(true)
+    expect(warnings.classes()).toContain('alert-warning')
+    expect(warnings.attributes('role')).toBe('status')
+    expect(warnings.findAll('li').map((li) => li.text())).toEqual([
+      'CA key is served on the boot VLAN',
+      'no control-plane host registered'
+    ])
+  })
+
+  it('hides the cluster card when /cluster answers 404 and keeps the rest of the page', async () => {
+    const { wrapper } = mountHome()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="cluster-card"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="cluster-unavailable"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Cluster')
+    expect(wrapper.find('[data-testid="error-message"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="fleet-card"]').exists()).toBe(true)
+  })
+
+  it('shows an unavailable notice, not the page error, when /cluster fails for another reason', async () => {
+    const { wrapper } = mountHome({
+      '/cluster': () => jsonResponse({ error: 'cluster CA unreadable' }, 500)
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="cluster-card"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="cluster-unavailable"]').text()).toContain(
+      'cluster CA unreadable'
+    )
+    expect(wrapper.find('[data-testid="error-message"]').exists()).toBe(false)
+  })
+
+  it('refreshes the cluster card on the 30s poll', async () => {
+    const { wrapper, handlers } = mountHome({
+      '/cluster': () => jsonResponse({ ...clusterInfo, ready: false })
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="cluster-state"]').text()).toBe('not ready yet')
+
+    handlers['/cluster'] = () => jsonResponse(clusterInfo)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="cluster-state"]').text()).toBe('bootstrapped')
   })
 })

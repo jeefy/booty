@@ -29,11 +29,13 @@ function mountForm(modelValue: Host) {
 }
 
 const DISK_FIELD = '[data-testid="install-disk-field"]'
+const ROLE_FIELD = '[data-testid="role-field"]'
+const OS_SELECT = 'select[id^="os-"]'
 
 describe('HostForm', () => {
   it('offers (default), flatcar, coreos and bluefin as OS choices', () => {
     const wrapper = mountForm(draft())
-    const options = wrapper.findAll('select option').map((o) => o.attributes('value'))
+    const options = wrapper.findAll(`${OS_SELECT} option`).map((o) => o.attributes('value'))
     expect(options).toEqual(['', 'flatcar', 'coreos', 'bluefin'])
   })
 
@@ -80,5 +82,54 @@ describe('HostForm', () => {
     await wrapper.find('form').trigger('submit')
     expect(wrapper.emitted('submit')).toHaveLength(1)
     expect(model.installDisk).toBe('/dev/sdb')
+  })
+
+  it('offers Worker (default) and Control plane as roles with the CA hint', () => {
+    const wrapper = mountForm(draft())
+    const field = wrapper.find(ROLE_FIELD)
+    expect(field.text()).toContain('Role')
+    expect(field.text()).toContain(
+      'Control-plane hosts receive the cluster CA when the control plane is Booty-managed'
+    )
+    const options = field.findAll('option').map((o) => o.attributes('value'))
+    expect(options).toEqual(['worker', 'control-plane'])
+    expect(field.findAll('option').map((o) => o.text())).toEqual(['Worker', 'Control plane'])
+    expect((field.find('select').element as HTMLSelectElement).value).toBe('worker')
+  })
+
+  it('leaves role out of an untouched draft so existing register payloads are unchanged', async () => {
+    const model = draft()
+    const wrapper = mountForm(model)
+    await wrapper.find('form').trigger('submit')
+    expect(wrapper.emitted('submit')).toHaveLength(1)
+    expect(model).not.toHaveProperty('role')
+  })
+
+  it('shows Worker for a server-side "" role and keeps "" until the user changes it', () => {
+    const model = draft({ role: '' })
+    const wrapper = mountForm(model)
+    expect((wrapper.find(`${ROLE_FIELD} select`).element as HTMLSelectElement).value).toBe(
+      'worker'
+    )
+    expect(model.role).toBe('')
+  })
+
+  it('writes control-plane into the draft and an explicit worker when switched back', async () => {
+    const model = draft()
+    const wrapper = mountForm(model)
+    const select = wrapper.find(`${ROLE_FIELD} select`)
+
+    await select.setValue('control-plane')
+    expect(model.role).toBe('control-plane')
+
+    await select.setValue('worker')
+    expect(model.role).toBe('worker')
+  })
+
+  it('pre-selects Control plane for a control-plane host', () => {
+    const wrapper = mountForm(draft({ role: 'control-plane' }))
+    expect((wrapper.find(`${ROLE_FIELD} select`).element as HTMLSelectElement).value).toBe(
+      'control-plane'
+    )
   })
 })

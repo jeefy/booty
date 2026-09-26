@@ -225,6 +225,63 @@ describe('HostsView', () => {
     ).toBe('disk /dev/nvme0n1')
   })
 
+  it('shows a control-plane badge only for control-plane hosts', async () => {
+    const { wrapper } = mountWithData({
+      hosts: {
+        [hostA.mac]: { ...hostA, role: 'control-plane' },
+        [hostB.mac]: { ...hostB, role: 'worker' },
+        [hostC.mac]: { ...hostC, role: '' }
+      },
+      unknownHosts: {}
+    })
+    await flushPromises()
+
+    const badge = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-role"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('control-plane')
+    expect(badge.classes()).toContain('badge')
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-role"]').exists()
+    ).toBe(false)
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:03"] [data-testid="host-role"]').exists()
+    ).toBe(false)
+  })
+
+  it('sends role to /register when the user picks Control plane while editing', async () => {
+    const { wrapper, handlers, calls } = mountWithData()
+    handlers['/register'] = (init) => jsonResponse({ status: 'ok', host: requestBody(init) })
+    await flushPromises()
+
+    await wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="edit"]').trigger('click')
+    const editRow = wrapper.find('tr[data-mac-edit="aa:bb:cc:dd:ee:01"]')
+    await editRow.find('select[id^="role-"]').setValue('control-plane')
+    await editRow.find('form').trigger('submit')
+    await flushPromises()
+
+    const register = calls.find((c) => c.url === '/register')
+    expect(requestBody<Host>(register!.init)).toMatchObject({
+      mac: 'aa:bb:cc:dd:ee:01',
+      role: 'control-plane'
+    })
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-role"]').text()
+    ).toBe('control-plane')
+  })
+
+  it('omits role from /register when the role select is left alone', async () => {
+    const { wrapper, handlers, calls } = mountWithData()
+    handlers['/register'] = (init) => jsonResponse({ status: 'ok', host: requestBody(init) })
+    await flushPromises()
+
+    await wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="edit"]').trigger('click')
+    await wrapper.find('tr[data-mac-edit="aa:bb:cc:dd:ee:01"] form').trigger('submit')
+    await flushPromises()
+
+    const register = calls.find((c) => c.url === '/register')
+    expect(requestBody<Host>(register!.init)).not.toHaveProperty('role')
+  })
+
   it('treats hosts from an old server without fleet fields as Unknown', async () => {
     const { wrapper } = mountWithData({
       hosts: { 'aa:bb:cc:dd:ee:10': { mac: 'aa:bb:cc:dd:ee:10', hostname: 'legacy' } },

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/kubeadm"
@@ -69,6 +70,9 @@ type Options struct {
 	// Minter provides kubeadm join tokens for --kubeadmJoin=auto; nil means
 	// build one from the in-cluster environment on first use.
 	Minter *kubeadm.Minter
+	// Cluster holds the cluster settings, CA and tokens for GET /cluster;
+	// nil means the flags are described without any CA.
+	Cluster *cluster.Manager
 }
 
 func uiFileSystem(o Options) http.FileSystem {
@@ -85,6 +89,7 @@ func uiFileSystem(o Options) http.FileSystem {
 
 func NewHandler(o Options) http.Handler {
 	setJoinMinter(o.Minter)
+	setClusterManager(o.Cluster)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/healthz", handleHealthz)
@@ -105,6 +110,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/config", handleConfigRequest)
 	mux.HandleFunc("/config/template", handleConfigTemplateRequest)
 	mux.HandleFunc("/config/template/validate", handleConfigTemplateValidateRequest)
+	mux.HandleFunc("/cluster", handleClusterRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.HandleFunc(credsPathPrefix, handleCredsRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
@@ -174,7 +180,7 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // dataHandler serves DataDir read-only over /data/: no directory listings,
 // and Booty's own state files (hardware map, pin, temp files, registry
-// blobs) are hidden.
+// blobs, the cluster CA and tokens) are hidden.
 type dataHandler struct {
 	root  *os.Root
 	files http.Handler
@@ -203,6 +209,8 @@ func deniedDataPath(p string) bool {
 	case strings.HasSuffix(rel, ".tmp"):
 		return true
 	case rel == "registry" || strings.HasPrefix(rel, "registry/"):
+		return true
+	case rel == config.ClusterDir || strings.HasPrefix(rel, config.ClusterDir+"/"):
 		return true
 	}
 	return false
