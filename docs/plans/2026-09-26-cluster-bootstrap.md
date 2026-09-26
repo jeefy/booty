@@ -157,3 +157,73 @@ the worker join unit changes).
 - FCOS kubeadm path has never booted here; H2 QEMU includes it — if `rpm-ostree`/`dnf` layering fails, fix in H2 rather than ship unverified.
 - Bluefin `k0s-first-boot` ordering with our drop-in: proven pattern (the `Wants=` drop-in from PR #30 already works); the ExecStart override is the same mechanism.
 - k0s pre-shared token format drift across versions: fixture-tested against the pinned v1.36.4 output.
+
+## Addendum (user, 2026-09-26, decided during H2): the control-plane disk
+
+PXE-booted Flatcar and Fedora CoreOS run from RAM, so a managed control
+plane needs **`--controlPlaneDisk=/dev/…`**. Ignition formats the device
+once (`ext4`, label `booty-cp`, `wipe_filesystem: false`: an existing
+`booty-cp` filesystem is reused, a foreign one makes Ignition refuse to
+boot), mounts it at `/var/lib/booty-cp` (`var-lib-booty\x2dcp.mount`) and
+bind-mounts `/etc/kubernetes`, `/var/lib/etcd` and `/var/lib/kubelet` from
+subdirectories via systemd mount units (`etc-kubernetes.mount`,
+`var-lib-etcd.mount`, `var-lib-kubelet.mount`) that `RequiresMountsFor=`
+the disk; the kubelet (drop-in), `booty-kubelet-setup` and
+`booty-k8s-init` in turn `RequiresMountsFor=` the three bind mounts.
+Because Ignition writes files to the RAM root before any mount unit runs,
+`ca.crt`/`ca.key` are still rendered at `/etc/kubernetes/pki/` and a
+`booty-cp-seed.service` (`DefaultDependencies=no`, ordered between the disk
+mount and the bind mounts) copies them onto the disk with `cp -an`, so the
+disk copy wins on later boots. Rendering a managed kubeadm control plane
+for a flatcar/coreos host **without** `--controlPlaneDisk` is HTTP 400
+`control-plane host needs --controlPlaneDisk on a PXE-booted OS` (all three
+Ignition endpoints) plus a `GET /cluster` warning. The flag mirrors
+`--containerdDisk` (same validation as `installDisk`); the two may not name
+the same device (startup error). Bluefin installs to disk and is exempt
+(k0s, H3).
+
+### H2 implementation notes (decided where the plan was silent)
+
+- `certificateKey` is persisted in `cluster/tokens.json` under the purpose
+  `kubeadm-cert-key` (64 hex chars, 32 random bytes); the token store now
+  validates per purpose. It renews with the same 7-day TTL as the tokens,
+  which is harmless: init runs once and the uploaded certs expire after 2 h.
+- `booty-cni-apply.service` and `booty-cluster-ready.service` only `Wants=`
+  `booty-k8s-init.service` (not `Requires=`): a failing init keeps
+  restarting, and a `Requires=` dependant would have had its job cancelled
+  by the first failure. Both carry their own `Restart=on-failure` loop and
+  check for `/etc/kubernetes/admin.conf` themselves.
+- The CNI marker is `/var/lib/booty-cp/cni-applied` (on the disk) rather than
+  `/var/lib/booty/cni-applied`, which would be RAM on a PXE host and re-apply
+  on every boot. The unit is named `booty-cni-apply.service` as in the H2
+  task (the plan said `booty-cni-install`, which is already the plugins
+  unit).
+- flannel: the upstream `kube-flannel.yml` is downloaded at apply time and,
+  when `--podCIDR` is not `10.244.0.0/16`, its single `"Network"` entry is
+  rewritten with a guard (the script fails if the manifest does not have
+  exactly one). Vendoring a copy would have pinned the manifest independently
+  of `--cniRelease`.
+- `ready` means "kubeadm init finished and `/readyz` answers on the control
+  plane" -- the moment workers can join. It is persisted in
+  `cluster/ready.json`; the first `readyAt` sticks (idempotent POST).
+- Worker `join.sh` exits 0 when `/etc/kubernetes/kubelet.conf` exists; the
+  join unit gained `Restart=on-failure RestartSec=30s`. The legacy golden
+  fixtures were refreshed for exactly these two changes.
+- A managed kubeadm cluster implies `--profile=kubeadm-worker` for its
+  workers. `--kubeadmJoin=static` without `--joinString` under `managed`
+  uses the pre-generated join string; an explicit `--joinString` still wins.
+- A `role: control-plane` host never receives worker join units, also in
+  external mode (it renders only the builtin fragment there); it never mints
+  a join token either.
+- The 400 `unsupported distribution kubeadm for os bluefin` applies with
+  `--controlPlane=managed` only. In external mode (the default) Bluefin
+  hosts keep receiving the plain builtin fragment next to a kubeadm-worker
+  profile, as the existing tests and homelab rely on.
+- The kubelet's `cgroup-driver` is set through `KubeletConfiguration` (and
+  `/etc/default/kubelet`, shared with the worker) rather than
+  `kubeletExtraArgs`, which kubeadm warns about as a deprecated flag; only
+  `fail-swap-on=false` is passed as an extra arg.
+- CNI pins verified against the GitHub releases API on 2026-09-25: cilium
+  v1.20.2 + cilium-cli v0.20.1
+  (sha256 `24e817dcfcc8a12e325ce7547617bcbcf171c5b0b335bb24d2bb1207ba047f61`),
+  calico v3.32.2, flannel v0.28.9.
