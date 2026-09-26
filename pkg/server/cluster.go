@@ -4,9 +4,11 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/state"
 )
 
 // clusterManager is set from Options.Cluster; nil means "not configured",
@@ -26,13 +28,17 @@ type clusterHost struct {
 }
 
 // clusterResponse is what GET /cluster returns. It carries no key
-// material: the CA is represented by its fingerprint only.
+// material: the CA is represented by its fingerprint only. Ready means the
+// control-plane host reported that kubeadm init finished and the API
+// server answers /readyz (POST /cluster/ready); it says nothing about the
+// CNI or worker joins.
 type clusterResponse struct {
 	Distribution  string        `json:"distribution"`
 	ControlPlane  string        `json:"controlPlane"`
 	Endpoint      string        `json:"endpoint"`
 	CNI           string        `json:"cni"`
 	Ready         bool          `json:"ready"`
+	ReadyAt       string        `json:"readyAt,omitempty"`
 	CAFingerprint string        `json:"caFingerprint"`
 	Hosts         []clusterHost `json:"hosts"`
 	Warnings      []string      `json:"warnings"`
@@ -46,15 +52,53 @@ func handleClusterRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, clusterStatus(hardware.Snapshot().Hosts))
 }
 
+// handleClusterReadyRequest is POSTed by the control-plane host's
+// booty-cluster-ready.service. Only a registered role: control-plane host
+// may flip the flag; repeated calls are no-ops that keep the first readyAt.
+func handleClusterReadyRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	raw := r.URL.Query().Get("mac")
+	if raw == "" {
+		writeError(w, http.StatusBadRequest, "mac query parameter is required")
+		return
+	}
+	mac, err := hardware.NormalizeMAC(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	host, found := hardware.Get(mac)
+	if !found || !host.IsControlPlane() {
+		writeError(w, http.StatusNotFound, "control-plane host not registered")
+		return
+	}
+	changed, err := state.MarkClusterReady(mac, time.Now())
+	if err != nil {
+		slog.Error("Recording cluster ready failed", "mac", mac, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record cluster ready")
+		return
+	}
+	if changed {
+		slog.Info("Control plane reported ready", "mac", mac, "hostname", host.Hostname, "ip", remoteIP(r))
+	}
+	writeJSON(w, http.StatusOK, state.GetClusterReady())
+}
+
 func clusterStatus(hosts map[string]*hardware.Host) clusterResponse {
 	m := clusterManager
 	if m == nil {
 		m = &cluster.Manager{Settings: cluster.FromConfig()}
 	}
+	ready := state.GetClusterReady()
 	resp := clusterResponse{
 		Distribution: string(m.Settings.Distribution),
 		ControlPlane: string(m.Settings.ControlPlane),
 		CNI:          string(m.Settings.CNI),
+		Ready:        ready.Ready,
+		ReadyAt:      ready.ReadyAt,
 		Hosts:        []clusterHost{},
 		Warnings:     m.Warnings(hosts),
 	}

@@ -19,14 +19,16 @@ const (
 	// the kubelet systemd units and joins the cluster on every boot.
 	KubeadmWorker = "kubeadm-worker"
 
-	ScriptDir       = "/opt/booty"
-	CNIScript       = ScriptDir + "/cni.sh"
-	KubeToolsScript = ScriptDir + "/kube-tools.sh"
-	SystemdScript   = ScriptDir + "/systemd.sh"
-	JoinScript      = ScriptDir + "/join.sh"
+	ScriptDir        = "/opt/booty"
+	CNIScript        = ScriptDir + "/cni.sh"
+	KubeToolsScript  = ScriptDir + "/kube-tools.sh"
+	ContainerdScript = ScriptDir + "/containerd.sh"
+	SystemdScript    = ScriptDir + "/systemd.sh"
+	JoinScript       = ScriptDir + "/join.sh"
 
 	UnitCNIInstall   = "booty-cni-install.service"
 	UnitKubeTools    = "booty-kube-tools.service"
+	UnitContainerd   = "booty-containerd-setup.service"
 	UnitKubeletSetup = "booty-kubelet-setup.service"
 	UnitJoin         = "booty-k8s-join.service"
 
@@ -44,6 +46,9 @@ type Options struct {
 	ContainerdDisk  string
 	KubeletUnitsURL string
 	JoinString      string
+	// ControlPlane renders a role: control-plane host as the managed
+	// kubeadm control plane; nil leaves such a host without any units.
+	ControlPlane *ControlPlaneOptions
 }
 
 // Validate rejects unknown --profile values.
@@ -84,27 +89,51 @@ func Fragment(host *hardware.Host, opts Options) (types.Config, error) {
 		return cfg, nil
 	}
 	opts = withDefaults(opts)
+	if host.IsControlPlane() {
+		if opts.ControlPlane == nil {
+			slog.Debug("Profile skipped: control-plane host without a managed control plane gets no worker units", "profile", opts.Profile, "mac", host.MAC)
+			return cfg, nil
+		}
+		return controlPlaneFragment(cfg, opts)
+	}
 
-	cfg.Storage.Files = []types.File{
+	cfg.Storage.Files = append(toolScripts(opts), ign.InlineFile(JoinScript, joinScript, 0o755))
+	cfg.Storage.Filesystems, cfg.Systemd.Units = containerdDisk(opts.ContainerdDisk)
+	cfg.Systemd.Units = append(cfg.Systemd.Units, toolChain(opts, "")...)
+	cfg.Systemd.Units = append(cfg.Systemd.Units, ign.Unit(UnitJoin, true, joinUnit(opts.JoinString)))
+	return cfg, nil
+}
+
+func toolScripts(opts Options) []types.File {
+	return []types.File{
 		ign.InlineFile(CNIScript, cniScript(opts), 0o755),
 		ign.InlineFile(KubeToolsScript, kubeToolsScript(opts), 0o755),
+		ign.InlineFile(ContainerdScript, containerdScript, 0o755),
 		ign.InlineFile(SystemdScript, systemdScript(opts), 0o755),
-		ign.InlineFile(JoinScript, joinScript, 0o755),
 	}
-	if opts.ContainerdDisk != "" {
-		cfg.Storage.Filesystems = []types.Filesystem{containerdFilesystem(opts.ContainerdDisk)}
-		cfg.Systemd.Units = append(cfg.Systemd.Units,
-			ign.Unit(ContainerdMountUnit, true, containerdMount),
-			containerdDropin(),
-		)
-	}
-	cfg.Systemd.Units = append(cfg.Systemd.Units,
+}
+
+// toolChain is the CNI plugins -> kube tools -> containerd -> kubelet units
+// sequence both roles share; kubeletSetupExtra is appended to the [Unit]
+// section of the last one (the control plane orders it after its state
+// mounts).
+func toolChain(opts Options, kubeletSetupExtra string) []types.Unit {
+	return []types.Unit{
 		ign.Unit(UnitCNIInstall, true, oneshot("Install CNI plugins "+opts.CNIVersion, "network-online.target", CNIScript, "Wants=network-online.target\n")),
 		ign.Unit(UnitKubeTools, true, oneshot("Install kubeadm, kubelet, kubectl and crictl "+opts.K8sVersion, UnitCNIInstall, KubeToolsScript, "")),
-		ign.Unit(UnitKubeletSetup, true, oneshot("Install the kubelet systemd units", UnitKubeTools, SystemdScript, "")),
-		ign.Unit(UnitJoin, true, joinUnit(opts.JoinString)),
-	)
-	return cfg, nil
+		ign.Unit(UnitContainerd, true, oneshot("Run containerd with systemd cgroups for the kubelet", UnitKubeTools, ContainerdScript, "")),
+		ign.Unit(UnitKubeletSetup, true, oneshot("Install the kubelet systemd units", UnitContainerd, SystemdScript, kubeletSetupExtra)),
+	}
+}
+
+func containerdDisk(device string) ([]types.Filesystem, []types.Unit) {
+	if device == "" {
+		return nil, nil
+	}
+	return []types.Filesystem{containerdFilesystem(device)}, []types.Unit{
+		ign.Unit(ContainerdMountUnit, true, containerdMount),
+		containerdDropin(),
+	}
 }
 
 func withDefaults(o Options) Options {
@@ -142,6 +171,8 @@ After=` + UnitKubeletSetup + `
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30s
 Environment="JOIN_STRING=` + systemdQuote(joinString) + `"
 ExecStart=/bin/bash -c 'PATH=/opt/bin:$$PATH exec ` + JoinScript + `'
 
@@ -188,44 +219,75 @@ echo "CNI plugins ${CNI_VERSION} installed"
 `
 }
 
+// kubeToolsScript installs the static release binaries on every OS. A
+// PXE-booted Fedora CoreOS runs from a read-only erofs /usr where dnf and
+// rpm-ostree cannot layer packages, so the pkgs.k8s.io path is gone; /opt
+// (-> /var/opt on FCOS) is writable everywhere.
 func kubeToolsScript(o Options) string {
 	return `#!/bin/bash
 set -euo pipefail
-set -a; . /etc/os-release; set +a
 RELEASE="` + o.K8sVersion + `"
 CRICTL="` + o.CrictlVersion + `"
-if [ "${VARIANT_ID:-}" == "fedora" ]; then
-  KUBE_MINOR="${RELEASE%.*}"
-  KUBE_VERSION="${RELEASE#v}"
-  cat > /etc/yum.repos.d/kubernetes.repo <<REPO
-[kubernetes]
-name=Kubernetes
-baseurl=https://pkgs.k8s.io/core:/stable:/${KUBE_MINOR}/rpm/
-enabled=1
-gpgcheck=1
-gpgkey=https://pkgs.k8s.io/core:/stable:/${KUBE_MINOR}/rpm/repodata/repomd.xml.key
-REPO
-  dnf install -y "kubeadm-${KUBE_VERSION}" "kubelet-${KUBE_VERSION}" "kubectl-${KUBE_VERSION}" cri-tools
-  echo "exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni" >> /etc/yum.repos.d/kubernetes.repo
-  mkdir -p /opt/bin/
-  for tool in kubeadm kubelet kubectl crictl; do ln -sf "/usr/bin/${tool}" "/opt/bin/${tool}"; done
-  mkdir -p /etc/kubernetes/manifests
-  echo "Kubernetes ${RELEASE} tools installed from pkgs.k8s.io"
-  exit 0
-fi
 mkdir -p /opt/bin/
 cd /opt/bin/
 curl -fL --remote-name-all "https://dl.k8s.io/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}"
 chmod +x kubeadm kubelet kubectl
-# crictl is a convenience for operators; kubeadm join does not need it, so a
+# crictl is a convenience for operators; kubeadm does not need it, so a
 # missing release must not fail the boot.
 if ! curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL}/crictl-${CRICTL}-linux-amd64.tar.gz" | tar -C /opt/bin/ -xz; then
   echo "warning: crictl ${CRICTL} not installed (download failed); continuing" >&2
 fi
 mkdir -p /etc/kubernetes/manifests
-echo "Kubernetes ${RELEASE} tools and crictl ${CRICTL} installed"
+echo "Kubernetes ${RELEASE} tools and crictl ${CRICTL} installed to /opt/bin"
 `
 }
+
+// containerdScript makes sure the kubelet finds a running containerd that
+// uses the systemd cgroup driver. Flatcar already runs one
+// (--config /usr/share/containerd/config.toml, SystemdCgroup = true), so
+// the step is a no-op there and never writes /etc/containerd/config.toml.
+// Fedora CoreOS ships containerd disabled with a stock config that lacks
+// the setting: the config is regenerated from `containerd config default`
+// (the stock file is kept as .booty-orig) and SystemdCgroup flipped by a
+// sed that refuses to run unless the generated file has exactly one
+// "SystemdCgroup = false", then the service is enabled and started.
+const containerdScript = `#!/bin/bash
+set -euo pipefail
+export PATH=/opt/bin:$PATH
+CONFIG=/etc/containerd/config.toml
+SOCKET=unix:///run/containerd/containerd.sock
+
+# The config the running unit actually uses: Flatcar passes --config through
+# CONTAINERD_CONFIG=/usr/share/containerd/config.toml; the containerd default
+# is /etc/containerd/config.toml.
+running_config() {
+  local env
+  env=$(systemctl show containerd -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^CONTAINERD_CONFIG=//p' | head -n1)
+  echo "${env:-$CONFIG}"
+}
+
+if systemctl is-active --quiet containerd && grep -qs 'SystemdCgroup = true' "$(running_config)"; then
+  echo "containerd already runs with systemd cgroups ($(running_config)); leaving it alone"
+else
+  if ! grep -qs 'SystemdCgroup = true' "$CONFIG"; then
+    mkdir -p "$(dirname "$CONFIG")"
+    if [ -f "$CONFIG" ]; then cp -n "$CONFIG" "$CONFIG.booty-orig"; fi
+    containerd config default > "$CONFIG"
+    if ! grep -q 'SystemdCgroup = true' "$CONFIG"; then
+      if [ "$(grep -c 'SystemdCgroup = false' "$CONFIG")" != 1 ]; then
+        echo "containerd config default did not produce exactly one 'SystemdCgroup = false'; refusing to patch $CONFIG" >&2
+        exit 1
+      fi
+      sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' "$CONFIG"
+    fi
+    echo "wrote $CONFIG with SystemdCgroup = true"
+  fi
+  systemctl enable containerd
+  systemctl restart containerd
+fi
+printf 'runtime-endpoint: %s\nimage-endpoint: %s\n' "$SOCKET" "$SOCKET" > /etc/crictl.yaml
+echo "containerd ready at $SOCKET"
+`
 
 func systemdScript(o Options) string {
 	return `#!/bin/bash
@@ -245,6 +307,10 @@ echo "kubelet started"
 
 const joinScript = `#!/bin/bash
 set -uo pipefail
+if [ -f /etc/kubernetes/kubelet.conf ]; then
+  echo "already joined (/etc/kubernetes/kubelet.conf exists); not joining again"
+  exit 0
+fi
 if [ -z "${JOIN_STRING:-}" ]; then
   echo "JOIN_STRING is empty: Booty could not provide a kubeadm join token; not joining" >&2
   exit 0

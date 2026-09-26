@@ -65,28 +65,39 @@ type Settings struct {
 	Kubeconfig   string
 	Profile      string
 	KubeadmJoin  string
+	// ControlPlaneDisk is the block device a PXE-booted control-plane host
+	// keeps /etc/kubernetes, /var/lib/etcd and /var/lib/kubelet on;
+	// ContainerdDisk is --containerdDisk, here only to refuse the same
+	// device for both.
+	ControlPlaneDisk string
+	ContainerdDisk   string
 }
 
 // FromConfig reads the cluster settings from viper.
 func FromConfig() Settings {
 	return Settings{
-		Distribution: Distribution(viper.GetString(config.ClusterDistribution)),
-		ControlPlane: Mode(viper.GetString(config.ControlPlane)),
-		Endpoint:     strings.TrimSpace(viper.GetString(config.ControlPlaneEndpt)),
-		CADir:        viper.GetString(config.ClusterCADir),
-		CNI:          CNI(viper.GetString(config.CNI)),
-		CNIRelease:   viper.GetString(config.CNIRelease),
-		PodCIDR:      viper.GetString(config.PodCIDR),
-		ServiceCIDR:  viper.GetString(config.ServiceCIDR),
-		K0sTokenFile: viper.GetString(config.K0sTokenFile),
-		Kubeconfig:   viper.GetString(config.Kubeconfig),
-		Profile:      viper.GetString(config.Profile),
-		KubeadmJoin:  viper.GetString(config.KubeadmJoin),
+		Distribution:     Distribution(viper.GetString(config.ClusterDistribution)),
+		ControlPlane:     Mode(viper.GetString(config.ControlPlane)),
+		Endpoint:         strings.TrimSpace(viper.GetString(config.ControlPlaneEndpt)),
+		CADir:            viper.GetString(config.ClusterCADir),
+		CNI:              CNI(viper.GetString(config.CNI)),
+		CNIRelease:       viper.GetString(config.CNIRelease),
+		PodCIDR:          viper.GetString(config.PodCIDR),
+		ServiceCIDR:      viper.GetString(config.ServiceCIDR),
+		K0sTokenFile:     viper.GetString(config.K0sTokenFile),
+		Kubeconfig:       viper.GetString(config.Kubeconfig),
+		Profile:          viper.GetString(config.Profile),
+		KubeadmJoin:      viper.GetString(config.KubeadmJoin),
+		ControlPlaneDisk: strings.TrimSpace(viper.GetString(config.ControlPlaneDisk)),
+		ContainerdDisk:   strings.TrimSpace(viper.GetString(config.ContainerdDisk)),
 	}
 }
 
 // Managed reports whether Booty renders the control plane itself.
 func (s Settings) Managed() bool { return s.ControlPlane == Managed }
+
+// ManagedKubeadm reports whether Booty renders a kubeadm control plane.
+func (s Settings) ManagedKubeadm() bool { return s.Managed() && s.Distribution == Kubeadm }
 
 // Validate checks the flag values against each other. It is what cmd/main
 // runs at startup; every message names the offending flag.
@@ -122,6 +133,12 @@ func (s Settings) Validate() error {
 		if _, err := os.Stat(s.Kubeconfig); err != nil {
 			return fmt.Errorf("--%s: %w", config.Kubeconfig, err)
 		}
+	}
+	if err := hardware.ValidateInstallDisk(s.ControlPlaneDisk); err != nil {
+		return fmt.Errorf("--%s: %w", config.ControlPlaneDisk, err)
+	}
+	if s.ControlPlaneDisk != "" && s.ControlPlaneDisk == s.ContainerdDisk {
+		return fmt.Errorf("--%s and --%s must be different devices, both are %s", config.ControlPlaneDisk, config.ContainerdDisk, s.ControlPlaneDisk)
 	}
 	return nil
 }

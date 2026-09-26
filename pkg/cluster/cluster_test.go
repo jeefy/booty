@@ -72,6 +72,11 @@ func TestValidate(t *testing.T) {
 		{"external ignores CA dir", func(s *Settings) { s.CADir = "/nonexistent" }, ""},
 		{"kubeconfig missing", func(s *Settings) { s.Kubeconfig = "/nonexistent/kubeconfig" }, "--kubeconfig"},
 		{"kubeconfig ok", func(s *Settings) { s.Kubeconfig = kubeconfig }, ""},
+		{"cp disk ok", func(s *Settings) { s.ControlPlaneDisk = "/dev/vda" }, ""},
+		{"cp disk not /dev", func(s *Settings) { s.ControlPlaneDisk = "vda" }, "--controlPlaneDisk"},
+		{"cp disk traversal", func(s *Settings) { s.ControlPlaneDisk = "/dev/../etc" }, "--controlPlaneDisk"},
+		{"cp disk equals containerd disk", func(s *Settings) { s.ControlPlaneDisk, s.ContainerdDisk = "/dev/vda", "/dev/vda" }, "must be different devices"},
+		{"cp and containerd disks differ", func(s *Settings) { s.ControlPlaneDisk, s.ContainerdDisk = "/dev/vda", "/dev/vdb" }, ""},
 	}
 	for _, tc := range cases {
 		s := defaults()
@@ -178,7 +183,7 @@ func TestNewManagedBYODirIsReadOnly(t *testing.T) {
 func TestEndpointAndWarnings(t *testing.T) {
 	viper.Set(config.DataDir, t.TempDir())
 	s := defaults()
-	s.ControlPlane = Managed
+	s.ControlPlane, s.ControlPlaneDisk = Managed, "/dev/vda"
 	m, err := New(s)
 	if err != nil {
 		t.Fatal(err)
@@ -222,5 +227,35 @@ func TestEndpointAndWarnings(t *testing.T) {
 
 	if RoleOf(hosts["aa:bb:cc:dd:ee:01"]) != ControlPlane || RoleOf(&hardware.Host{}) != Worker {
 		t.Fatal("RoleOf")
+	}
+}
+
+func TestWarningsControlPlaneDisk(t *testing.T) {
+	viper.Set(config.DataDir, t.TempDir())
+	s := defaults()
+	s.ControlPlane, s.Endpoint = Managed, "10.0.0.1"
+	m, err := New(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := map[string]*hardware.Host{
+		"aa:bb:cc:dd:ee:01": {MAC: "aa:bb:cc:dd:ee:01", OS: "flatcar", Role: hardware.RoleControlPlane},
+	}
+	w := m.Warnings(hosts)
+	if len(w) != 1 || w[0] != "host aa:bb:cc:dd:ee:01 (flatcar): control-plane host needs --controlPlaneDisk on a PXE-booted OS" {
+		t.Fatalf("warnings %v", w)
+	}
+	m.Settings.ControlPlaneDisk = "/dev/vda"
+	if w := m.Warnings(hosts); len(w) != 0 {
+		t.Fatalf("with a disk: %v", w)
+	}
+	m.Settings.ControlPlaneDisk, m.Settings.Distribution = "", K0s
+	if w := m.Warnings(hosts); len(w) != 0 {
+		t.Fatalf("k0s does not need the disk yet: %v", w)
+	}
+	for os, want := range map[string]bool{"": true, "flatcar": true, "coreos": true, "bluefin": false} {
+		if got := NeedsControlPlaneDisk(os); got != want {
+			t.Errorf("NeedsControlPlaneDisk(%q)=%v", os, got)
+		}
 	}
 }

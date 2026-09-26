@@ -299,6 +299,9 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !renderCheck(w, host) {
+		return
+	}
 	features := builtinFeatures()
 	preview := isPreview(r)
 	part := ignitionPart(r.URL.Query().Get("part"))
@@ -358,7 +361,7 @@ func handleIgnitionUserRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mac, host, ok := identifyRegisteredClient(w, r)
-	if !ok {
+	if !ok || !renderCheck(w, host) {
 		return
 	}
 	user, err := renderUserIgnition(mac, host, resolveJoinString(r.Context(), w, mac, host, true))
@@ -375,7 +378,7 @@ func handleIgnitionBuiltinRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mac, host, ok := identifyRegisteredClient(w, r)
-	if !ok {
+	if !ok || !renderCheck(w, host) {
 		return
 	}
 	writeJSON(w, http.StatusOK, builtinFragment(host, builtinFeatures(), resolveJoinString(r.Context(), w, mac, host, true)))

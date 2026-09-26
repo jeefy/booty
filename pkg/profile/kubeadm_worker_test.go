@@ -3,6 +3,7 @@ package profile
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -47,7 +48,11 @@ func decodeFile(t *testing.T, cfg types.Config, path string) string {
 			return string(b)
 		}
 		if strings.HasPrefix(src, "data:,") {
-			return strings.TrimPrefix(src, "data:,")
+			decoded, err := url.PathUnescape(strings.TrimPrefix(src, "data:,"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return decoded
 		}
 		t.Fatalf("%s is not inline: %s", path, src)
 	}
@@ -111,7 +116,6 @@ func TestScriptsCarryVersions(t *testing.T) {
 	tools := decodeFile(t, cfg, KubeToolsScript)
 	for _, want := range []string{
 		`RELEASE="v1.34.3"`, `CRICTL="v1.34.0"`,
-		"pkgs.k8s.io/core:/stable:/${KUBE_MINOR}/rpm/", "dnf install -y",
 		"https://dl.k8s.io/${RELEASE}/bin/linux/amd64/{kubeadm,kubelet,kubectl}",
 		"github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL}/crictl-${CRICTL}-linux-amd64.tar.gz",
 		"mkdir -p /etc/kubernetes/manifests",
@@ -120,8 +124,21 @@ func TestScriptsCarryVersions(t *testing.T) {
 			t.Errorf("kube-tools.sh missing %q", want)
 		}
 	}
-	if strings.Contains(tools, "kubernetes-incubator") {
-		t.Error("kube-tools.sh must use the kubernetes-sigs cri-tools URL")
+	for _, banned := range []string{"kubernetes-incubator", "dnf", "pkgs.k8s.io", "VARIANT_ID", "exclude=", "yum.repos.d"} {
+		if strings.Contains(tools, banned) {
+			t.Errorf("kube-tools.sh must not use %q: a PXE-booted Fedora CoreOS has a read-only /usr, so only the static binaries work", banned)
+		}
+	}
+	containerd := decodeFile(t, cfg, ContainerdScript)
+	for _, want := range []string{
+		"CONTAINERD_CONFIG=", "systemctl is-active --quiet containerd", `grep -qs 'SystemdCgroup = true' "$(running_config)"`,
+		`containerd config default > "$CONFIG"`, `cp -n "$CONFIG" "$CONFIG.booty-orig"`,
+		`[ "$(grep -c 'SystemdCgroup = false' "$CONFIG")" != 1 ]`, "refusing to patch", `sed -i 's/SystemdCgroup = false/SystemdCgroup = true/'`,
+		"systemctl enable containerd", "systemctl restart containerd", "runtime-endpoint: %s", "/etc/crictl.yaml",
+	} {
+		if !strings.Contains(containerd, want) {
+			t.Errorf("containerd.sh missing %q", want)
+		}
 	}
 	sysd := decodeFile(t, cfg, SystemdScript)
 	for _, want := range []string{
@@ -175,7 +192,7 @@ func TestUnitChainOrdering(t *testing.T) {
 		names = append(names, u.Name)
 		byName[u.Name] = u
 	}
-	want := []string{UnitCNIInstall, UnitKubeTools, UnitKubeletSetup, UnitJoin}
+	want := []string{UnitCNIInstall, UnitKubeTools, UnitContainerd, UnitKubeletSetup, UnitJoin}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("units %v want %v", names, want)
 	}
@@ -230,8 +247,8 @@ func TestContainerdDisk(t *testing.T) {
 	if d := *containerd.Dropins[0].Contents; !strings.Contains(d, "After=var-lib-containerd.mount") || !strings.Contains(d, "Requires=var-lib-containerd.mount") {
 		t.Fatalf("dropin must order containerd after the mount:\n%s", d)
 	}
-	if len(cfg.Systemd.Units) != 6 {
-		t.Fatalf("expected mount + dropin + 4 chain units, got %d", len(cfg.Systemd.Units))
+	if len(cfg.Systemd.Units) != 7 {
+		t.Fatalf("expected mount + dropin + 5 chain units, got %d", len(cfg.Systemd.Units))
 	}
 }
 
@@ -254,5 +271,16 @@ func TestCrictlVersionFor(t *testing.T) {
 		if got := crictlVersionFor(in); got != want {
 			t.Errorf("crictlVersionFor(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestWorkerJoinUnitRestartsAndSkipsWhenJoined(t *testing.T) {
+	cfg, raw := worker(t, &hardware.Host{OS: "flatcar"}, Options{JoinString: "kubeadm join x"})
+	if !strings.Contains(raw, `Restart=on-failure\nRestartSec=30s\n`) {
+		t.Fatalf("join unit must retry:\n%s", raw)
+	}
+	join := decodeFile(t, cfg, JoinScript)
+	if !strings.Contains(join, "if [ -f /etc/kubernetes/kubelet.conf ]; then") || strings.Index(join, "kubelet.conf") > strings.Index(join, "JOIN_STRING") {
+		t.Fatalf("join.sh must skip an already joined node before anything else:\n%s", join)
 	}
 }

@@ -77,6 +77,7 @@ const (
 	ServiceCIDR         = "serviceCIDR"
 	K0sTokenFile        = "k0sTokenFile"
 	Kubeconfig          = "kubeconfig"
+	ControlPlaneDisk    = "controlPlaneDisk"
 )
 
 // Cluster bootstrap defaults and the directory (relative to DataDir) that
@@ -87,6 +88,7 @@ const (
 	ClusterDir                 = "cluster"
 	ClusterPKIDir              = "pki"
 	ClusterTokensFile          = "tokens.json"
+	ClusterReadyFile           = "ready.json"
 	DefaultClusterDistribution = "kubeadm"
 	DefaultControlPlane        = "external"
 	DefaultCNI                 = "cilium"
@@ -309,6 +311,7 @@ func LoadConfig() {
 	viper.SetDefault(ServiceCIDR, DefaultServiceCIDR)
 	viper.SetDefault(K0sTokenFile, "")
 	viper.SetDefault(Kubeconfig, "")
+	viper.SetDefault(ControlPlaneDisk, "")
 }
 
 func bindEnv(key, env string) {

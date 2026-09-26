@@ -157,3 +157,111 @@ the worker join unit changes).
 - FCOS kubeadm path has never booted here; H2 QEMU includes it — if `rpm-ostree`/`dnf` layering fails, fix in H2 rather than ship unverified.
 - Bluefin `k0s-first-boot` ordering with our drop-in: proven pattern (the `Wants=` drop-in from PR #30 already works); the ExecStart override is the same mechanism.
 - k0s pre-shared token format drift across versions: fixture-tested against the pinned v1.36.4 output.
+
+## Addendum (user, 2026-09-26, decided during H2): the control-plane disk
+
+PXE-booted Flatcar and Fedora CoreOS run from RAM, so a managed control
+plane needs **`--controlPlaneDisk=/dev/…`**. Ignition formats the device
+once (`ext4`, label `booty-cp`, `wipe_filesystem: false`: an existing
+`booty-cp` filesystem is reused, a foreign one makes Ignition refuse to
+boot), mounts it at `/var/lib/booty-cp` (`var-lib-booty\x2dcp.mount`) and
+bind-mounts `/etc/kubernetes`, `/var/lib/etcd` and `/var/lib/kubelet` from
+subdirectories via systemd mount units (`etc-kubernetes.mount`,
+`var-lib-etcd.mount`, `var-lib-kubelet.mount`) that `RequiresMountsFor=`
+the disk; the kubelet (drop-in), `booty-kubelet-setup` and
+`booty-k8s-init` in turn `RequiresMountsFor=` the three bind mounts.
+Because Ignition writes files to the RAM root before any mount unit runs,
+`ca.crt`/`ca.key` are still rendered at `/etc/kubernetes/pki/` and a
+`booty-cp-seed.service` (`DefaultDependencies=no`, ordered between the disk
+mount and the bind mounts) copies them onto the disk with `cp -an`, so the
+disk copy wins on later boots. Rendering a managed kubeadm control plane
+for a flatcar/coreos host **without** `--controlPlaneDisk` is HTTP 400
+`control-plane host needs --controlPlaneDisk on a PXE-booted OS` (all three
+Ignition endpoints) plus a `GET /cluster` warning. The flag mirrors
+`--containerdDisk` (same validation as `installDisk`); the two may not name
+the same device (startup error). Bluefin installs to disk and is exempt
+(k0s, H3).
+
+### H2 implementation notes (decided where the plan was silent)
+
+- `certificateKey` is persisted in `cluster/tokens.json` under the purpose
+  `kubeadm-cert-key` (64 hex chars, 32 random bytes); the token store now
+  validates per purpose. It renews with the same 7-day TTL as the tokens,
+  which is harmless: init runs once and the uploaded certs expire after 2 h.
+- `booty-cni-apply.service` and `booty-cluster-ready.service` only `Wants=`
+  `booty-k8s-init.service` (not `Requires=`): a failing init keeps
+  restarting, and a `Requires=` dependant would have had its job cancelled
+  by the first failure. Both carry their own `Restart=on-failure` loop and
+  check for `/etc/kubernetes/admin.conf` themselves.
+- The CNI marker is `/var/lib/booty-cp/cni-applied` (on the disk) rather than
+  `/var/lib/booty/cni-applied`, which would be RAM on a PXE host and re-apply
+  on every boot. The unit is named `booty-cni-apply.service` as in the H2
+  task (the plan said `booty-cni-install`, which is already the plugins
+  unit).
+- flannel: the upstream `kube-flannel.yml` is downloaded at apply time and,
+  when `--podCIDR` is not `10.244.0.0/16`, its single `"Network"` entry is
+  rewritten with a guard (the script fails if the manifest does not have
+  exactly one). Vendoring a copy would have pinned the manifest independently
+  of `--cniRelease`.
+- `ready` means "kubeadm init finished and `/readyz` answers on the control
+  plane" -- the moment workers can join. It is persisted in
+  `cluster/ready.json`; the first `readyAt` sticks (idempotent POST).
+- Worker `join.sh` exits 0 when `/etc/kubernetes/kubelet.conf` exists; the
+  join unit gained `Restart=on-failure RestartSec=30s`. The legacy golden
+  fixtures were refreshed for exactly these two changes.
+- A managed kubeadm cluster implies `--profile=kubeadm-worker` for its
+  workers. `--kubeadmJoin=static` without `--joinString` under `managed`
+  uses the pre-generated join string; an explicit `--joinString` still wins.
+- A `role: control-plane` host never receives worker join units, also in
+  external mode (it renders only the builtin fragment there); it never mints
+  a join token either.
+- The 400 `unsupported distribution kubeadm for os bluefin` applies with
+  `--controlPlane=managed` only. In external mode (the default) Bluefin
+  hosts keep receiving the plain builtin fragment next to a kubeadm-worker
+  profile, as the existing tests and homelab rely on.
+- The kubelet's `cgroup-driver` is set through `KubeletConfiguration` (and
+  `/etc/default/kubelet`, shared with the worker) rather than
+  `kubeletExtraArgs`, which kubeadm warns about as a deprecated flag; only
+  `fail-swap-on=false` is passed as an extra arg.
+- CNI pins verified against the GitHub releases API on 2026-09-25: cilium
+  v1.20.2 + cilium-cli v0.20.1
+  (sha256 `24e817dcfcc8a12e325ce7547617bcbcf171c5b0b335bb24d2bb1207ba047f61`),
+  calico v3.32.2, flannel v0.28.9.
+- **Fedora CoreOS, measured on a live-PXE FCOS 44 VM (2026-09-26)**: `dnf
+  install` and `rpm-ostree usroverlay` both fail (`Remounting /boot
+  read-write: Invalid argument`; `/usr` is `erofs ro`), so the
+  `VARIANT_ID=fedora` / `pkgs.k8s.io` branch of `kube-tools.sh` could only
+  ever have worked on a disk-installed FCOS and is removed: every OS gets the
+  static `dl.k8s.io` binaries in `/opt/bin` (`/opt -> /var/opt` is writable).
+  FCOS ships `/usr/bin/containerd` (2.3.4) with `containerd.service`
+  disabled, so a new `booty-containerd-setup.service` (between kube-tools and
+  kubelet-setup, worker and control plane alike) regenerates
+  `/etc/containerd/config.toml` with `SystemdCgroup = true` (guarded sed on
+  `containerd config default`, stock file kept as `.booty-orig`) and enables
+  it; on Flatcar, whose unit runs `--config /usr/share/containerd/config.toml`
+  with `SystemdCgroup = true` already, it is a no-op that never writes
+  `/etc/containerd/config.toml`. The legacy golden fixtures were refreshed
+  for exactly this change. The FCOS "rpm-ostree layering" risk above is
+  therefore moot; the kubelet unit templates rewritten to `/opt/bin/kubelet`
+  were checked against the current krel `master` templates.
+
+## Evidence: H2 QEMU run (Sisyphus, 2026-09-25/26, bridged lab `br-booty` 10.77.0.0/24)
+
+Booty `feat/cluster-h2` on the host, `--controlPlane=managed --controlPlaneEndpoint=10.77.0.30 --containerdDisk=/dev/vda --controlPlaneDisk=/dev/vdb --cni=cilium --profile=kubeadm-worker --kubeadmJoin=auto --flatcarVersion=4757.2.0`. Three OVMF/KVM VMs powered on together: `cp1` (Flatcar, `role: control-plane`, 4 GiB, two 20 GiB disks), `w-flatcar` (Flatcar, 3 GiB, one disk), `w-fcos` (Fedora CoreOS 44, 3.5 GiB, one disk). Flatcar and FCOS PXE-boot from RAM; dnsmasq reserved 10.77.0.30 for the CP MAC.
+
+`kubectl get nodes -o wide` 7 minutes after power-on (from `cp1`, `/etc/kubernetes/admin.conf`):
+
+```
+NAME        STATUS   ROLES           AGE     VERSION   INTERNAL-IP   OS-IMAGE                                      KERNEL-VERSION           CONTAINER-RUNTIME
+cp1         Ready    control-plane   5m29s   v1.34.3   10.77.0.30    Flatcar Container Linux by Kinvolk 4757.2.0   6.12.109-flatcar         containerd://2.2.5
+w-fcos      Ready    <none>          5m15s   v1.34.3   10.77.0.134   Fedora CoreOS 44.20260829.3.1                 7.1.10-200.fc44.x86_64   containerd://2.3.4
+w-flatcar   Ready    <none>          5m18s   v1.34.3   10.77.0.133   Flatcar Container Linux by Kinvolk 4757.2.0   6.12.109-flatcar         containerd://2.2.5
+```
+
+All 16 pods Running (Cilium 1.20.2 installed by `booty-cni-apply`, marker on the CP disk), `GET /cluster` `ready: true`, `booty-k8s-init` finished once. **Reboot idempotence**: all three VMs `system_reset` at once; 6 minutes later the same three nodes are `Ready`, `kube-system` namespace UID unchanged (`8814e4b9-b262-454d-89fb-e8d44864ff24` before and after), a ConfigMap created before the reboot is still there, `booty-k8s-init` skipped on `ConditionPathExists=!/etc/kubernetes/kubelet.conf`.
+
+Findings that changed the code or docs:
+- Live-PXE FCOS cannot `dnf install` (`/usr` is read-only erofs; bootc status error) → static `dl.k8s.io` binaries on every OS, `booty-containerd-setup.service` enables FCOS's shipped containerd with `SystemdCgroup = true` (no-op on Flatcar).
+- cilium-cli needs `HOME` → `Environment=HOME=/root XDG_CACHE_HOME=/var/cache/booty-cni` on `booty-cni-apply.service`.
+- Without `--containerdDisk`, a 3 GiB PXE worker's tmpfs root filled to 96 % with images (`ImagePullBackOff`) → documented; the lab now gives every node a containerd disk, as the homelab does.
+- Lab-only: VM disks on a tmpfs `/tmp` under memory pressure produced ext4 journal aborts on the guests; disks moved to real storage.

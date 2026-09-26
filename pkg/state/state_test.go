@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/spf13/viper"
@@ -158,5 +159,44 @@ func TestInitReadsBluefinManifestAndPin(t *testing.T) {
 	}
 	if got := LoadLocalBluefinVersion(); got != "" {
 		t.Fatalf("unparseable manifest should yield \"\", got %q", got)
+	}
+}
+
+func TestClusterReadyPersists(t *testing.T) {
+	dir := setup(t)
+	ResetClusterReady()
+	t.Cleanup(ResetClusterReady)
+	Init()
+	if GetClusterReady().Ready {
+		t.Fatal("fresh data dir must not be ready")
+	}
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	changed, err := MarkClusterReady("aa:bb:cc:dd:ee:01", now)
+	if err != nil || !changed {
+		t.Fatalf("first mark: changed=%v err=%v", changed, err)
+	}
+	if r := GetClusterReady(); !r.Ready || r.ReadyAt != "2026-09-26T12:00:00Z" || r.MAC != "aa:bb:cc:dd:ee:01" {
+		t.Fatalf("record %+v", r)
+	}
+	changed, err = MarkClusterReady("aa:bb:cc:dd:ee:02", now.Add(time.Hour))
+	if err != nil || changed || GetClusterReady().ReadyAt != "2026-09-26T12:00:00Z" {
+		t.Fatalf("second mark must be a no-op: changed=%v err=%v %+v", changed, err, GetClusterReady())
+	}
+	info, err := os.Stat(filepath.Join(dir, "cluster", "ready.json"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("ready.json mode %v err=%v", info.Mode(), err)
+	}
+	ResetClusterReady()
+	Init()
+	if r := GetClusterReady(); !r.Ready || r.MAC != "aa:bb:cc:dd:ee:01" {
+		t.Fatalf("Init must reload the persisted state: %+v", r)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cluster", "ready.json"), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ResetClusterReady()
+	Init()
+	if GetClusterReady().Ready {
+		t.Fatal("unparseable state must read as not ready")
 	}
 }
