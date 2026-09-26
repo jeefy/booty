@@ -244,3 +244,24 @@ the same device (startup error). Bluefin installs to disk and is exempt
   for exactly this change. The FCOS "rpm-ostree layering" risk above is
   therefore moot; the kubelet unit templates rewritten to `/opt/bin/kubelet`
   were checked against the current krel `master` templates.
+
+## Evidence: H2 QEMU run (Sisyphus, 2026-09-25/26, bridged lab `br-booty` 10.77.0.0/24)
+
+Booty `feat/cluster-h2` on the host, `--controlPlane=managed --controlPlaneEndpoint=10.77.0.30 --containerdDisk=/dev/vda --controlPlaneDisk=/dev/vdb --cni=cilium --profile=kubeadm-worker --kubeadmJoin=auto --flatcarVersion=4757.2.0`. Three OVMF/KVM VMs powered on together: `cp1` (Flatcar, `role: control-plane`, 4 GiB, two 20 GiB disks), `w-flatcar` (Flatcar, 3 GiB, one disk), `w-fcos` (Fedora CoreOS 44, 3.5 GiB, one disk). Flatcar and FCOS PXE-boot from RAM; dnsmasq reserved 10.77.0.30 for the CP MAC.
+
+`kubectl get nodes -o wide` 7 minutes after power-on (from `cp1`, `/etc/kubernetes/admin.conf`):
+
+```
+NAME        STATUS   ROLES           AGE     VERSION   INTERNAL-IP   OS-IMAGE                                      KERNEL-VERSION           CONTAINER-RUNTIME
+cp1         Ready    control-plane   5m29s   v1.34.3   10.77.0.30    Flatcar Container Linux by Kinvolk 4757.2.0   6.12.109-flatcar         containerd://2.2.5
+w-fcos      Ready    <none>          5m15s   v1.34.3   10.77.0.134   Fedora CoreOS 44.20260829.3.1                 7.1.10-200.fc44.x86_64   containerd://2.3.4
+w-flatcar   Ready    <none>          5m18s   v1.34.3   10.77.0.133   Flatcar Container Linux by Kinvolk 4757.2.0   6.12.109-flatcar         containerd://2.2.5
+```
+
+All 16 pods Running (Cilium 1.20.2 installed by `booty-cni-apply`, marker on the CP disk), `GET /cluster` `ready: true`, `booty-k8s-init` finished once. **Reboot idempotence**: all three VMs `system_reset` at once; 6 minutes later the same three nodes are `Ready`, `kube-system` namespace UID unchanged (`8814e4b9-b262-454d-89fb-e8d44864ff24` before and after), a ConfigMap created before the reboot is still there, `booty-k8s-init` skipped on `ConditionPathExists=!/etc/kubernetes/kubelet.conf`.
+
+Findings that changed the code or docs:
+- Live-PXE FCOS cannot `dnf install` (`/usr` is read-only erofs; bootc status error) → static `dl.k8s.io` binaries on every OS, `booty-containerd-setup.service` enables FCOS's shipped containerd with `SystemdCgroup = true` (no-op on Flatcar).
+- cilium-cli needs `HOME` → `Environment=HOME=/root XDG_CACHE_HOME=/var/cache/booty-cni` on `booty-cni-apply.service`.
+- Without `--containerdDisk`, a 3 GiB PXE worker's tmpfs root filled to 96 % with images (`ImagePullBackOff`) → documented; the lab now gives every node a containerd disk, as the homelab does.
+- Lab-only: VM disks on a tmpfs `/tmp` under memory pressure produced ext4 journal aborts on the guests; disks moved to real storage.

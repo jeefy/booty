@@ -120,6 +120,8 @@ RemainAfterExit=yes
 Restart=on-failure
 RestartSec=30s
 Environment=KUBECONFIG=` + Kubeconfig + `
+Environment=HOME=/root
+Environment=XDG_CACHE_HOME=/var/cache/booty-cni
 ExecStart=` + ScriptPath + `
 
 [Install]
