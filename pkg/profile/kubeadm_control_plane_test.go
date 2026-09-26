@@ -22,7 +22,7 @@ func cpOptions(t *testing.T, cniName string) *ControlPlaneOptions {
 	var install *cni.Install
 	if cniName != cni.None {
 		var err error
-		if install, err = cni.Render(cniName, "", "10.244.0.0/16", UnitInit); err != nil {
+		if install, err = cni.Render(cniName, "", "10.244.0.0/16", cni.Kubeadm(UnitInit)); err != nil {
 			t.Fatal(err)
 		}
 	}

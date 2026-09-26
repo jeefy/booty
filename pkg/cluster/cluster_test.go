@@ -20,6 +20,7 @@ func defaults() Settings {
 		PodCIDR:      config.DefaultPodCIDR,
 		ServiceCIDR:  config.DefaultServiceCIDR,
 		KubeadmJoin:  config.KubeadmJoinStatic,
+		K0sVersion:   config.DefaultK0sVersion,
 	}
 }
 
@@ -66,6 +67,10 @@ func TestValidate(t *testing.T) {
 		{"profile with k0s", func(s *Settings) { s.Profile = "kubeadm-worker"; s.Distribution = K0s }, "conflicts"},
 		{"profile with kubeadm", func(s *Settings) { s.Profile = "kubeadm-worker" }, ""},
 		{"k0s", func(s *Settings) { s.Distribution = K0s }, ""},
+		{"k0s version", func(s *Settings) { s.Distribution = K0s; s.K0sVersion = "1.36.4" }, "--k0sVersion"},
+		{"k0s version ignored under kubeadm", func(s *Settings) { s.K0sVersion = "nope" }, ""},
+		{"k0s token file missing", func(s *Settings) { s.Distribution = K0s; s.K0sTokenFile = "/nonexistent/token" }, "--k0sTokenFile"},
+		{"k0s token file ok", func(s *Settings) { s.Distribution = K0s; s.K0sTokenFile = kubeconfig }, ""},
 		{"managed missing CA dir", func(s *Settings) { s.ControlPlane = Managed; s.CADir = filepath.Join(caDir, "missing") }, "cluster CA"},
 		{"managed CA dir is a file", func(s *Settings) { s.ControlPlane = Managed; s.CADir = filepath.Join(caDir, "ca.crt") }, "cluster CA"},
 		{"managed CA dir ok", func(s *Settings) { s.ControlPlane = Managed; s.CADir = caDir }, ""},
@@ -250,8 +255,12 @@ func TestWarningsControlPlaneDisk(t *testing.T) {
 		t.Fatalf("with a disk: %v", w)
 	}
 	m.Settings.ControlPlaneDisk, m.Settings.Distribution = "", K0s
+	if w := m.Warnings(hosts); len(w) != 1 || !strings.Contains(w[0], "needs --controlPlaneDisk") {
+		t.Fatalf("a PXE k0s controller needs the disk too: %v", w)
+	}
+	hosts["aa:bb:cc:dd:ee:01"].OS = "bluefin"
 	if w := m.Warnings(hosts); len(w) != 0 {
-		t.Fatalf("k0s does not need the disk yet: %v", w)
+		t.Fatalf("bluefin installs to disk and is exempt: %v", w)
 	}
 	for os, want := range map[string]bool{"": true, "flatcar": true, "coreos": true, "bluefin": false} {
 		if got := NeedsControlPlaneDisk(os); got != want {

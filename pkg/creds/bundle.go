@@ -18,7 +18,10 @@
 // 257, no TPM, Secure Boot off). Everything Booty wants on the node
 // therefore travels inside tmpfiles.extra: files, unit files under
 // /etc/systemd/system plus the .wants/ symlinks systemctl enable would
-// have made, and /etc/hostname.
+// have made, /etc/hostname, and under --clusterDistribution=k0s the node's
+// k0s pieces (pkg/cluster/k0s): k0s.yaml, PKI, token, manifests, the
+// ready/CNI units and the ExecStart= drop-in that turns the image's
+// k0scontroller.service into Booty's controller or worker command.
 package creds
 
 import (
@@ -28,10 +31,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jeefy/booty/pkg/cluster/k0s"
 	ign "github.com/jeefy/booty/pkg/ignition"
 )
 
@@ -88,11 +93,12 @@ WantedBy=sysinit.target
 `
 
 // Input is everything the bundle depends on. Server is the host[:port]
-// clients use to reach Booty.
+// clients use to reach Booty; K0s is the host's k0s node (nil: none).
 type Input struct {
 	Hostname string
 	Server   string
 	SSHKeys  []string
+	K0s      *k0s.Node
 }
 
 // Bundle returns the tar of encrypted credentials for in, restricted to the
@@ -164,10 +170,13 @@ func Credentials(in Input, f ign.Features) map[string]string {
 // Units land in /etc/systemd/system with the .wants/ symlink systemctl
 // enable would create, plus a Wants= drop-in on firstBootHook so they also
 // start on the first boot; every later boot loads them from /etc like any
-// other unit.
+// other unit. The k0s node's files and units follow the same rules (and,
+// like --profile, are off under --builtin=none); its drop-in on
+// k0scontroller.service sits next to the Wants= one.
 func TmpfilesRules(in Input, f ign.Features) string {
 	var b strings.Builder
 	var units []string
+	var dropIns []k0s.DropIn
 	if hasHostname(in, f) {
 		fmt.Fprintf(&b, "f+ %s 0644 root root - %s\n", hostnamePath, in.Hostname)
 		writeUnit(&b, HostnameUnitName, hostnameUnit, "sysinit.target")
@@ -187,12 +196,63 @@ func TmpfilesRules(in Input, f ign.Features) string {
 		writeFile(&b, ign.UpdateCheckScriptPath, "0755", "root", ign.UpdateCheckScript(in.Server))
 		units = append(units, ign.UpdateTimerName)
 	}
-	if len(units) > 0 {
-		dir := unitDir + "/" + firstBootHook + ".d"
-		fmt.Fprintf(&b, "d %s 0755 root root -\n", dir)
-		writeFile(&b, dir+"/booty.conf", "0644", "root", "[Unit]\nWants="+strings.Join(units, " ")+"\n")
+	if in.K0s != nil && f.Enabled() {
+		for _, dir := range k0sDirs(in.K0s) {
+			fmt.Fprintf(&b, "d %s 0755 root root -\n", dir)
+		}
+		for _, file := range in.K0s.Files {
+			writeFile(&b, file.Path, fmt.Sprintf("%04o", file.Mode), "root", file.Contents)
+		}
+		for _, u := range in.K0s.Units {
+			writeUnit(&b, u.Name, u.Contents, u.WantedBy)
+			units = append(units, u.Name)
+		}
+		dropIns = in.K0s.DropIns
 	}
+	if len(units) > 0 {
+		dropIns = append(dropIns, k0s.DropIn{Unit: firstBootHook, Name: "booty.conf", Contents: "[Unit]\nWants=" + strings.Join(units, " ") + "\n"})
+	}
+	writeDropIns(&b, dropIns)
 	return b.String()
+}
+
+// k0sDirs lists the parent directories of the node's files under /etc/k0s
+// and /var/lib/k0s, sorted so parents come first.
+func k0sDirs(n *k0s.Node) []string {
+	seen := map[string]bool{}
+	for _, f := range n.Files {
+		dir := path.Dir(f.Path)
+		if !strings.HasPrefix(dir, k0s.ConfigDir) && !strings.HasPrefix(dir, k0s.DataDir) {
+			continue
+		}
+		for d := dir; d != "/" && d != "/etc" && d != "/var/lib"; d = path.Dir(d) {
+			seen[d] = true
+		}
+	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+func writeDropIns(b *strings.Builder, dropIns []k0s.DropIn) {
+	byUnit := map[string][]k0s.DropIn{}
+	var order []string
+	for _, d := range dropIns {
+		if _, ok := byUnit[d.Unit]; !ok {
+			order = append(order, d.Unit)
+		}
+		byUnit[d.Unit] = append(byUnit[d.Unit], d)
+	}
+	for _, unit := range order {
+		dir := unitDir + "/" + unit + ".d"
+		fmt.Fprintf(b, "d %s 0755 root root -\n", dir)
+		for _, d := range byUnit[unit] {
+			writeFile(b, dir+"/"+d.Name, "0644", "root", d.Contents)
+		}
+	}
 }
 
 func hasHostname(in Input, f ign.Features) bool {

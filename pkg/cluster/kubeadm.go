@@ -29,7 +29,7 @@ func (m *Manager) RenderCheck(hosts map[string]*hardware.Host, host *hardware.Ho
 	if !Supports(host.OS, m.Settings.Distribution) {
 		return fmt.Errorf("%w %s for os %s", ErrUnsupportedOS, m.Settings.Distribution, host.OS)
 	}
-	if !host.IsControlPlane() || m.Settings.Distribution != Kubeadm {
+	if !host.IsControlPlane() {
 		return nil
 	}
 	if m.Settings.ControlPlaneDisk == "" && NeedsControlPlaneDisk(host.OS) {
@@ -93,7 +93,7 @@ func (m *Manager) ControlPlaneOptions(hosts map[string]*hardware.Host, host *har
 	if err != nil {
 		return nil, err
 	}
-	install, err := cni.Render(string(m.Settings.CNI), m.Settings.CNIRelease, m.Settings.PodCIDR, profile.UnitInit)
+	install, err := cni.Render(string(m.Settings.CNI), m.Settings.CNIRelease, m.Settings.PodCIDR, cni.Kubeadm(profile.UnitInit))
 	if err != nil {
 		return nil, err
 	}

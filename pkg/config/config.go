@@ -78,6 +78,7 @@ const (
 	K0sTokenFile        = "k0sTokenFile"
 	Kubeconfig          = "kubeconfig"
 	ControlPlaneDisk    = "controlPlaneDisk"
+	K0sVersion          = "k0sVersion"
 )
 
 // Cluster bootstrap defaults and the directory (relative to DataDir) that
@@ -94,6 +95,10 @@ const (
 	DefaultCNI                 = "cilium"
 	DefaultPodCIDR             = "10.244.0.0/16"
 	DefaultServiceCIDR         = "10.96.0.0/12"
+	// DefaultK0sVersion is the k0s release Flatcar/CoreOS nodes download;
+	// it matches the /usr/bin/k0s Bluefin Server 26.08.0 ships so a mixed
+	// cluster runs one k0s version.
+	DefaultK0sVersion = "v1.36.4+k0s.0"
 )
 
 // ClusterPath joins elem onto DataDir/cluster.
@@ -312,6 +317,7 @@ func LoadConfig() {
 	viper.SetDefault(K0sTokenFile, "")
 	viper.SetDefault(Kubeconfig, "")
 	viper.SetDefault(ControlPlaneDisk, "")
+	viper.SetDefault(K0sVersion, DefaultK0sVersion)
 }
 
 func bindEnv(key, env string) {

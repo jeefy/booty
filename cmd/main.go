@@ -14,6 +14,7 @@ import (
 
 	booty "github.com/jeefy/booty"
 	"github.com/jeefy/booty/pkg/cluster"
+	"github.com/jeefy/booty/pkg/cluster/k0s"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/dhcp"
 	"github.com/jeefy/booty/pkg/hardware"
@@ -81,7 +82,7 @@ func init() {
 	flags.String(config.K8sVersion, config.DefaultK8sVersion, "Kubernetes release installed by the kubeadm-worker profile")
 	flags.String(config.CNIVersion, config.DefaultCNIVersion, "containernetworking/plugins release installed by the kubeadm-worker profile")
 	flags.String(config.CrictlVersion, "", "cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)")
-	flags.String(config.ContainerdDisk, "", "Block device the kubeadm-worker profile formats (ext4, wiped on every boot) and mounts at /var/lib/containerd, e.g. /dev/sda; empty keeps containerd on the root filesystem")
+	flags.String(config.ContainerdDisk, "", "Block device PXE-booted nodes format (ext4, wiped on every boot) for their image cache: /var/lib/containerd under kubeadm, /var/lib/k0s on a k0s worker and /var/lib/k0s/containerd on a k0s controller, e.g. /dev/sda; empty keeps it on the root filesystem")
 	flags.String(config.KubeletUnitsURL, config.DefaultKubeletUnitsURL, "Base URL the kubeadm-worker profile fetches kubelet/kubelet.service and kubeadm/10-kubeadm.conf from (pin or mirror it)")
 	flags.String(config.ClusterDistribution, config.DefaultClusterDistribution, "Kubernetes distribution of the cluster Booty provisions: 'kubeadm' or 'k0s' (Bluefin hosts support k0s only)")
 	flags.String(config.ControlPlane, config.DefaultControlPlane, "Who runs the control plane: 'external' (join-only, today's behaviour) or 'managed' (Booty generates the cluster CA under --dataDir/cluster/ and renders the role: control-plane host)")
@@ -93,7 +94,8 @@ func init() {
 	flags.String(config.ServiceCIDR, config.DefaultServiceCIDR, "Service network CIDR of the cluster")
 	flags.String(config.K0sTokenFile, "", "File holding a pre-made k0s worker join token for an external k0s control plane")
 	flags.String(config.Kubeconfig, "", "Kubeconfig for minting --kubeadmJoin=auto tokens against an external kubeadm control plane from outside the cluster")
-	flags.String(config.ControlPlaneDisk, "", "Block device the managed kubeadm control plane formats once (ext4, label booty-cp, never wiped) and keeps /etc/kubernetes, /var/lib/etcd and /var/lib/kubelet on, e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS and must differ from --containerdDisk")
+	flags.String(config.ControlPlaneDisk, "", "Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk")
+	flags.String(config.K0sVersion, config.DefaultK0sVersion, "k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt)")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
@@ -157,12 +159,16 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin), "profile", viper.GetString(config.Profile), "kubeadmJoin", viper.GetString(config.KubeadmJoin))
 	slog.Info("Cluster settings", "distribution", clusterSettings.Distribution, "controlPlane", clusterSettings.ControlPlane, "endpoint", clusterSettings.Endpoint, "cni", clusterSettings.CNI, "controlPlaneDisk", clusterSettings.ControlPlaneDisk)
-	if clusterSettings.ManagedKubeadm() {
-		if clusterSettings.Profile == "" {
-			slog.Info("Managed kubeadm control plane implies the kubeadm-worker profile for worker hosts")
-		}
-		if clusterSettings.ControlPlaneDisk == "" {
-			slog.Warn("--controlPlaneDisk is not set; Flatcar/CoreOS control-plane hosts will be refused at render time (HTTP 400)")
+	if clusterSettings.ManagedKubeadm() && clusterSettings.Profile == "" {
+		slog.Info("Managed kubeadm control plane implies the kubeadm-worker profile for worker hosts")
+	}
+	if clusterSettings.Managed() && clusterSettings.ControlPlaneDisk == "" {
+		slog.Warn("--controlPlaneDisk is not set; Flatcar/CoreOS control-plane hosts will be refused at render time (HTTP 400)")
+	}
+	if clusterSettings.Distribution == cluster.K0s {
+		slog.Info("k0s nodes", "k0sVersion", clusterSettings.K0sVersion, "provider", k0s.Provider(string(clusterSettings.CNI)), "bluefinBinary", k0s.BluefinBinary, "pxeBinary", k0s.PXEBinary)
+		if clusterSettings.ControlPlane == cluster.External && clusterSettings.K0sTokenFile == "" {
+			slog.Warn("--clusterDistribution=k0s with an external control plane but no --k0sTokenFile; workers get no k0s units")
 		}
 	}
 	if !builtin.Enabled() {

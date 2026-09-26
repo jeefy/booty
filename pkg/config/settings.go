@@ -23,7 +23,7 @@ var Keys = []string{
 	HostnameTemplate, BluefinRepo, BluefinVersion, GithubToken,
 	InstallMinDuration, ClusterDistribution, ControlPlane, ControlPlaneEndpt,
 	ClusterCADir, CNI, CNIRelease, PodCIDR, ServiceCIDR, K0sTokenFile,
-	Kubeconfig, ControlPlaneDisk,
+	Kubeconfig, ControlPlaneDisk, K0sVersion,
 }
 
 // Where a setting's effective value comes from, mirroring viper's

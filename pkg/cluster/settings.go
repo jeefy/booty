@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jeefy/booty/pkg/cluster/k0s"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/spf13/viper"
@@ -71,6 +72,8 @@ type Settings struct {
 	// device for both.
 	ControlPlaneDisk string
 	ContainerdDisk   string
+	// K0sVersion is the release PXE-booted k0s nodes download.
+	K0sVersion string
 }
 
 // FromConfig reads the cluster settings from viper.
@@ -90,6 +93,7 @@ func FromConfig() Settings {
 		KubeadmJoin:      viper.GetString(config.KubeadmJoin),
 		ControlPlaneDisk: strings.TrimSpace(viper.GetString(config.ControlPlaneDisk)),
 		ContainerdDisk:   strings.TrimSpace(viper.GetString(config.ContainerdDisk)),
+		K0sVersion:       strings.TrimSpace(viper.GetString(config.K0sVersion)),
 	}
 }
 
@@ -98,6 +102,9 @@ func (s Settings) Managed() bool { return s.ControlPlane == Managed }
 
 // ManagedKubeadm reports whether Booty renders a kubeadm control plane.
 func (s Settings) ManagedKubeadm() bool { return s.Managed() && s.Distribution == Kubeadm }
+
+// ManagedK0s reports whether Booty renders a k0s controller.
+func (s Settings) ManagedK0s() bool { return s.Managed() && s.Distribution == K0s }
 
 // Validate checks the flag values against each other. It is what cmd/main
 // runs at startup; every message names the offending flag.
@@ -132,6 +139,16 @@ func (s Settings) Validate() error {
 	if s.Kubeconfig != "" {
 		if _, err := os.Stat(s.Kubeconfig); err != nil {
 			return fmt.Errorf("--%s: %w", config.Kubeconfig, err)
+		}
+	}
+	if s.K0sTokenFile != "" {
+		if _, err := os.Stat(s.K0sTokenFile); err != nil {
+			return fmt.Errorf("--%s: %w", config.K0sTokenFile, err)
+		}
+	}
+	if s.Distribution == K0s {
+		if err := k0s.ValidateVersion(s.K0sVersion); err != nil {
+			return err
 		}
 	}
 	if err := hardware.ValidateInstallDisk(s.ControlPlaneDisk); err != nil {
