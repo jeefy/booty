@@ -111,6 +111,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/config/template", handleConfigTemplateRequest)
 	mux.HandleFunc("/config/template/validate", handleConfigTemplateValidateRequest)
 	mux.HandleFunc("/cluster", handleClusterRequest)
+	mux.HandleFunc("/cluster/ready", handleClusterReadyRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.HandleFunc(credsPathPrefix, handleCredsRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
