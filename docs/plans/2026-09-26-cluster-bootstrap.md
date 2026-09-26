@@ -227,3 +227,20 @@ the same device (startup error). Bluefin installs to disk and is exempt
   v1.20.2 + cilium-cli v0.20.1
   (sha256 `24e817dcfcc8a12e325ce7547617bcbcf171c5b0b335bb24d2bb1207ba047f61`),
   calico v3.32.2, flannel v0.28.9.
+- **Fedora CoreOS, measured on a live-PXE FCOS 44 VM (2026-09-26)**: `dnf
+  install` and `rpm-ostree usroverlay` both fail (`Remounting /boot
+  read-write: Invalid argument`; `/usr` is `erofs ro`), so the
+  `VARIANT_ID=fedora` / `pkgs.k8s.io` branch of `kube-tools.sh` could only
+  ever have worked on a disk-installed FCOS and is removed: every OS gets the
+  static `dl.k8s.io` binaries in `/opt/bin` (`/opt -> /var/opt` is writable).
+  FCOS ships `/usr/bin/containerd` (2.3.4) with `containerd.service`
+  disabled, so a new `booty-containerd-setup.service` (between kube-tools and
+  kubelet-setup, worker and control plane alike) regenerates
+  `/etc/containerd/config.toml` with `SystemdCgroup = true` (guarded sed on
+  `containerd config default`, stock file kept as `.booty-orig`) and enables
+  it; on Flatcar, whose unit runs `--config /usr/share/containerd/config.toml`
+  with `SystemdCgroup = true` already, it is a no-op that never writes
+  `/etc/containerd/config.toml`. The legacy golden fixtures were refreshed
+  for exactly this change. The FCOS "rpm-ostree layering" risk above is
+  therefore moot; the kubelet unit templates rewritten to `/opt/bin/kubelet`
+  were checked against the current krel `master` templates.
