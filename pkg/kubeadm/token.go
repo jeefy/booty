@@ -22,10 +22,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jeefy/booty/pkg/cluster/pki"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,13 +51,18 @@ const (
 // (KUBERNETES_SERVICE_HOST unset and no explicit KubeConfig.APIServer).
 var ErrNotInCluster = errors.New("not running inside a Kubernetes cluster (KUBERNETES_SERVICE_HOST unset)")
 
-// KubeConfig is how the minter reaches the API server. The bearer token is
-// re-read from TokenFile on every request because projected service account
-// tokens rotate.
+// KubeConfig is how the minter reaches the API server. Credentials are
+// either a bearer token (TokenFile is re-read on every request because
+// projected service account tokens rotate; Token is static) or a client
+// certificate. The CA comes from CAData (PEM) or CAFile.
 type KubeConfig struct {
-	APIServer string
-	TokenFile string
-	CAFile    string
+	APIServer      string
+	TokenFile      string
+	Token          string
+	CAFile         string
+	CAData         []byte
+	ClientCertData []byte
+	ClientKeyData  []byte
 }
 
 // InClusterConfig builds a KubeConfig from the standard in-cluster
@@ -72,6 +79,167 @@ func InClusterConfig() KubeConfig {
 	return cfg
 }
 
+// InCluster returns a Minter for the cluster Booty runs in; outside a
+// cluster every mint fails with ErrNotInCluster.
+func InCluster(ttl time.Duration) *Minter {
+	return New(InClusterConfig(), ttl)
+}
+
+// FromKubeconfig returns a Minter authenticating with the current context
+// of the kubeconfig file at path (client certificate or bearer token).
+func FromKubeconfig(path string, ttl time.Duration) (*Minter, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading kubeconfig: %w", err)
+	}
+	cfg, err := ParseKubeconfig(data, filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("kubeconfig %s: %w", path, err)
+	}
+	return New(cfg, ttl), nil
+}
+
+// FromCA returns a Minter for a Booty-managed control plane: it
+// authenticates with an admin client certificate signed by the cluster CA
+// and, since it knows the CA, never has to read kube-public/cluster-info
+// for the discovery hash. endpoint is host[:port] (default :6443).
+func FromCA(p *pki.PKI, endpoint string, ttl time.Duration) (*Minter, error) {
+	kubeconfig, err := p.AdminKubeconfig(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := ParseKubeconfig(kubeconfig, "")
+	if err != nil {
+		return nil, fmt.Errorf("admin kubeconfig: %w", err)
+	}
+	m := New(cfg, ttl)
+	u, err := url.Parse(cfg.APIServer)
+	if err != nil {
+		return nil, err
+	}
+	m.info = clusterInfo{endpoint: u.Host, caHash: strings.TrimPrefix(p.DiscoveryHash(), "sha256:"), static: true}
+	return m, nil
+}
+
+// ParseKubeconfig extracts the API server, CA and credentials of the
+// current context from kubeconfig YAML. File references (certificate-
+// authority, client-certificate, client-key, tokenFile) are resolved
+// relative to dir.
+func ParseKubeconfig(data []byte, dir string) (KubeConfig, error) {
+	var kc struct {
+		CurrentContext string `yaml:"current-context"`
+		Clusters       []struct {
+			Name    string `yaml:"name"`
+			Cluster struct {
+				Server   string `yaml:"server"`
+				CAData   string `yaml:"certificate-authority-data"`
+				CAFile   string `yaml:"certificate-authority"`
+				Insecure bool   `yaml:"insecure-skip-tls-verify"`
+			} `yaml:"cluster"`
+		} `yaml:"clusters"`
+		Contexts []struct {
+			Name    string `yaml:"name"`
+			Context struct {
+				Cluster string `yaml:"cluster"`
+				User    string `yaml:"user"`
+			} `yaml:"context"`
+		} `yaml:"contexts"`
+		Users []struct {
+			Name string `yaml:"name"`
+			User struct {
+				Token     string `yaml:"token"`
+				TokenFile string `yaml:"tokenFile"`
+				CertData  string `yaml:"client-certificate-data"`
+				KeyData   string `yaml:"client-key-data"`
+				CertFile  string `yaml:"client-certificate"`
+				KeyFile   string `yaml:"client-key"`
+			} `yaml:"user"`
+		} `yaml:"users"`
+	}
+	if err := yaml.Unmarshal(data, &kc); err != nil {
+		return KubeConfig{}, err
+	}
+	if len(kc.Contexts) == 0 {
+		return KubeConfig{}, errors.New("no contexts")
+	}
+	ctxName := kc.CurrentContext
+	if ctxName == "" {
+		ctxName = kc.Contexts[0].Name
+	}
+	clusterName, userName := "", ""
+	for _, c := range kc.Contexts {
+		if c.Name == ctxName {
+			clusterName, userName = c.Context.Cluster, c.Context.User
+		}
+	}
+	if clusterName == "" {
+		return KubeConfig{}, fmt.Errorf("context %q not found", ctxName)
+	}
+	var cfg KubeConfig
+	found := false
+	for _, c := range kc.Clusters {
+		if c.Name != clusterName {
+			continue
+		}
+		found = true
+		cfg.APIServer = c.Cluster.Server
+		if c.Cluster.Insecure {
+			return KubeConfig{}, errors.New("insecure-skip-tls-verify is not supported")
+		}
+		var err error
+		if cfg.CAData, err = pemField(c.Cluster.CAData, c.Cluster.CAFile, dir); err != nil {
+			return KubeConfig{}, fmt.Errorf("cluster %s CA: %w", clusterName, err)
+		}
+	}
+	if !found || cfg.APIServer == "" {
+		return KubeConfig{}, fmt.Errorf("cluster %q has no server", clusterName)
+	}
+	if u, err := url.Parse(cfg.APIServer); err != nil || u.Scheme != "https" || u.Host == "" {
+		return KubeConfig{}, fmt.Errorf("server %q must be an https URL", cfg.APIServer)
+	}
+	for _, u := range kc.Users {
+		if u.Name != userName {
+			continue
+		}
+		var err error
+		cfg.Token = u.User.Token
+		if u.User.TokenFile != "" {
+			cfg.TokenFile = resolvePath(u.User.TokenFile, dir)
+		}
+		if cfg.ClientCertData, err = pemField(u.User.CertData, u.User.CertFile, dir); err != nil {
+			return KubeConfig{}, fmt.Errorf("user %s client certificate: %w", userName, err)
+		}
+		if cfg.ClientKeyData, err = pemField(u.User.KeyData, u.User.KeyFile, dir); err != nil {
+			return KubeConfig{}, fmt.Errorf("user %s client key: %w", userName, err)
+		}
+	}
+	if cfg.Token == "" && cfg.TokenFile == "" && (cfg.ClientCertData == nil || cfg.ClientKeyData == nil) {
+		return KubeConfig{}, fmt.Errorf("user %q has neither a token nor a client certificate and key", userName)
+	}
+	return cfg, nil
+}
+
+func pemField(b64, file, dir string) ([]byte, error) {
+	switch {
+	case b64 != "":
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, fmt.Errorf("decoding base64: %w", err)
+		}
+		return data, nil
+	case file != "":
+		return os.ReadFile(resolvePath(file, dir))
+	}
+	return nil, nil
+}
+
+func resolvePath(p, dir string) string {
+	if filepath.IsAbs(p) || dir == "" {
+		return p
+	}
+	return filepath.Join(dir, p)
+}
+
 type cachedJoin struct {
 	join    string
 	expires time.Time
@@ -81,6 +249,7 @@ type clusterInfo struct {
 	endpoint string
 	caHash   string
 	fetched  time.Time
+	static   bool
 }
 
 // Minter creates bootstrap tokens and caches the resulting join strings per
@@ -111,6 +280,9 @@ func New(cfg KubeConfig, ttl time.Duration) *Minter {
 
 // TTL is the token lifetime the minter writes into each Secret.
 func (m *Minter) TTL() time.Duration { return m.ttl }
+
+// APIServer is the URL the minter talks to; empty outside a cluster.
+func (m *Minter) APIServer() string { return m.cfg.APIServer }
 
 // Cached returns the join string minted earlier for mac if it is still
 // within the cache window. It never talks to the API server.
@@ -238,7 +410,7 @@ func (m *Minter) clusterInfo(ctx context.Context) (clusterInfo, error) {
 	m.mu.Lock()
 	info := m.info
 	m.mu.Unlock()
-	if info.endpoint != "" && m.now().Sub(info.fetched) < clusterInfoTTL {
+	if info.static || (info.endpoint != "" && m.now().Sub(info.fetched) < clusterInfoTTL) {
 		return info, nil
 	}
 	resp, err := m.do(ctx, http.MethodGet, clusterInfoPath, nil)
@@ -416,29 +588,54 @@ func secretField(s secret, key string) string {
 
 func (m *Minter) httpClient() (*http.Client, error) {
 	m.clientOnce.Do(func() {
-		pool := x509.NewCertPool()
-		if m.cfg.CAFile != "" {
-			ca, err := os.ReadFile(m.cfg.CAFile)
+		var pool *x509.CertPool
+		ca := m.cfg.CAData
+		if ca == nil && m.cfg.CAFile != "" {
+			data, err := os.ReadFile(m.cfg.CAFile)
 			if err != nil {
 				m.clientErr = fmt.Errorf("reading API server CA: %w", err)
 				return
 			}
+			ca = data
+		}
+		if ca != nil {
+			pool = x509.NewCertPool()
 			if !pool.AppendCertsFromPEM(ca) {
-				m.clientErr = fmt.Errorf("API server CA %s holds no certificate", m.cfg.CAFile)
+				m.clientErr = errors.New("API server CA holds no certificate")
 				return
 			}
+		}
+		tlsCfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+		if m.cfg.ClientCertData != nil || m.cfg.ClientKeyData != nil {
+			cert, err := tls.X509KeyPair(m.cfg.ClientCertData, m.cfg.ClientKeyData)
+			if err != nil {
+				m.clientErr = fmt.Errorf("loading client certificate: %w", err)
+				return
+			}
+			tlsCfg.Certificates = []tls.Certificate{cert}
 		}
 		m.client = &http.Client{
 			Timeout: requestTimeout,
 			Transport: &http.Transport{
 				Proxy:               nil,
-				TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+				TLSClientConfig:     tlsCfg,
 				TLSHandshakeTimeout: requestTimeout,
 				IdleConnTimeout:     90 * time.Second,
 			},
 		}
 	})
 	return m.client, m.clientErr
+}
+
+func (m *Minter) bearerToken() (string, error) {
+	if m.cfg.TokenFile == "" {
+		return m.cfg.Token, nil
+	}
+	token, err := os.ReadFile(m.cfg.TokenFile)
+	if err != nil {
+		return "", fmt.Errorf("reading service account token: %w", err)
+	}
+	return strings.TrimSpace(string(token)), nil
 }
 
 func (m *Minter) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
@@ -449,9 +646,9 @@ func (m *Minter) do(ctx context.Context, method, path string, body []byte) (*htt
 	if err != nil {
 		return nil, err
 	}
-	token, err := os.ReadFile(m.cfg.TokenFile)
+	token, err := m.bearerToken()
 	if err != nil {
-		return nil, fmt.Errorf("reading service account token: %w", err)
+		return nil, err
 	}
 	// The timeout must outlive this function: callers stream the body after
 	// we return, and cancelling here would abort that read mid-way.
@@ -461,7 +658,9 @@ func (m *Minter) do(ctx context.Context, method, path string, body []byte) (*htt
 		cancel()
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
