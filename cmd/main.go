@@ -96,6 +96,13 @@ func init() {
 	flags.String(config.Kubeconfig, "", "Kubeconfig for minting join tokens against an external control plane from outside the cluster: kubeadm with --kubeadmJoin=auto, k0s worker tokens always")
 	flags.String(config.ControlPlaneDisk, "", "Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk")
 	flags.String(config.K0sVersion, config.DefaultK0sVersion, "k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt)")
+	flags.String(config.EFIBootloader, config.EFIBootloaderIPXE, "iPXE build ProxyDHCP hands x86-64 UEFI clients: 'ipxe' (ipxe.efi, iPXE's own NIC drivers) or 'snponly' (snponly.efi, the firmware's network stack); HTTP Boot clients get the matching signed shim (ipxe-shimx64.efi / snponly-shimx64.efi)")
+	flags.Bool(config.SecureBoot, false, "Answer UEFI HTTP Boot clients (Secure Boot firmware) over ProxyDHCP with a Microsoft-signed iPXE shim and sync the signed boot artefacts into --dataDir/secureboot/; requires --proxyDHCP. Off: HTTP Boot clients are ignored and nothing is downloaded")
+	flags.String(config.SecureBootIPXEShim, config.DefaultSecureBootIPXEShim, "ipxe/shim release providing the Microsoft-signed ipxe-shimx64.efi (sha256 pinned in code for the default, the release's asset digest otherwise)")
+	flags.String(config.SecureBootIPXE, config.DefaultSecureBootIPXE, "ipxe/ipxe release whose ipxeboot.tar.gz provides the iPXE-CA-signed x86_64-sb/ipxe.efi and snponly.efi (sha256 pinned in code for the default)")
+	flags.String(config.FedoraShimVersion, config.DefaultFedoraShimVersion, "Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default")
+	flags.String(config.FedoraGrubVersion, config.DefaultFedoraGrubVersion, "Fedora grub2-efi-x64 package version (e.g. 2.12-64.fc44) whose grubx64.efi is served next to the Fedora shim; sha256 pinned in code for the default")
+	flags.String(config.SecureBootTrusted, "", "Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar/Bluefin kernels may be booted under Secure Boot")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
@@ -154,6 +161,12 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err := clusterSettings.Validate(); err != nil {
 		return err
 	}
+	if err := config.ValidateEFIBootloader(viper.GetString(config.EFIBootloader)); err != nil {
+		return err
+	}
+	if err := versions.ValidateSecureBootFlags(); err != nil {
+		return err
+	}
 	if err := config.ResolveServerAddress(); err != nil {
 		return err
 	}
@@ -179,6 +192,13 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	if p := viper.GetString(config.Profile); p != "" && !builtin.Enabled() {
 		slog.Warn("--profile has no effect with --builtin=none", "profile", p)
+	}
+	if viper.GetBool(config.SecureBoot) {
+		trusted, _ := config.ParseSecureBootTrusted(viper.GetString(config.SecureBootTrusted))
+		slog.Info("Secure Boot (UEFI HTTP Boot) enabled", "bootURL", config.SecureBootURL(), "bundle", versions.SecureBootBundleVersion(), "trusted", trusted, "efiBootloader", viper.GetString(config.EFIBootloader))
+		if !viper.GetBool(config.ProxyDHCP) {
+			slog.Warn("--secureBoot without --proxyDHCP: the signed shim is only ever handed out through the ProxyDHCP HTTP Boot OFFER, so no Secure Boot client will reach Booty")
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
@@ -272,12 +292,13 @@ func run(cmd *cobra.Command, argv []string) error {
 		versions.FlatcarVersionCheck()
 		versions.CoreOSVersionCheck()
 		versions.BluefinVersionCheck()
+		versions.SecureBootVersionCheck()
 		<-ready
 		versions.ReplayStoredManifests(ctx, "http://"+config.LocalRegistry())
 		versions.OSTreeImageSync()
 	}()
 
-	var extraJobs []versions.Job
+	extraJobs := []versions.Job{{Name: "secureboot", Fn: versions.SecureBootVersionCheck}}
 	if minter != nil {
 		extraJobs = append(extraJobs, versions.Job{Name: "bootstrap-token-cleanup", Fn: func() { cleanupJoinTokens(ctx, minter) }})
 	}
@@ -336,12 +357,20 @@ func startProxyDHCP(errCh chan<- error) (*dhcp.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	efiFile, httpBootFile := dhcp.DefaultEFIFile, dhcp.DefaultHTTPBootEFIFile
+	if viper.GetString(config.EFIBootloader) == config.EFIBootloaderSnponly {
+		efiFile, httpBootFile = "snponly.efi", dhcp.SnponlyHTTPBootEFIFile
+	}
 	return dhcp.Start(dhcp.Config{
-		Listen:   viper.GetString(config.ProxyDHCPListen),
-		ServerIP: net.ParseIP(viper.GetString(config.ServerIP)),
-		Relay:    viper.GetBool(config.ProxyDHCPRelay),
-		Port67:   port67,
-		Port4011: port4011,
+		Listen:          viper.GetString(config.ProxyDHCPListen),
+		ServerIP:        net.ParseIP(viper.GetString(config.ServerIP)),
+		Relay:           viper.GetBool(config.ProxyDHCPRelay),
+		EFIFile:         efiFile,
+		HTTPBoot:        viper.GetBool(config.SecureBoot),
+		HTTPBootBase:    config.SecureBootURL(),
+		HTTPBootEFIFile: httpBootFile,
+		Port67:          port67,
+		Port4011:        port4011,
 	}, errCh)
 }
 
