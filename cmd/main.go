@@ -104,7 +104,7 @@ func init() {
 	flags.String(config.SecureBootIPXE, config.DefaultSecureBootIPXE, "ipxe/ipxe release whose ipxeboot.tar.gz provides the iPXE-CA-signed x86_64-sb/ipxe.efi and snponly.efi (sha256 pinned in code for the default)")
 	flags.String(config.FedoraShimVersion, config.DefaultFedoraShimVersion, "Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default")
 	flags.String(config.FedoraGrubVersion, config.DefaultFedoraGrubVersion, "Fedora grub2-efi-x64 package version (e.g. 2.12-64.fc44) whose grubx64.efi is served next to the Fedora shim; sha256 pinned in code for the default")
-	flags.String(config.SecureBootTrusted, "", "Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar/Bluefin kernels may be booted under Secure Boot")
+	flags.String(config.SecureBootTrusted, "", "Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar kernels may be booted under Secure Boot")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
