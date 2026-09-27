@@ -38,6 +38,12 @@ export interface Host {
    */
   role?: HostRole | ''
   /**
+   * True when the host's last boot script was fetched through the Secure
+   * Boot path (the signed iPXE handed out over UEFI HTTP Boot). Set by the
+   * server, cleared by a plain PXE fetch; not a firmware attestation.
+   */
+  secureBoot?: boolean
+  /**
    * Version the host last reported, or `image@digest` for ostree hosts.
    * "" if the host has never checked in.
    */
@@ -66,12 +72,61 @@ export interface FleetInfo {
   pendingReboots?: number
 }
 
+export interface FlatcarCAInfo {
+  flatcarVersion: string
+  sha256: string
+  subject: string
+  notAfter: string
+  /** Download URL of the DER certificate to enroll in the firmware db. */
+  url: string
+}
+
+/** GET /info `secureBoot` block; `warnings` names hosts that cannot boot through Secure Boot. */
+export interface SecureBootInfo {
+  enabled: boolean
+  ready: boolean
+  bundleVersion: string
+  trusted: string[]
+  bootURL: string
+  flatcarCA: FlatcarCAInfo | null
+  warnings: string[]
+}
+
+export type RawSecureBootInfo = Partial<Omit<SecureBootInfo, 'flatcarCA' | 'trusted' | 'warnings'>> & {
+  flatcarCA?: Partial<FlatcarCAInfo> | null
+  trusted?: (string | null)[]
+  warnings?: (string | null)[]
+}
+
+export function normalizeSecureBootInfo(raw: RawSecureBootInfo | null | undefined): SecureBootInfo {
+  const ca = raw?.flatcarCA
+  return {
+    enabled: raw?.enabled ?? false,
+    ready: raw?.ready ?? false,
+    bundleVersion: raw?.bundleVersion ?? '',
+    trusted: (raw?.trusted ?? []).filter((t): t is string => typeof t === 'string' && t !== ''),
+    bootURL: raw?.bootURL ?? '',
+    flatcarCA:
+      ca && ca.sha256
+        ? {
+            flatcarVersion: ca.flatcarVersion ?? '',
+            sha256: ca.sha256,
+            subject: ca.subject ?? '',
+            notAfter: ca.notAfter ?? '',
+            url: ca.url ?? ''
+          }
+        : null,
+    warnings: (raw?.warnings ?? []).filter((w): w is string => typeof w === 'string' && w !== '')
+  }
+}
+
 export interface Info {
   flatcar?: { version?: string; pinnedVersion?: string }
   coreos?: { version?: string }
   bluefin?: { version?: string; pinnedVersion?: string }
   booty?: { version?: string; timestamp?: string }
   fleet?: FleetInfo
+  secureBoot?: RawSecureBootInfo
 }
 
 export interface PinState {
@@ -263,6 +318,7 @@ export interface ClusterHost {
   role: HostRole
   /** RFC3339 timestamp of the last Ignition fetch, or "" if never booted. */
   booted: string
+  secureBoot: boolean
 }
 
 /** GET /cluster response. `caFingerprint` is the public-key hash, never key material. */
@@ -301,7 +357,8 @@ export function normalizeClusterInfo(raw: RawClusterInfo | null | undefined): Cl
       hostname: h.hostname ?? '',
       os: h.os ?? '',
       role: hostRole(h.role),
-      booted: h.booted ?? ''
+      booted: h.booted ?? '',
+      secureBoot: h.secureBoot ?? false
     })),
     warnings: (raw?.warnings ?? []).filter((w): w is string => typeof w === 'string' && w !== '')
   }
