@@ -55,6 +55,24 @@ const baseInfo = {
 
 const FINGERPRINT = 'sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
 
+const FLATCAR_CA_SHA = 'ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2'
+
+const secureBootInfo = {
+  enabled: true,
+  ready: true,
+  bundleVersion: 'ipxe-16.1_v2.0.0_shim-16.1-7_grub-2.12-64.fc44',
+  trusted: ['microsoft', 'flatcar'],
+  bootURL: 'http://10.0.0.1:8080/boot/sb',
+  flatcarCA: {
+    flatcarVersion: '4757.2.0',
+    sha256: FLATCAR_CA_SHA,
+    subject: 'CN=Flatcar Container Linux Secure Boot Development CA',
+    notAfter: '2037-01-19T00:00:00Z',
+    url: 'http://10.0.0.1:8080/boot/secureboot/flatcar-ca.der'
+  },
+  warnings: []
+}
+
 const clusterInfo = {
   distribution: 'kubeadm',
   controlPlane: 'managed',
@@ -384,6 +402,111 @@ describe('HomeView', () => {
       'cluster CA unreadable'
     )
     expect(wrapper.find('[data-testid="error-message"]').exists()).toBe(false)
+  })
+
+  it('shows a one-line off state for Secure Boot when /info says it is disabled', async () => {
+    const { wrapper } = mountHome({
+      '/info': () =>
+        jsonResponse({
+          ...baseInfo,
+          secureBoot: { enabled: false, ready: false, bundleVersion: '', trusted: ['microsoft'], bootURL: '', flatcarCA: null, warnings: [] }
+        })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="secure-boot-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.classes()).not.toContain('secure-boot-panel--ready')
+    expect(card.find('[data-testid="secure-boot-state"]').text()).toBe('Secure Boot: off')
+    expect(card.find('[data-testid="secure-boot-off-hint"]').text()).toContain('--secureBoot --proxyDHCP')
+    expect(card.find('[data-testid="secure-boot-facts"]').exists()).toBe(false)
+    expect(card.find('[data-testid="secure-boot-warnings"]').exists()).toBe(false)
+  })
+
+  it('still shows the Secure Boot card as off for servers without the /info block', async () => {
+    const { wrapper } = mountHome()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="secure-boot-state"]').text()).toBe('Secure Boot: off')
+  })
+
+  it('renders the Secure Boot card with bundle, trusted list, Flatcar CA fingerprint and download link', async () => {
+    const { wrapper } = mountHome({
+      '/info': () => jsonResponse({ ...baseInfo, secureBoot: secureBootInfo })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="secure-boot-card"]')
+    expect(card.classes()).toContain('secure-boot-panel--ready')
+    expect(card.find('.status-dot').classes()).toContain('status-dot--ready')
+    expect(card.find('[data-testid="secure-boot-state"]').text()).toBe('Secure Boot: ready')
+    expect(card.find('[data-testid="secure-boot-trusted"]').text()).toBe('microsoft, flatcar')
+
+    const facts = card.find('[data-testid="secure-boot-facts"]')
+    const pairs = facts.findAll('dt').map((dt, i) => [dt.text(), facts.findAll('dd')[i]!.text()])
+    expect(pairs[0]).toEqual(['Bundle', 'ipxe-16.1_v2.0.0_shim-16.1-7_grub-2.12-64.fc44'])
+    expect(pairs[1]).toEqual(['Boot URL', 'http://10.0.0.1:8080/boot/sb'])
+    expect(pairs[2]![0]).toBe('Flatcar CA')
+
+    const ca = card.find('[data-testid="secure-boot-ca"]')
+    expect(ca.text()).toBe(FLATCAR_CA_SHA)
+    expect(ca.classes()).toContain('mono')
+    expect(ca.attributes('title')).toContain('4757.2.0')
+    const download = card.find('[data-testid="secure-boot-download"]')
+    expect(download.attributes('href')).toBe('http://10.0.0.1:8080/boot/secureboot/flatcar-ca.der')
+    expect(download.attributes('download')).toBe('flatcar-ca.der')
+    expect(card.find('[data-testid="secure-boot-warnings"]').exists()).toBe(false)
+  })
+
+  it('copies the Flatcar CA fingerprint with transient feedback', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const { wrapper } = mountHome({
+      '/info': () => jsonResponse({ ...baseInfo, secureBoot: secureBootInfo })
+    })
+    await flushPromises()
+
+    const button = wrapper.find('[data-testid="secure-boot-copy"]')
+    expect(button.text()).toBe('Copy')
+    await button.trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(FLATCAR_CA_SHA)
+    expect(wrapper.find('[data-testid="secure-boot-copy"]').text()).toBe('Copied')
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(wrapper.find('[data-testid="secure-boot-copy"]').text()).toBe('Copy')
+  })
+
+  it('shows syncing state, a missing-CA notice and the warnings list', async () => {
+    const { wrapper } = mountHome({
+      '/info': () =>
+        jsonResponse({
+          ...baseInfo,
+          secureBoot: {
+            ...secureBootInfo,
+            ready: false,
+            trusted: ['microsoft'],
+            flatcarCA: null,
+            warnings: [
+              'host aa:bb:cc:dd:ee:01 (flatcar): Secure Boot host; the Flatcar CA is not in --secureBootTrusted, boot refused',
+              'host aa:bb:cc:dd:ee:02 (bluefin): Secure Boot host; the installed Bluefin image is unsigned, install refused'
+            ]
+          }
+        })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="secure-boot-card"]')
+    expect(card.classes()).not.toContain('secure-boot-panel--ready')
+    expect(card.classes()).toContain('secure-boot-panel--alert')
+    expect(card.find('[data-testid="secure-boot-state"]').text()).toBe('Secure Boot: syncing artefacts')
+    expect(card.find('[data-testid="secure-boot-ca"]').exists()).toBe(false)
+    expect(card.find('[data-testid="secure-boot-copy"]').exists()).toBe(false)
+    expect(card.find('[data-testid="secure-boot-ca-missing"]').text()).toContain('not extracted yet')
+
+    const warnings = card.find('[data-testid="secure-boot-warnings"]')
+    expect(warnings.classes()).toContain('alert-warning')
+    expect(warnings.attributes('role')).toBe('status')
+    expect(warnings.findAll('li')).toHaveLength(2)
+    expect(warnings.text()).toContain('install refused')
   })
 
   it('refreshes the cluster card on the 30s poll', async () => {
