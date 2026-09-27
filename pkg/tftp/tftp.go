@@ -154,7 +154,7 @@ func SecureBootAutoexec(serverHostPort string) string {
 	return fmt.Sprintf(`#!ipxe
 :start
 dhcp || goto retry
-chain http://%[1]s/booty.ipxe?mac=${mac} || goto shell
+chain http://%[1]s/booty.ipxe?mac=${mac}&sb=1 || goto shell
 exit
 :retry
 sleep 5
