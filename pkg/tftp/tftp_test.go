@@ -296,3 +296,111 @@ func TestBluefinScriptRendering(t *testing.T) {
 		t.Fatalf("pending menu wrong:\n%s", out)
 	}
 }
+
+func TestSecureBootScriptVariants(t *testing.T) {
+	base := TemplateVars{
+		Server:          "192.168.1.10:8080",
+		Hostname:        "sb1",
+		CoreOSChannel:   "stable",
+		CoreOSArch:      "x86_64",
+		CoreOSVersion:   "43.20260901.3.0",
+		FlatcarCASha256: "ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2",
+		Bluefin: BluefinVars{
+			Version: "26.08.0", Vmlinuz: "bluefin-server-pxe-vmlinuz-26.08.0",
+			Initrd: "bluefin-server-pxe-initrd-26.08.0.cpio.gz", DDI: "ddi.raw.zst", DDISha256: strings.Repeat("a", 64),
+		},
+	}
+	const (
+		shimLine   = "shim http://192.168.1.10:8080/boot/secureboot/fedora/shimx64.efi || goto shell\n"
+		caLine     = "echo   CA SHA256: ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2\n"
+		caURL      = "echo   Download:  http://192.168.1.10:8080/boot/secureboot/flatcar-ca.der\n"
+		unsigned   = "echo Bluefin Server's installed system (systemd-boot and its UKI) is not signed"
+		refuseMenu = "menu Booty - Secure Boot: "
+	)
+
+	tests := []struct {
+		name    string
+		os      string
+		sb      bool
+		trusted bool
+		refused bool
+		want    []string
+		absent  []string
+	}{
+		{"coreos plain", "coreos", false, false, false, []string{"kernel ${BASEURL}/fedora-coreos"}, []string{"shim ", refuseMenu}},
+		{"coreos sb", "coreos", true, false, false, []string{shimLine + "kernel ${BASEURL}/fedora-coreos"}, []string{refuseMenu}},
+		{"coreos sb trusted", "coreos", true, true, false, []string{shimLine}, []string{refuseMenu}},
+		{"flatcar plain", "flatcar", false, false, false, []string{"kernel http://192.168.1.10:8080/data/flatcar_production_pxe.vmlinuz"}, []string{"shim ", refuseMenu}},
+		{"flatcar sb untrusted", "flatcar", true, false, true,
+			[]string{
+				"echo Booty: this machine reached Booty through Secure Boot, and Flatcar cannot boot that way.\n",
+				"--secureBootTrusted=flatcar", caLine, caURL,
+				"menu Booty - Secure Boot: Flatcar refused - sb1\n",
+				"item --key d run-from-disk Boot from disk\n", "item --key r reboot        Reboot\n", "item --key s shell         iPXE shell\n",
+				"choose --timeout ${menu-timeout} --default run-from-disk selected || goto run-from-disk\n",
+				"set menu-timeout 30000\n", ":run-from-disk\nexit\n", ":reboot\nreboot\n",
+			},
+			[]string{"\nkernel ", "\ninitrd ", unsigned}},
+		{"flatcar sb trusted", "flatcar", true, true, false, []string{"kernel http://192.168.1.10:8080/data/flatcar_production_pxe.vmlinuz"}, []string{"shim ", refuseMenu}},
+		{"bluefin plain", "bluefin", false, false, false, []string{"item --key i install"}, []string{refuseMenu}},
+		{"bluefin sb untrusted", "bluefin", true, false, true,
+			[]string{"Bluefin Server cannot boot that way", caLine, caURL, unsigned, "menu Booty - Secure Boot: Bluefin Server refused - sb1\n"},
+			[]string{"\nkernel ", "item --key i install", "inst.ddi_url"}},
+		{"bluefin sb trusted", "bluefin", true, true, true,
+			[]string{unsigned, "menu Booty - Secure Boot: Bluefin Server refused - sb1\n"},
+			[]string{"\nkernel ", "CA SHA256", "item --key i install"}},
+		{"unknown sb", "unknown", true, false, false, []string{"Unknown Host"}, []string{refuseMenu, "shim "}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := base
+			v.SecureBoot, v.SecureBootTrustedFlatcar = tc.sb, tc.trusted
+			v.MenuDefault = "install"
+			if got := SecureBootRefused(tc.os, v); got != tc.refused {
+				t.Fatalf("SecureBootRefused=%v want %v", got, tc.refused)
+			}
+			out := IPXEScript(tc.os, v)
+			if !strings.HasPrefix(out, "#!ipxe\n") || strings.Contains(out, "[[") {
+				t.Fatalf("bad script:\n%s", out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q:\n%s", want, out)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(out, absent) {
+					t.Errorf("must not contain %q:\n%s", absent, out)
+				}
+			}
+			if tc.refused {
+				for _, line := range strings.Split(out, "\n") {
+					if strings.Contains(line, "${") && !strings.Contains(line, "${menu-timeout}") && !strings.Contains(line, "${selected}") {
+						t.Errorf("refusal menu must not expand iPXE variables in prose: %q", line)
+					}
+				}
+			}
+		})
+	}
+
+	v := base
+	v.SecureBoot, v.FlatcarCASha256 = true, ""
+	if out := IPXEScript("flatcar", v); !strings.Contains(out, "echo   CA SHA256: (not extracted yet: Booty has not synced a Flatcar release)\n") {
+		t.Fatalf("missing fingerprint must be explained:\n%s", out)
+	}
+}
+
+func TestNonSecureBootRenderingUnchanged(t *testing.T) {
+	v := TemplateVars{Server: "192.168.1.10:8080", Hostname: "h", MenuDefault: "run-from-disk", CoreOSChannel: "stable", CoreOSArch: "x86_64", CoreOSVersion: "1"}
+	for _, os := range []string{"flatcar", "coreos", "bluefin", "unknown"} {
+		plain := IPXEScript(os, v)
+		withTrust := v
+		withTrust.SecureBootTrustedFlatcar, withTrust.FlatcarCASha256 = true, "ff"
+		if got := IPXEScript(os, withTrust); got != plain {
+			t.Errorf("%s: SecureBootTrustedFlatcar/FlatcarCASha256 must not change a non-sb render", os)
+		}
+		if strings.Contains(plain, "shim ") || strings.Contains(plain, "Secure Boot") {
+			t.Errorf("%s: non-sb render mentions Secure Boot:\n%s", os, plain)
+		}
+	}
+}
