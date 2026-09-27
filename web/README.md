@@ -49,6 +49,20 @@ table folds a set value into the Host cell as `disk /dev/sda`. The Overview and
 About pages show the cached Bluefin release from `GET /info`'s `bluefin` block
 (`—` until Booty has downloaded one).
 
+## Secure Boot
+
+`Host.secureBoot` (optional; older servers omit it) is set by the server when
+the host's last boot script came through the Secure Boot path (UEFI HTTP Boot,
+signed iPXE) and cleared by a plain PXE fetch. The Hosts table shows it as a
+**Secure Boot** shield badge next to the OS badge; it is read-only in the form
+and simply echoed back to `/register` with the rest of the host. `GET /info`'s
+`secureBoot` block (`normalizeSecureBootInfo` in `types.ts`) feeds the Overview
+page's **Secure Boot** card: state (`off` / `syncing artefacts` / `ready`),
+bundle version, boot URL, trusted CAs, the Flatcar CA fingerprint with copy and
+`.der` download buttons, and the server's warnings about hosts that cannot boot
+through Secure Boot. The card is always rendered so the feature is
+discoverable; with `enabled: false` it collapses to the one-line off state.
+
 ## Development
 
 ```sh
