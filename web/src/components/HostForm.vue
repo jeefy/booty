@@ -1,6 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { OS_OPTIONS, ROLE_OPTIONS, acceptsInstallDisk, hostRole, type Host, type HostRole } from '@/types'
+import {
+  BLUEFIN_EXTENSIONS,
+  BLUEFIN_MODES,
+  OS_OPTIONS,
+  ROLE_OPTIONS,
+  acceptsInstallDisk,
+  hostRole,
+  type BluefinExtension,
+  type BluefinMode,
+  type Host,
+  type HostRole
+} from '@/types'
 
 const draft = defineModel<Host>({ required: true })
 
@@ -28,6 +39,29 @@ const role = computed<HostRole>({
     draft.value.role = value
   }
 })
+
+const isBluefin = computed(() => draft.value.os === 'bluefin')
+
+const MODE_LABEL: Record<BluefinMode, string> = {
+  diskless: 'Diskless',
+  installed: 'Installed'
+}
+
+const mode = computed<BluefinMode>({
+  get: () => (draft.value.mode === 'installed' ? 'installed' : 'diskless'),
+  set: (value) => {
+    draft.value.mode = value
+  }
+})
+
+function hasExtension(name: BluefinExtension): boolean {
+  return (draft.value.extensions ?? []).includes(name)
+}
+
+function toggleExtension(name: BluefinExtension, on: boolean) {
+  const rest = (draft.value.extensions ?? []).filter((e) => e !== name)
+  draft.value.extensions = on ? [...rest, name] : rest
+}
 </script>
 
 <template>
@@ -79,7 +113,12 @@ const role = computed<HostRole>({
           :aria-describedby="`disk-help-${draft.mac}`"
         />
         <div :id="`disk-help-${draft.mac}`" class="form-text field-help">
-          Target disk for the installer; empty = first writable disk. Wiped on install.
+          <template v-if="isBluefin">
+            Disk systemd-sysinstall installs to on the next boot with Install set. Wiped on install.
+          </template>
+          <template v-else>
+            Target disk for the installer; empty = first writable disk. Wiped on install.
+          </template>
         </div>
       </div>
       <div class="col-12 col-md-2" data-testid="role-field">
@@ -109,6 +148,57 @@ const role = computed<HostRole>({
           placeholder="config.yaml"
           :disabled="busy"
         />
+      </div>
+    </div>
+    <div v-if="isBluefin" class="row g-2 align-items-start" data-testid="bluefin-fields">
+      <div class="col-12 col-md-2">
+        <label class="form-label small mb-1" :for="`mode-${draft.mac}`">Mode</label>
+        <select
+          :id="`mode-${draft.mac}`"
+          v-model="mode"
+          class="form-select form-select-sm"
+          :disabled="busy"
+          :aria-describedby="`mode-help-${draft.mac}`"
+        >
+          <option v-for="option in BLUEFIN_MODES" :key="option" :value="option">
+            {{ MODE_LABEL[option] }}
+          </option>
+        </select>
+        <div :id="`mode-help-${draft.mac}`" class="form-text field-help">
+          Installed hosts boot their disk; Booty stops answering their UEFI HTTP Boot.
+        </div>
+      </div>
+      <div class="col-12 col-md-2">
+        <label class="form-label small mb-1" :for="`statedisk-${draft.mac}`">State disk</label>
+        <input
+          :id="`statedisk-${draft.mac}`"
+          v-model="draft.stateDisk"
+          type="text"
+          class="form-control form-control-sm mono"
+          placeholder="/dev/sdb"
+          :disabled="busy"
+          :aria-describedby="`statedisk-help-${draft.mac}`"
+        />
+        <div :id="`statedisk-help-${draft.mac}`" class="form-text field-help">
+          Keeps /var of a diskless host (created once, never wiped); empty = RAM.
+        </div>
+      </div>
+      <div :id="`extensions-${draft.mac}`" class="col-12 col-md">
+        <span class="form-label small mb-1 d-block">Extensions</span>
+        <div v-for="name in BLUEFIN_EXTENSIONS" :key="name" class="form-check form-check-inline">
+          <input
+            :id="`ext-${name}-${draft.mac}`"
+            class="form-check-input"
+            type="checkbox"
+            :checked="hasExtension(name)"
+            :disabled="busy"
+            @change="toggleExtension(name, ($event.target as HTMLInputElement).checked)"
+          />
+          <label class="form-check-label small mono" :for="`ext-${name}-${draft.mac}`">
+            {{ name }}
+          </label>
+        </div>
+        <div class="form-text field-help">Opt-in sysexts; kubestellar needs k0s.</div>
       </div>
     </div>
     <div class="row g-2 align-items-end">

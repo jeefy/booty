@@ -4,6 +4,7 @@ import { apiGet, apiPost, errorMessage } from '@/api'
 import {
   normalizeBootyData,
   normalizeHost,
+  registerPayload,
   type BootyData,
   type Host,
   type RawBootyData,
@@ -97,7 +98,7 @@ async function save(mac: string) {
   busy[mac] = true
   rowErrors[mac] = ''
   try {
-    const { host } = await apiPost<RegisterResponse>('/register', draft)
+    const { host } = await apiPost<RegisterResponse>('/register', registerPayload(draft))
     const saved = normalizeHost(host ?? draft)
     const nextHosts = { ...hostData.value.hosts }
     if (mac !== saved.mac) delete nextHosts[mac]
