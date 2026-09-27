@@ -57,8 +57,10 @@ func init() {
 	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates")
 	flags.String(config.FlatcarVersion, "", "Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel")
 	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
-	flags.String(config.BluefinRepo, config.DefaultBluefinRepo, "GitHub repository whose installer-v* releases provide the Bluefin Server PXE kernel, initrd and DDI")
-	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 26.08.0). When empty, tracks the newest installer-v* release")
+	flags.String(config.BluefinRepo, config.DefaultBluefinRepo, "GitHub repository whose v<version> releases provide the Bluefin Server netboot UKI, OS DDI and sysexts")
+	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 20260927.123, tag v20260927.123). When empty, tracks the newest v<version> release (or the OCI artifact's latest tag)")
+	flags.String(config.BluefinKeyring, "", "OpenPGP public keyring (binary as for gpgv --keyring, or armored) that must have signed a Bluefin release's SHA256SUMS (SHA256SUMS.gpg); the sync fails closed when set. Empty trusts SHA256SUMS from the release as-is")
+	flags.String(config.BluefinOCI, "", "Fetch the Bluefin Server release files from this ORAS OCI artifact repository instead of GitHub releases (e.g. ghcr.io/projectbluefin/bluefin-server; tags <version> and latest; http://host:port/repo for a plain-HTTP registry). --githubToken is sent to ghcr.io only")
 	flags.String(config.GithubToken, "", "GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed")
 	flags.String(config.ServerIP, "", "IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)")
 	flags.Int(config.ServerHttpPort, 0, "HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort")
@@ -67,13 +69,13 @@ func init() {
 	flags.StringSlice(config.SSHAuthorizedKeys, nil, "SSH public key added to the 'core' user by the sshkeys builtin (repeatable)")
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
 	flags.Bool(config.OCIGCEmpty, false, "Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image")
-	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch), 'booted' (only on POST /booted from the installed system) or 'next-boot' (Bluefin: the first /booty.ipxe fetch at least --installMinDuration after the install stanza was served; other OSes behave like 'booted')")
-	flags.Duration(config.InstallMinDuration, config.DefaultInstallMinDuration, "Minimum time between serving a Bluefin install stanza and the re-PXE that counts as 'install finished' for --doInstallClearOn=next-boot; earlier re-PXEs keep doInstall")
+	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch; Bluefin: the bluefin-node.ign carrying the install unit), 'booted' (only on POST /booted from the installed system; Bluefin behaves like 'next-boot') or 'next-boot' (Bluefin: the first netboot UKI fetch at least --installMinDuration after the install boot was served; other OSes behave like 'booted'). A Bluefin host whose doInstall clears becomes mode installed")
+	flags.Duration(config.InstallMinDuration, config.DefaultInstallMinDuration, "Minimum time between a Bluefin install boot and the netboot UKI fetch that counts as 'install finished' for --doInstallClearOn=next-boot/booted; earlier fetches install again")
 	flags.Bool(config.ProxyDHCP, false, "EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename")
 	flags.String(config.ProxyDHCPListen, "", "IP or interface name the ProxyDHCP server binds to (default all interfaces)")
 	flags.Bool(config.ProxyDHCPRelay, false, "Answer relayed PXE requests (giaddr set) on the ProxyDHCP server")
 	flags.String(config.JoinString, "", "The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)")
-	flags.String(config.AutoRegister, "", "Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables")
+	flags.String(config.AutoRegister, "", "Register unknown MACs on their first /booty.ipxe or /ignition.json fetch (bluefin: their first UEFI HTTP Boot netboot UKI fetch, which ProxyDHCP then offers every unknown x86-64 HTTP Boot client) as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables")
 	flags.String(config.HostnameTemplate, config.DefaultHostnameTemplate, "Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP")
 	flags.String(config.JoinStringFile, "", "File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString")
 	flags.String(config.KubeadmJoin, config.KubeadmJoinStatic, "Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot: in-cluster, via --kubeconfig, or with Booty's own CA when --controlPlane=managed)")
@@ -97,7 +99,7 @@ func init() {
 	flags.String(config.ControlPlaneDisk, "", "Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk")
 	flags.String(config.K0sVersion, config.DefaultK0sVersion, "k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt)")
 	flags.String(config.EFIBootloader, config.EFIBootloaderIPXE, "iPXE build ProxyDHCP hands x86-64 UEFI clients: 'ipxe' (ipxe.efi, iPXE's own NIC drivers) or 'snponly' (snponly.efi, the firmware's network stack); HTTP Boot clients get the matching signed shim (ipxe-shimx64.efi / snponly-shimx64.efi)")
-	flags.Bool(config.SecureBoot, false, "Answer UEFI HTTP Boot clients (Secure Boot firmware) over ProxyDHCP with a Microsoft-signed iPXE shim and sync the signed boot artefacts into --dataDir/secureboot/; requires --proxyDHCP. Off: HTTP Boot clients are ignored and nothing is downloaded")
+	flags.Bool(config.SecureBoot, false, "Answer UEFI HTTP Boot clients (Secure Boot firmware) over ProxyDHCP with a Microsoft-signed iPXE shim and sync the signed boot artefacts into --dataDir/secureboot/; requires --proxyDHCP. Off: HTTP Boot clients other than Bluefin hosts (always offered their netboot UKI) are ignored and nothing is downloaded")
 	flags.String(config.SecureBootIPXEShim, config.DefaultSecureBootIPXEShim, "ipxe/shim release providing the Microsoft-signed ipxe-shimx64.efi (sha256 pinned in code for the default, the release's asset digest otherwise)")
 	flags.String(config.SecureBootIPXE, config.DefaultSecureBootIPXE, "ipxe/ipxe release whose ipxeboot.tar.gz provides the iPXE-CA-signed x86_64-sb/ipxe.efi and snponly.efi (sha256 pinned in code for the default)")
 	flags.String(config.FedoraShimVersion, config.DefaultFedoraShimVersion, "Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default")
@@ -167,6 +169,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err := versions.ValidateSecureBootFlags(); err != nil {
 		return err
 	}
+	if err := versions.ValidateBluefinFlags(); err != nil {
+		return err
+	}
 	if err := config.ResolveServerAddress(); err != nil {
 		return err
 	}
@@ -186,6 +191,11 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	if !builtin.Enabled() {
 		slog.Info("Builtin Ignition fragment disabled; serving user configs as-is")
+	}
+	if keyring := viper.GetString(config.BluefinKeyring); keyring != "" {
+		slog.Info("Bluefin releases must be signed by the keyring", "keyring", keyring, "repo", viper.GetString(config.BluefinRepo), "oci", viper.GetString(config.BluefinOCI))
+	} else {
+		slog.Info("Booty does not check Bluefin SHA256SUMS signatures (the netboot initrd does); set --bluefinKeyring to check them before serving", "repo", viper.GetString(config.BluefinRepo), "oci", viper.GetString(config.BluefinOCI))
 	}
 	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" {
 		slog.Warn("Auto-registration enabled: any unknown MAC that boots becomes a registered host", "os", autoOS, "hostnameTemplate", viper.GetString(config.HostnameTemplate))
@@ -369,6 +379,7 @@ func startProxyDHCP(errCh chan<- error) (*dhcp.Server, error) {
 		HTTPBoot:        viper.GetBool(config.SecureBoot),
 		HTTPBootBase:    config.SecureBootURL(),
 		HTTPBootEFIFile: httpBootFile,
+		HostHTTPBoot:    server.BluefinHTTPBoot,
 		Port67:          port67,
 		Port4011:        port4011,
 	}, errCh)
