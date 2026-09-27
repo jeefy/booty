@@ -12,6 +12,27 @@ export function acceptsInstallDisk(os: HostOS | '' | undefined): boolean {
 export const ROLE_OPTIONS = ['worker', 'control-plane'] as const
 export type HostRole = (typeof ROLE_OPTIONS)[number]
 
+/** Bluefin Server opt-in sysexts; kubestellar runs on k0s and needs it. */
+export const BLUEFIN_EXTENSIONS = ['zfs', 'kubestellar', 'k0s'] as const
+export type BluefinExtension = (typeof BLUEFIN_EXTENSIONS)[number]
+
+/** Bluefin Server boot modes; the server treats "" as `diskless`. */
+export const BLUEFIN_MODES = ['diskless', 'installed'] as const
+export type BluefinMode = (typeof BLUEFIN_MODES)[number]
+
+/**
+ * The /register body for host: the Bluefin-only fields are dropped for other
+ * operating systems, which the server refuses them for.
+ */
+export function registerPayload(host: Host): Host {
+  if (host.os === 'bluefin') return host
+  const payload = { ...host }
+  delete payload.stateDisk
+  delete payload.extensions
+  delete payload.mode
+  return payload
+}
+
 /** Role for display: the server treats a missing/empty role as `worker`. */
 export function hostRole(role: HostRole | '' | undefined): HostRole {
   return role === 'control-plane' ? 'control-plane' : 'worker'
@@ -27,8 +48,9 @@ export interface Host {
   os?: HostOS | ''
   ostreeImage?: string
   /**
-   * Target disk for the installer (e.g. `/dev/sda`); "" lets the installer
-   * pick the first writable disk. Only meaningful for bluefin and coreos.
+   * Target disk for the installer (e.g. `/dev/sda`); "" lets the CoreOS
+   * installer pick the first writable disk, while a Bluefin install needs
+   * one. Only meaningful for bluefin and coreos.
    */
   installDisk: string
   doInstall?: boolean
@@ -37,6 +59,15 @@ export interface Host {
    * `/register` exactly as stored so payloads from older UIs stay identical.
    */
   role?: HostRole | ''
+  /** Bluefin only: disk Ignition keeps /var on (partition bluefin-var, never wiped). */
+  stateDisk?: string
+  /** Bluefin only: opt-in sysexts Ignition installs on every boot. */
+  extensions?: BluefinExtension[]
+  /**
+   * Bluefin only: "" or `diskless` boots over UEFI HTTP Boot; `installed`
+   * boots its disk (set by the server once an install finishes).
+   */
+  mode?: BluefinMode | ''
   /**
    * True when the host's last boot script was fetched through the Secure
    * Boot path (the signed iPXE handed out over UEFI HTTP Boot). Set by the
@@ -92,7 +123,9 @@ export interface SecureBootInfo {
   warnings: string[]
 }
 
-export type RawSecureBootInfo = Partial<Omit<SecureBootInfo, 'flatcarCA' | 'trusted' | 'warnings'>> & {
+export type RawSecureBootInfo = Partial<
+  Omit<SecureBootInfo, 'flatcarCA' | 'trusted' | 'warnings'>
+> & {
   flatcarCA?: Partial<FlatcarCAInfo> | null
   trusted?: (string | null)[]
   warnings?: (string | null)[]

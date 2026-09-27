@@ -10,7 +10,8 @@ import {
   normalizeHost,
   normalizeSecureBootInfo,
   normalizeTemplateDocument,
-  normalizeTemplateValidation
+  normalizeTemplateValidation,
+  registerPayload
 } from '@/types'
 
 describe('normalizeHost', () => {
@@ -202,7 +203,13 @@ describe('normalizeClusterInfo', () => {
       ready: true,
       caFingerprint: 'sha256:abc',
       hosts: [
-        { mac: 'aa:bb:cc:dd:ee:01', hostname: 'cp', os: 'flatcar', role: 'control-plane', secureBoot: true },
+        {
+          mac: 'aa:bb:cc:dd:ee:01',
+          hostname: 'cp',
+          os: 'flatcar',
+          role: 'control-plane',
+          secureBoot: true
+        },
         { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', role: '' },
         { mac: 'aa:bb:cc:dd:ee:03' }
       ],
@@ -225,8 +232,22 @@ describe('normalizeClusterInfo', () => {
         booted: '',
         secureBoot: true
       },
-      { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', os: '', role: 'worker', booted: '', secureBoot: false },
-      { mac: 'aa:bb:cc:dd:ee:03', hostname: '', os: '', role: 'worker', booted: '', secureBoot: false }
+      {
+        mac: 'aa:bb:cc:dd:ee:02',
+        hostname: 'w1',
+        os: '',
+        role: 'worker',
+        booted: '',
+        secureBoot: false
+      },
+      {
+        mac: 'aa:bb:cc:dd:ee:03',
+        hostname: '',
+        os: '',
+        role: 'worker',
+        booted: '',
+        secureBoot: false
+      }
     ])
     expect(info.warnings).toEqual(['CA key readable on the boot VLAN'])
 
@@ -265,7 +286,11 @@ describe('normalizeSecureBootInfo', () => {
       bundleVersion: 'ipxe-16.1_v2.0.0_shim-16.1-7_grub-2.12-64.fc44',
       trusted: ['microsoft', 'flatcar', '', null],
       bootURL: 'http://10.0.0.1/boot/sb',
-      flatcarCA: { sha256: 'ebb170da', flatcarVersion: '4757.2.0', url: 'http://10.0.0.1/boot/secureboot/flatcar-ca.der' },
+      flatcarCA: {
+        sha256: 'ebb170da',
+        flatcarVersion: '4757.2.0',
+        url: 'http://10.0.0.1/boot/secureboot/flatcar-ca.der'
+      },
       warnings: ['host aa (flatcar): Secure Boot host; boot refused', '', null]
     })
     expect(info.trusted).toEqual(['microsoft', 'flatcar'])
@@ -284,5 +309,38 @@ describe('normalizeHost secureBoot', () => {
   it('passes the server flag through and leaves it absent for older servers', () => {
     expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01' })).not.toHaveProperty('secureBoot')
     expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01', secureBoot: true }).secureBoot).toBe(true)
+  })
+})
+
+describe('registerPayload', () => {
+  const base = {
+    mac: 'aa:bb:cc:dd:ee:01',
+    hostname: 'alpha',
+    ip: '',
+    booted: '',
+    installDisk: '',
+    running: '',
+    lastCheck: '',
+    rebootPending: false,
+    stateDisk: '/dev/sdb',
+    extensions: ['zfs' as const],
+    mode: 'installed' as const
+  }
+
+  it('keeps the bluefin fields for bluefin hosts', () => {
+    const host = { ...base, os: 'bluefin' as const }
+    expect(registerPayload(host)).toBe(host)
+  })
+
+  it('drops them for other operating systems, which the server refuses them for', () => {
+    for (const os of ['', 'flatcar', 'coreos'] as const) {
+      const host = { ...base, os }
+      const payload = registerPayload(host)
+      expect(payload).not.toHaveProperty('stateDisk')
+      expect(payload).not.toHaveProperty('extensions')
+      expect(payload).not.toHaveProperty('mode')
+      expect(payload.hostname).toBe('alpha')
+      expect(host.stateDisk).toBe('/dev/sdb')
+    }
   })
 })
