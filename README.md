@@ -16,58 +16,65 @@ Available Commands:
   init        Create a data directory with a starter Butane template and an empty hardware map
 
 Flags:
-      --autoRegister string            Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables
-      --bluefinRepo string             GitHub repository whose installer-v* releases provide the Bluefin Server PXE kernel, initrd and DDI (default "projectbluefin/server")
-      --bluefinVersion string          Pin a specific Bluefin Server release (e.g. 26.08.0). When empty, tracks the newest installer-v* release
-      --builtin string                 Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is (default "hostname,update,booted,sshkeys")
-      --clusterCADir string            Bring-your-own cluster CA directory for --controlPlane=managed (kubeadm: ca.crt/ca.key; k0s: also sa.key, sa.pub, etcd/ca.crt, etcd/ca.key), read-only; empty generates one under --dataDir/cluster/pki
-      --clusterDistribution string     Kubernetes distribution of the cluster Booty provisions: 'kubeadm' or 'k0s' (Bluefin hosts support k0s only) (default "kubeadm")
-      --cni string                     Network plugin installed from the first control plane: 'cilium', 'calico', 'flannel' or 'none' (default "cilium")
-      --cniRelease string              Overrides the pinned release of the selected --cni (--cniVersion keeps meaning containernetworking/plugins)
-      --cniVersion string              containernetworking/plugins release installed by the kubeadm-worker profile (default "v1.1.1")
-      --containerdDisk string          Block device PXE-booted nodes format (ext4, wiped on every boot) for their image cache: /var/lib/containerd under kubeadm, /var/lib/k0s on a k0s worker and /var/lib/k0s/containerd on a k0s controller, e.g. /dev/sda; empty keeps it on the root filesystem
-      --controlPlane string            Who runs the control plane: 'external' (join-only, today's behaviour) or 'managed' (Booty generates the cluster CA under --dataDir/cluster/ and renders the role: control-plane host) (default "external")
-      --controlPlaneDisk string        Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk
-      --controlPlaneEndpoint string    host[:port] every node uses for the API server (VIP or DNS name for HA); with --controlPlane=managed it defaults to the single role: control-plane host's IP
-      --coreOSArchitecture string      Architecture to use for CoreOS downloads (default "x86_64")
-      --coreOSChannel string           CoreOS channel to look for updates (default "stable")
-      --crictlVersion string           cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)
-      --dataDir string                 Directory to store stateful data (default "/data")
-      --debug                          Enable debug logging
-      --doInstallClearOn string        When to clear a host's pending doInstall: 'ignition' (first Ignition fetch), 'booted' (only on POST /booted from the installed system) or 'next-boot' (Bluefin: the first /booty.ipxe fetch at least --installMinDuration after the install stanza was served; other OSes behave like 'booted') (default "ignition")
-      --flatcarArchitecture string     Architecture to use for the Flatcar downloads (default "amd64")
-      --flatcarChannel string          Flatcar channel to look for updates (default "stable")
-      --flatcarVersion string          Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel
-      --githubToken string             GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed
-  -h, --help                           help for booty
-      --hostnameTemplate string        Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP (default "node-{{ .MACSuffix }}")
-      --httpPort int                   Port to use for the HTTP server (default 8080)
-      --installMinDuration duration    Minimum time between serving a Bluefin install stanza and the re-PXE that counts as 'install finished' for --doInstallClearOn=next-boot; earlier re-PXEs keep doInstall (default 3m0s)
-      --joinString string              The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
-      --joinStringFile string          File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString
-      --joinTokenTTL duration          Lifetime of bootstrap tokens minted through the Kubernetes API (--kubeadmJoin=auto, k0s worker tokens); expired ones are deleted on the --updateSchedule tick (default 1h0m0s)
-      --k0sTokenFile string            File holding a pre-made k0s worker join token for an external k0s control plane; the fallback when --kubeconfig is not set or minting fails
-      --k0sVersion string              k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt) (default "v1.36.4+k0s.0")
-      --k8sVersion string              Kubernetes release installed by the kubeadm-worker profile (default "v1.34.3")
-      --kubeadmJoin string             Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot: in-cluster, via --kubeconfig, or with Booty's own CA when --controlPlane=managed) (default "static")
-      --kubeconfig string              Kubeconfig for minting join tokens against an external control plane from outside the cluster: kubeadm with --kubeadmJoin=auto, k0s worker tokens always
-      --kubeletUnitsURL string         Base URL the kubeadm-worker profile fetches kubelet/kubelet.service and kubeadm/10-kubeadm.conf from (pin or mirror it) (default "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest")
-      --ociGC                          Delete unreferenced OCI blobs from the local registry after a fully successful image sync (default true)
-      --ociGCEmpty                     Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image
-      --podCIDR string                 Pod network CIDR of the cluster (default "10.244.0.0/16")
-      --profile string                 Node profile appended to the builtin Ignition fragment for flatcar/coreos hosts: '' or 'kubeadm-worker' (CNI plugins, kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot)
-      --proxyDHCP                      EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename
-      --proxyDHCPListen string         IP or interface name the ProxyDHCP server binds to (default all interfaces)
-      --proxyDHCPRelay                 Answer relayed PXE requests (giaddr set) on the ProxyDHCP server
-      --serverHttpPort int             HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort
-      --serverIP string                IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)
-      --serviceCIDR string             Service network CIDR of the cluster (default "10.96.0.0/12")
-      --sshAuthorizedKeys strings      SSH public key added to the 'core' user by the sshkeys builtin (repeatable)
-      --sshAuthorizedKeysFile string   File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin
-      --tftpBlockSize int              TFTP block size to negotiate with clients (default 1468)
-      --tftpPort int                   UDP port to use for the TFTP server (default 69)
-      --updateSchedule string          Cron schedule for the Flatcar/CoreOS/Bluefin version checks and OSTree image sync (default "*/5 * * * *")
-      --webDir string                  Directory with the built Web UI, used when no UI is embedded in the binary (default "./web/dist")
+      --autoRegister string                Register unknown MACs on their first /booty.ipxe or /ignition.json fetch as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables
+      --bluefinRepo string                 GitHub repository whose installer-v* releases provide the Bluefin Server PXE kernel, initrd and DDI (default "projectbluefin/server")
+      --bluefinVersion string              Pin a specific Bluefin Server release (e.g. 26.08.0). When empty, tracks the newest installer-v* release
+      --builtin string                     Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is (default "hostname,update,booted,sshkeys")
+      --clusterCADir string                Bring-your-own cluster CA directory for --controlPlane=managed (kubeadm: ca.crt/ca.key; k0s: also sa.key, sa.pub, etcd/ca.crt, etcd/ca.key), read-only; empty generates one under --dataDir/cluster/pki
+      --clusterDistribution string         Kubernetes distribution of the cluster Booty provisions: 'kubeadm' or 'k0s' (Bluefin hosts support k0s only) (default "kubeadm")
+      --cni string                         Network plugin installed from the first control plane: 'cilium', 'calico', 'flannel' or 'none' (default "cilium")
+      --cniRelease string                  Overrides the pinned release of the selected --cni (--cniVersion keeps meaning containernetworking/plugins)
+      --cniVersion string                  containernetworking/plugins release installed by the kubeadm-worker profile (default "v1.1.1")
+      --containerdDisk string              Block device PXE-booted nodes format (ext4, wiped on every boot) for their image cache: /var/lib/containerd under kubeadm, /var/lib/k0s on a k0s worker and /var/lib/k0s/containerd on a k0s controller, e.g. /dev/sda; empty keeps it on the root filesystem
+      --controlPlane string                Who runs the control plane: 'external' (join-only, today's behaviour) or 'managed' (Booty generates the cluster CA under --dataDir/cluster/ and renders the role: control-plane host) (default "external")
+      --controlPlaneDisk string            Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk
+      --controlPlaneEndpoint string        host[:port] every node uses for the API server (VIP or DNS name for HA); with --controlPlane=managed it defaults to the single role: control-plane host's IP
+      --coreOSArchitecture string          Architecture to use for CoreOS downloads (default "x86_64")
+      --coreOSChannel string               CoreOS channel to look for updates (default "stable")
+      --crictlVersion string               cri-tools release installed by the kubeadm-worker profile; defaults to the --k8sVersion minor with patch 0 (cri-tools tags once per minor, e.g. v1.34.0)
+      --dataDir string                     Directory to store stateful data (default "/data")
+      --debug                              Enable debug logging
+      --doInstallClearOn string            When to clear a host's pending doInstall: 'ignition' (first Ignition fetch), 'booted' (only on POST /booted from the installed system) or 'next-boot' (Bluefin: the first /booty.ipxe fetch at least --installMinDuration after the install stanza was served; other OSes behave like 'booted') (default "ignition")
+      --efiBootloader string               iPXE build ProxyDHCP hands x86-64 UEFI clients: 'ipxe' (ipxe.efi, iPXE's own NIC drivers) or 'snponly' (snponly.efi, the firmware's network stack); HTTP Boot clients get the matching signed shim (ipxe-shimx64.efi / snponly-shimx64.efi) (default "ipxe")
+      --fedoraGrubVersion string           Fedora grub2-efi-x64 package version (e.g. 2.12-64.fc44) whose grubx64.efi is served next to the Fedora shim; sha256 pinned in code for the default (default "2.12-64.fc44")
+      --fedoraShimVersion string           Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default (default "16.1-7")
+      --flatcarArchitecture string         Architecture to use for the Flatcar downloads (default "amd64")
+      --flatcarChannel string              Flatcar channel to look for updates (default "stable")
+      --flatcarVersion string              Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel
+      --githubToken string                 GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed
+  -h, --help                               help for booty
+      --hostnameTemplate string            Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP (default "node-{{ .MACSuffix }}")
+      --httpPort int                       Port to use for the HTTP server (default 8080)
+      --installMinDuration duration        Minimum time between serving a Bluefin install stanza and the re-PXE that counts as 'install finished' for --doInstallClearOn=next-boot; earlier re-PXEs keep doInstall (default 3m0s)
+      --joinString string                  The kubeadm join string to use to auto-join to a K8s cluster (kubeadm join 192.168.1.10:6443 --token TOKEN --discovery-token-ca-cert-hash sha256:SHA_HASH)
+      --joinStringFile string              File holding the kubeadm join string (e.g. a mounted Secret); re-read on every render and wins over --joinString
+      --joinTokenTTL duration              Lifetime of bootstrap tokens minted through the Kubernetes API (--kubeadmJoin=auto, k0s worker tokens); expired ones are deleted on the --updateSchedule tick (default 1h0m0s)
+      --k0sTokenFile string                File holding a pre-made k0s worker join token for an external k0s control plane; the fallback when --kubeconfig is not set or minting fails
+      --k0sVersion string                  k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt) (default "v1.36.4+k0s.0")
+      --k8sVersion string                  Kubernetes release installed by the kubeadm-worker profile (default "v1.34.3")
+      --kubeadmJoin string                 Where the kubeadm join string comes from: 'static' (--joinString/--joinStringFile) or 'auto' (mint a short-lived bootstrap token through the Kubernetes API on every boot: in-cluster, via --kubeconfig, or with Booty's own CA when --controlPlane=managed) (default "static")
+      --kubeconfig string                  Kubeconfig for minting join tokens against an external control plane from outside the cluster: kubeadm with --kubeadmJoin=auto, k0s worker tokens always
+      --kubeletUnitsURL string             Base URL the kubeadm-worker profile fetches kubelet/kubelet.service and kubeadm/10-kubeadm.conf from (pin or mirror it) (default "https://raw.githubusercontent.com/kubernetes/release/master/cmd/krel/templates/latest")
+      --ociGC                              Delete unreferenced OCI blobs from the local registry after a fully successful image sync (default true)
+      --ociGCEmpty                         Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image
+      --podCIDR string                     Pod network CIDR of the cluster (default "10.244.0.0/16")
+      --profile string                     Node profile appended to the builtin Ignition fragment for flatcar/coreos hosts: '' or 'kubeadm-worker' (CNI plugins, kubeadm/kubelet/kubectl/crictl, kubelet units, kubeadm join on every boot)
+      --proxyDHCP                          EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename
+      --proxyDHCPListen string             IP or interface name the ProxyDHCP server binds to (default all interfaces)
+      --proxyDHCPRelay                     Answer relayed PXE requests (giaddr set) on the ProxyDHCP server
+      --secureBoot                         Answer UEFI HTTP Boot clients (Secure Boot firmware) over ProxyDHCP with a Microsoft-signed iPXE shim and sync the signed boot artefacts into --dataDir/secureboot/; requires --proxyDHCP. Off: HTTP Boot clients are ignored and nothing is downloaded
+      --secureBootIPXEShimVersion string   ipxe/shim release providing the Microsoft-signed ipxe-shimx64.efi (sha256 pinned in code for the default, the release's asset digest otherwise) (default "ipxe-16.1")
+      --secureBootIPXEVersion string       ipxe/ipxe release whose ipxeboot.tar.gz provides the iPXE-CA-signed x86_64-sb/ipxe.efi and snponly.efi (sha256 pinned in code for the default) (default "v2.0.0")
+      --secureBootTrusted string           Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar/Bluefin kernels may be booted under Secure Boot
+      --serverHttpPort int                 HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort
+      --serverIP string                    IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)
+      --serviceCIDR string                 Service network CIDR of the cluster (default "10.96.0.0/12")
+      --sshAuthorizedKeys strings          SSH public key added to the 'core' user by the sshkeys builtin (repeatable)
+      --sshAuthorizedKeysFile string       File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin
+      --tftpBlockSize int                  TFTP block size to negotiate with clients (default 1468)
+      --tftpPort int                       UDP port to use for the TFTP server (default 69)
+      --updateSchedule string              Cron schedule for the Flatcar/CoreOS/Bluefin version checks and OSTree image sync (default "*/5 * * * *")
+      --webDir string                      Directory with the built Web UI, used when no UI is embedded in the binary (default "./web/dist")
 
 Use "booty [command] --help" for more information about a command.
 ```
@@ -110,6 +117,7 @@ booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behi
   * Auto-caches OCI images used for hosts (and has a page listing cached artifacts)
   * When "Install" is set to Y, it auto-flips to N once the host fetches its Ignition config (i.e. the installer has started)
 * Self-contained binary: the iPXE bootloaders (`undionly.kpxe`, `ipxe.efi`, `snponly.efi`) and the Web UI are embedded, so it starts without network access
+* `--secureBoot`: UEFI HTTP Boot for machines with Secure Boot enabled -- a Microsoft-signed iPXE shim handed out over ProxyDHCP, the signed artefacts synced and pinned, the Flatcar Secure Boot CA extracted for enrolment (see [Secure Boot](#secure-boot-uefi-http-boot))
 * `/healthz` for liveness/readiness probes; graceful shutdown on SIGTERM
 
 ## Booting: DHCP and the iPXE bootloaders
@@ -474,10 +482,65 @@ Booty only answers packets that carry `PXEClient` in option 60 *and* an architec
 | 11 ARM64 UEFI | `ipxe-arm64.efi` (not shipped -- logged as a warning, the boot will fail) |
 | anything else | `undionly.kpxe` (logged as a warning) |
 | user class `iPXE` (any arch) | `booty.ipxe` |
+| option 60 `HTTPClient` (UEFI HTTP Boot) | ignored unless `--secureBoot` is on, see [Secure Boot](#secure-boot-uefi-http-boot) |
+
+`--efiBootloader=snponly` swaps `ipxe.efi` for `snponly.efi` in the x86-64 UEFI rows (and the matching shim for HTTP Boot clients); the default `ipxe` keeps today's files.
 
 The last row is iPXE's own second-stage DHCP: once `undionly.kpxe`/`ipxe.efi` is running it repeats DHCP with user class `iPXE`. Handing it another iPXE binary would loop, so Booty gives it the `booty.ipxe` stub instead. iPXE resolves a bare filename against `tftp://${next-server}/`, and `${next-server}` falls back to the `siaddr` of the ProxyDHCP reply when the real DHCP server's `siaddr` is empty (iPXE keeps ProxyDHCP settings in a lower-priority `proxydhcp` settings block that is consulted whenever the primary DHCP settings lack a value), so this resolves to Booty. If your iPXE build has an embedded script the filename is ignored and the embedded script runs instead.
 
 Ports 67 and 4011 are privileged, so the container needs `--network=host`/`hostNetwork: true` and `CAP_NET_BIND_SERVICE` (already granted in the examples above). `--proxyDHCPListen` takes an IPv4 address or an interface name; prefer the interface name on multi-homed hosts, because a socket bound to a unicast address does not receive the broadcast DHCPDISCOVERs on Linux. Only iPXE's `ipxe.efi` needs to be present in `--dataDir` for UEFI clients; `undionly.kpxe` and `booty.ipxe` are built in. For tests without root the two ports can be overridden with the environment variable `BOOTY_PROXYDHCPPORTS=1067,5011` (test-only, not a flag).
+
+## Secure Boot (UEFI HTTP Boot)
+
+Machines with Secure Boot enabled refuse Booty's own `ipxe.efi`: it is not signed by anything their firmware trusts. `--secureBoot` makes them bootable without disabling Secure Boot and without Booty holding any signing key, by handing them a **Microsoft-signed shim that loads a signed iPXE**, over UEFI HTTP Boot. It is off by default and changes nothing for existing deployments while off (HTTP Boot DISCOVERs are ignored, logged once; nothing is downloaded).
+
+**It requires `--proxyDHCP`.** The signed iPXE build has no embedded Booty script, so it can only find Booty through the DHCP answer for iPXE's own user class, which is what the ProxyDHCP server provides. Nothing else in the network's DHCP server needs to change.
+
+### How it works
+
+1. The firmware's *UEFI HTTPv4* boot entry broadcasts a DHCPDISCOVER with option 60 `HTTPClient:Arch:00016:UNDI:003001` and option 93 = `0x0010` (x86-64; `0x000F` is 32-bit x86, `0x0013` ARM64).
+2. Booty's ProxyDHCP server answers with a *proxy* OFFER: `yiaddr` 0.0.0.0, option 60 `HTTPClient`, option 67 = `http://<serverIP>[:<serverHttpPort>]/boot/sb/ipxe-shimx64.efi` (`snponly-shimx64.efi` with `--efiBootloader=snponly`), no option 43. That is the shape the UEFI 2.10 HTTP Boot client accepts from a proxy: an IP-literal `http://` URI next to the real DHCP server's address offer. It never sends a REQUEST to the proxy and does not use port 4011, so Booty ignores REQUESTs from HTTP Boot clients. The whole OFFER stays under the client's 1472-byte limit.
+3. The firmware fetches the URL (HEAD, then GET; it follows no redirects and insists on `Content-Type: application/efi` or a `.efi` suffix, `Content-Length` and no chunked encoding -- the `/boot/` handler is written for exactly that, including `//` in the path, which the shim produces).
+4. `ipxe-shimx64.efi` (dual-signed with the Microsoft UEFI CA 2011 *and* 2023, from [ipxe/shim](https://github.com/ipxe/shim/releases/tag/ipxe-16.1)) verifies and loads `ipxe.efi` **from the same URL directory** (it derives the name from its own: `ipxe-shimx64.efi -> ipxe.efi`, `snponly-shimx64.efi -> snponly.efi`), which is why the signed set lives under `/boot/sb/` and the unsigned embedded `ipxe.efi` stays at `/boot/ipxe.efi` for TFTP/PXE clients.
+5. The signed iPXE (from [ipxe v2.0.0](https://github.com/ipxe/ipxe/releases/tag/v2.0.0) `ipxeboot.tar.gz`, `x86_64-sb/`, signed by the iPXE CA the shim trusts) runs its default `autoboot`: DHCP with user class `iPXE`, which the ProxyDHCP server answers with `booty.ipxe` as for any other iPXE, and Booty's normal menu flow takes over. Every later `kernel`/`chain` goes through the firmware's `LoadImage`, so kernels must be trusted by the machine's `db` -- the table below.
+
+### What boots under Secure Boot
+
+| OS | Kernel signer | Boots with stock (Microsoft) keys? | What to do |
+|---|---|---|---|
+| Fedora CoreOS | Fedora CA (via Fedora's Microsoft-signed shim) | **yes** | nothing; Booty serves the Fedora shim (`shim-x64-16.1-7`, dual-signed) and GRUB for iPXE's `shim` command (S2 wires the script) |
+| Flatcar | *Flatcar Container Linux Secure Boot Development CA* (self-signed, not Microsoft-trusted; Flatcar's own shim is signed by it too) | no | enroll the Flatcar CA in the machine's `db` (`sbctl`, firmware setup UI); Booty serves it at `/boot/secureboot/flatcar-ca.der` / `.pem` with its SHA256 in `/info`, then pass `--secureBootTrusted=flatcar` |
+| Bluefin Server, PXE installer | same Flatcar CA (its PXE kernel is a Flatcar kernel) | no | as Flatcar for the installer; **the installed system's UKI and systemd-boot are unsigned and will not boot under Secure Boot** until upstream signs them |
+
+`--secureBootTrusted` (comma separated; `microsoft` is always implied, `flatcar` is the only other value) is your assertion about the fleet's firmware `db`; it is reported in `/info` and will drive the per-OS script variants. Flatcar has already rotated this "development" CA once; when the extracted certificate changes between releases Booty logs a warning with both fingerprints, and machines have to enroll the new one.
+
+**Microsoft UEFI CA 2011 expiry.** The 2011 CA expired on 2026-06-27; new hardware may only carry the 2023 CA, older hardware may only carry 2011. Both shims Booty serves are dual-signed, so either works. If you pin other versions, prefer dual-signed builds.
+
+### Artefacts
+
+`--secureBoot` syncs everything at startup and on every `--updateSchedule` tick into `--dataDir/secureboot/<bundle>/` behind a `secureboot/current` symlink, with a `manifest.json` (member, sha256, source URL) and older bundles pruned. The bundle name is the concatenation of the four version flags, so changing any of them produces a new bundle. Nothing is signed by Booty; every file is verified against a digest pinned in code for the default versions (checked 2026-09-26) and served read-only:
+
+| Served at | File | From | Verification |
+|---|---|---|---|
+| `/boot/sb/ipxe-shimx64.efi`, `/boot/sb/snponly-shimx64.efi` (same bytes) | Microsoft-signed iPXE shim 16.1 | [ipxe/shim `ipxe-16.1`](https://github.com/ipxe/shim/releases/download/ipxe-16.1/ipxe-shimx64.efi) | sha256 `5eecca2780bd49c900565e124516a1bd666ec5e012825f34991b6ba1ef2fa6cf` (release asset digest); other `--secureBootIPXEShimVersion`s use the digest the GitHub releases API reports |
+| `/boot/sb/ipxe.efi`, `/boot/sb/snponly.efi` | iPXE-CA-signed iPXE, `x86_64-sb/` members of `ipxeboot.tar.gz` | [ipxe/ipxe `v2.0.0`](https://github.com/ipxe/ipxe/releases/download/v2.0.0/ipxeboot.tar.gz) | tarball sha256 `01a526d4cc791fc30362259c609d6c506cc64a7bdff51b9a5eb788354e17eee1`; members `6558e378…8d33` / `b1e67c3e…e82a` recorded in the manifest and checked after extraction |
+| `/boot/secureboot/fedora/shimx64.efi` | Fedora shim (dual-signed, Fedora vendor CA) | `shim-x64-16.1-7.x86_64.rpm` from `dl.fedoraproject.org` (Fedora 45; `updates/`, `releases/` and `development/` paths are tried) | rpm sha256 `04b7132d6316bff71427120b6aba85eb4490b2621ccb2f2559bd321ccb25f028`; other `--fedoraShimVersion`s download unverified with a warning |
+| `/boot/secureboot/fedora/grubx64.efi` | Fedora GRUB | `grub2-efi-x64-2.12-64.fc44.x86_64.rpm` (Fedora 44 updates) | rpm sha256 `3ed403514d8a8973814d553acd230a25eb355e93ebbb5a9a7da91f8393f58802` |
+| `/boot/secureboot/flatcar-ca.der`, `.pem` | Flatcar Secure Boot CA | `.vendor_cert` section of `flatcar_production_image.shim` of the Flatcar release Booty serves (SHA512 from its `.DIGESTS`) | fingerprint in `/info` and `secureboot/flatcar-ca.json`; 4757.2.0: `ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2` |
+
+The RPMs are read in Go (lead, headers, `PAYLOADCOMPRESSOR`, cpio) -- Fedora 44/45 packages are zstd-compressed; an xz payload is refused with a clear error rather than pulling in another dependency. Everything under `/boot/sb/` and `/boot/secureboot/` is `data/secureboot/current/` (plus the two CA files); paths are cleaned without redirects, there is no listing and no way out of that directory.
+
+`GET /info` gains `"secureBoot":{"enabled","ready","bundleVersion","trusted":[...],"bootURL","flatcarCA":{"flatcarVersion","sha256","subject","notAfter","url"}}`; `ready` means the current bundle is complete on disk. `/config` lists the flags.
+
+### Testing without root
+
+```
+BOOTY_PROXYDHCPPORTS=1067,5011 booty --proxyDHCP --proxyDHCPListen 127.0.0.1 --secureBoot --serverIP 127.0.0.1 ...
+```
+
+then send a captured HTTP Boot DISCOVER (`pkg/dhcp/testdata/ovmf-httpv4-discover.hex` is a real OVMF one) to UDP 1067 and decode the OFFER; `curl -I http://127.0.0.1:8080/boot/sb/ipxe-shimx64.efi` must answer `200`, `Content-Type: application/efi` and a `Content-Length`, and so must `/boot/sb//ipxe.efi`.
+
+Out of scope for now: HTTPS Boot (some vendor firmware is built to allow only `https://`), IPv6 HTTP Boot, ARM64 (warned, the shim is not shipped), MOK enrolment, and the distro shim-to-GRUB path.
 
 ## Trust model
 
