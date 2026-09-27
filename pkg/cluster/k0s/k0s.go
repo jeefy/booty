@@ -1,9 +1,9 @@
 // Package k0s renders what a k0s node needs from Booty, independently of
 // how it gets there: the Ignition fragment for Flatcar/Fedora CoreOS
-// (pkg/profile) and the Bluefin Server credentials bundle (pkg/creds) both
-// write the same files, units and drop-ins, so /etc/k0s/k0s.yaml, the six
-// PKI files, the join token, the bootstrap Secret manifest and the
-// ready/CNI scripts have exactly one source.
+// (pkg/profile) and the Bluefin Server node config (pkg/server) both write
+// the same files and units, so /etc/k0s/k0s.yaml, the six PKI files, the
+// join token, the bootstrap Secret manifest and the ready/CNI scripts have
+// exactly one source.
 //
 // A controller gets the cluster CA, service-account keys and etcd CA under
 // /var/lib/k0s/pki before k0s starts for the first time (k0s then signs
@@ -12,9 +12,10 @@
 // k0s applies from /var/lib/k0s/manifests. A worker gets the encoded join
 // token at /etc/k0s/token. On a PXE-booted OS Booty ships its own
 // k0scontroller.service/k0sworker.service around /opt/bin/k0s; on Bluefin
-// the image's k0scontroller.service (started by k0s-first-boot.service by
-// name on every boot) is retargeted with an ExecStart= drop-in, so a
-// Bluefin worker still runs a unit called k0scontroller.service.
+// the k0s sysext brings both units and the image's k0s-first-boot.service
+// starts k0sworker.service when /etc/k0s/token exists and
+// k0scontroller.service otherwise, so Booty only adds the token or
+// /etc/sysconfig/k0s with the controller flags.
 package k0s
 
 import (
@@ -60,28 +61,32 @@ const (
 	ClusterReadyScript = ScriptDir + "/cluster-ready.sh"
 
 	// PXEMarker and BluefinMarker are where the CNI install leaves its
-	// done-marker: the control-plane disk on a PXE host (RAM root), the
-	// installed root on Bluefin.
+	// done-marker: the control-plane disk on a PXE host (RAM root), /var on
+	// Bluefin (persistent with a stateDisk or once installed).
 	PXEMarker     = cni.MarkerPath
 	BluefinMarker = "/var/lib/booty/cni-applied"
+
+	// BluefinSysconfig is the EnvironmentFile of the k0s sysext's
+	// k0scontroller.service; K0S_CONTROLLER_ARGS replaces its single-node
+	// default.
+	BluefinSysconfig = "/etc/sysconfig/k0s"
 )
 
-// Unit names. ControllerUnit is also the name of Bluefin's own unit.
+// Unit names. ControllerUnit and WorkerUnit are also the names of the
+// units Bluefin's k0s sysext ships.
 const (
 	ControllerUnit   = "k0scontroller.service"
 	WorkerUnit       = "k0sworker.service"
 	InstallUnit      = "booty-k0s-install.service"
 	UnitClusterReady = "booty-cluster-ready.service"
-	// RoleDropIn is the Bluefin drop-in that resets ExecStart= to Booty's
-	// command; it sits next to the Wants= drop-in pkg/creds already writes.
-	RoleDropIn = "booty-role.conf"
 
-	// ControllerArgs are the k0s controller flags on every OS: the
+	// ControllerFlags are the k0s controller flags on every OS: the
 	// controller also runs a worker, and helm/autopilot are disabled as in
 	// Bluefin's stock unit (whose --single is dropped so the node can be
 	// joined).
-	ControllerArgs = "controller -c " + ConfigPath + " --enable-worker --disable-components=helm,autopilot"
-	WorkerArgs     = "worker --token-file " + TokenPath
+	ControllerFlags = "-c " + ConfigPath + " --enable-worker --disable-components=helm,autopilot"
+	ControllerArgs  = "controller " + ControllerFlags
+	WorkerArgs      = "worker --token-file " + TokenPath
 )
 
 type Role = token.K0sRole
@@ -146,7 +151,7 @@ func Provider(cniName string) string {
 // Custom reports whether Booty installs the CNI itself (provider custom).
 func Custom(cniName string) bool { return Provider(cniName) == "custom" }
 
-// File, Unit and DropIn are the renderer-agnostic outputs.
+// File and Unit are the renderer-agnostic outputs.
 type File struct {
 	Path     string
 	Mode     int
@@ -161,21 +166,13 @@ type Unit struct {
 	WantedBy string
 }
 
-// DropIn is <Unit>.d/<Name> with Contents.
-type DropIn struct {
-	Unit     string
-	Name     string
-	Contents string
-}
-
 // Node is everything a k0s node gets from Booty. Files are sorted by path,
 // so two renders of the same input compare equal.
 type Node struct {
-	Role    Role
-	OS      string
-	Files   []File
-	Units   []Unit
-	DropIns []DropIn
+	Role  Role
+	OS    string
+	Files []File
+	Units []Unit
 }
 
 // Options is what Render needs. Endpoint is host[:port] (port defaults to
@@ -298,12 +295,14 @@ func (n *Node) controller(o Options, p platform) error {
 	return nil
 }
 
-// service adds the k0s service itself: a whole unit on a PXE-booted OS, a
-// drop-in on Bluefin's k0scontroller.service (whatever the role, see the
-// package comment).
+// service adds the k0s service itself: a whole unit on a PXE-booted OS.
+// On Bluefin the sysext's units run k0s; a controller gets its flags
+// through /etc/sysconfig/k0s, a worker needs nothing beyond the token.
 func (n *Node) service(p platform, name, description, args string) {
 	if !p.pxe {
-		n.DropIns = append(n.DropIns, DropIn{Unit: ControllerUnit, Name: RoleDropIn, Contents: "[Service]\nExecStart=\nExecStart=" + p.binary + " " + args + "\n"})
+		if name == ControllerUnit {
+			n.Files = append(n.Files, File{Path: BluefinSysconfig, Mode: 0o644, Contents: "K0S_CONTROLLER_ARGS=" + ControllerFlags + "\n"})
+		}
 		return
 	}
 	n.Units = append(n.Units, Unit{Name: name, Contents: pxeUnit(p, description, args), WantedBy: "multi-user.target"})

@@ -85,10 +85,6 @@ func k0sFragment(cfg types.Config, opts Options) (types.Config, error) {
 	for _, u := range o.Node.Units {
 		cfg.Systemd.Units = append(cfg.Systemd.Units, ign.Unit(u.Name, u.WantedBy != "", u.Contents))
 	}
-	for _, d := range o.Node.DropIns {
-		contents := d.Contents
-		cfg.Systemd.Units = append(cfg.Systemd.Units, types.Unit{Name: d.Unit, Dropins: []types.Dropin{{Name: d.Name, Contents: &contents}}})
-	}
 	return cfg, nil
 }
 
