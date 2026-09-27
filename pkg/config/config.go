@@ -79,7 +79,94 @@ const (
 	Kubeconfig          = "kubeconfig"
 	ControlPlaneDisk    = "controlPlaneDisk"
 	K0sVersion          = "k0sVersion"
+	EFIBootloader       = "efiBootloader"
+	SecureBoot          = "secureBoot"
+	SecureBootIPXEShim  = "secureBootIPXEShimVersion"
+	SecureBootIPXE      = "secureBootIPXEVersion"
+	FedoraShimVersion   = "fedoraShimVersion"
+	FedoraGrubVersion   = "fedoraGrubVersion"
+	SecureBootTrusted   = "secureBootTrusted"
 )
+
+// Which x86-64 UEFI iPXE build clients get: ipxe.efi (iPXE's own NIC
+// drivers) or snponly.efi (the firmware's SNP stack). ProxyDHCP hands the
+// matching file to PXE clients and the matching Microsoft-signed shim
+// (ipxe-shimx64.efi / snponly-shimx64.efi) to HTTP Boot clients.
+const (
+	EFIBootloaderIPXE    = "ipxe"
+	EFIBootloaderSnponly = "snponly"
+)
+
+// ValidateEFIBootloader rejects anything but the two shipped builds.
+func ValidateEFIBootloader(v string) error {
+	switch v {
+	case EFIBootloaderIPXE, EFIBootloaderSnponly:
+		return nil
+	}
+	return fmt.Errorf("invalid --%s %q: must be %q or %q", EFIBootloader, v, EFIBootloaderIPXE, EFIBootloaderSnponly)
+}
+
+// Secure Boot artefact pins and layout. The bundle (signed iPXE shims, the
+// iPXE-CA-signed iPXE binaries and the Fedora shim/GRUB) lives in
+// DataDir/secureboot/<bundle>/ behind a "current" symlink; the Flatcar
+// Secure Boot CA extracted from the tracked Flatcar release sits next to it
+// as flatcar-ca.der/.pem. Everything is served read-only under /boot/sb/
+// and /boot/secureboot/.
+const (
+	SecureBootDir          = "secureboot"
+	SecureBootCurrentLink  = "current"
+	SecureBootManifestFile = "manifest.json"
+	SecureBootFlatcarCADER = "flatcar-ca.der"
+	SecureBootFlatcarCAPEM = "flatcar-ca.pem"
+	SecureBootFedoraDir    = "fedora"
+
+	// https://github.com/ipxe/shim/releases/tag/ipxe-16.1 (Microsoft
+	// UEFI CA 2011 + 2023 dual-signed) and
+	// https://github.com/ipxe/ipxe/releases/tag/v2.0.0 (ipxeboot.tar.gz,
+	// x86_64-sb/ members signed by the iPXE CA the shim trusts).
+	DefaultSecureBootIPXEShim = "ipxe-16.1"
+	DefaultSecureBootIPXE     = "v2.0.0"
+	// Fedora 45 shim (dual-signed, same vendor cert as the FCOS kernel
+	// signer) and the Fedora 44 GRUB it pairs with.
+	DefaultFedoraShimVersion = "16.1-7"
+	DefaultFedoraGrubVersion = "2.12-64.fc44"
+
+	// Names accepted by --secureBootTrusted: the CAs the fleet's firmware
+	// db contains. microsoft is always implied.
+	SecureBootTrustMicrosoft = "microsoft"
+	SecureBootTrustFlatcar   = "flatcar"
+)
+
+// SecureBootPath joins elem onto DataDir/secureboot.
+func SecureBootPath(elem ...string) string {
+	return DataPath(append([]string{SecureBootDir}, elem...)...)
+}
+
+// SecureBootURL is the URL directory HTTP Boot clients fetch the signed
+// shim from (DHCP option 67 = SecureBootURL + "/<shim>"); the shim then
+// loads ipxe.efi from the same directory. IP literal, :80 omitted.
+func SecureBootURL() string {
+	return "http://" + ServerHostPort() + "/boot/sb"
+}
+
+// ParseSecureBootTrusted normalises the --secureBootTrusted list: lower-cased,
+// deduplicated, microsoft always present, unknown names rejected.
+func ParseSecureBootTrusted(v string) ([]string, error) {
+	out := []string{SecureBootTrustMicrosoft}
+	for _, raw := range strings.Split(v, ",") {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		switch name {
+		case "", SecureBootTrustMicrosoft:
+		case SecureBootTrustFlatcar:
+			if !slices.Contains(out, name) {
+				out = append(out, name)
+			}
+		default:
+			return nil, fmt.Errorf("invalid --%s entry %q: must be %q or %q", SecureBootTrusted, raw, SecureBootTrustMicrosoft, SecureBootTrustFlatcar)
+		}
+	}
+	return out, nil
+}
 
 // Cluster bootstrap defaults and the directory (relative to DataDir) that
 // holds the cluster CA, service-account keys and persisted bootstrap
@@ -318,6 +405,13 @@ func LoadConfig() {
 	viper.SetDefault(Kubeconfig, "")
 	viper.SetDefault(ControlPlaneDisk, "")
 	viper.SetDefault(K0sVersion, DefaultK0sVersion)
+	viper.SetDefault(EFIBootloader, EFIBootloaderIPXE)
+	viper.SetDefault(SecureBoot, false)
+	viper.SetDefault(SecureBootIPXEShim, DefaultSecureBootIPXEShim)
+	viper.SetDefault(SecureBootIPXE, DefaultSecureBootIPXE)
+	viper.SetDefault(FedoraShimVersion, DefaultFedoraShimVersion)
+	viper.SetDefault(FedoraGrubVersion, DefaultFedoraGrubVersion)
+	viper.SetDefault(SecureBootTrusted, "")
 }
 
 func bindEnv(key, env string) {
