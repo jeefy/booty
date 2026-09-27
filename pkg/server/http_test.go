@@ -808,7 +808,7 @@ func TestBootSecureBootAutoexecScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer config.CloseQuietly(resp.Body, "autoexec")
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
