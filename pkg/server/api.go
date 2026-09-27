@@ -230,6 +230,47 @@ type infoResponse struct {
 		Hosts          int `json:"hosts"`
 		PendingReboots int `json:"pendingReboots"`
 	} `json:"fleet"`
+	SecureBoot secureBootInfo `json:"secureBoot"`
+}
+
+// secureBootInfo is the /info view of the UEFI HTTP Boot support: whether
+// it is on, which artefact bundle is served and complete, the Flatcar CA
+// users must enroll for Flatcar/Bluefin kernels, and which CAs the
+// operator asserted the fleet's firmware trusts.
+type secureBootInfo struct {
+	Enabled       bool           `json:"enabled"`
+	Ready         bool           `json:"ready"`
+	BundleVersion string         `json:"bundleVersion"`
+	Trusted       []string       `json:"trusted"`
+	BootURL       string         `json:"bootURL"`
+	FlatcarCA     *flatcarCAInfo `json:"flatcarCA"`
+}
+
+type flatcarCAInfo struct {
+	FlatcarVersion string `json:"flatcarVersion"`
+	Sha256         string `json:"sha256"`
+	Subject        string `json:"subject"`
+	NotAfter       string `json:"notAfter"`
+	URL            string `json:"url"`
+}
+
+func currentSecureBootInfo() secureBootInfo {
+	info := secureBootInfo{Enabled: viper.GetBool(config.SecureBoot)}
+	trusted, err := config.ParseSecureBootTrusted(viper.GetString(config.SecureBootTrusted))
+	if err != nil {
+		trusted = []string{config.SecureBootTrustMicrosoft}
+	}
+	info.Trusted = trusted
+	if !info.Enabled {
+		return info
+	}
+	info.BundleVersion = versions.SecureBootBundleVersion()
+	info.Ready = versions.SecureBootReady()
+	info.BootURL = config.SecureBootURL()
+	if ca, ok := versions.CurrentFlatcarCA(); ok {
+		info.FlatcarCA = &flatcarCAInfo{FlatcarVersion: ca.FlatcarVersion, Sha256: ca.Sha256, Subject: ca.Subject, NotAfter: ca.NotAfter, URL: "http://" + config.ServerHostPort() + "/boot/secureboot/" + config.SecureBootFlatcarCADER}
+	}
+	return info
 }
 
 func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +293,7 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 			info.Fleet.PendingReboots++
 		}
 	}
+	info.SecureBoot = currentSecureBootInfo()
 	writeJSON(w, http.StatusOK, info)
 }
 
