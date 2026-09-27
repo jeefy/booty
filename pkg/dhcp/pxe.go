@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/iana"
@@ -28,6 +29,15 @@ const (
 	pxeClientPrefix = "PXEClient"
 	pxeMenuText     = "Booty"
 	ipxeUserClass   = "iPXE"
+
+	// httpClientPrefix is what UEFI HTTP Boot clients put in option 60
+	// ("HTTPClient:Arch:00016:UNDI:003001") and what they require in the
+	// first 10 bytes of the OFFER's option 60 (EDK2 HttpBootDhcp4.c).
+	httpClientPrefix = "HTTPClient"
+
+	// maxHTTPBootReply is the largest DHCP message the EDK2 HTTP Boot
+	// client accepts (it advertises option 57 = 1472).
+	maxHTTPBootReply = 1472
 )
 
 const (
@@ -35,6 +45,13 @@ const (
 	DefaultEFIFile    = "ipxe.efi"
 	DefaultARM64File  = "ipxe-arm64.efi"
 	DefaultIPXEScript = "booty.ipxe"
+
+	// The Microsoft-signed iPXE shims (ipxe/shim release) handed to UEFI
+	// HTTP Boot clients; the shim then loads ipxe.efi / snponly.efi from
+	// the same URL directory.
+	DefaultHTTPBootEFIFile   = "ipxe-shimx64.efi"
+	DefaultHTTPBootARM64File = "ipxe-shimaa64.efi"
+	SnponlyHTTPBootEFIFile   = "snponly-shimx64.efi"
 )
 
 // Config selects what the ProxyDHCP server listens on and hands out.
@@ -50,6 +67,17 @@ type Config struct {
 	EFIFile    string
 	ARM64File  string
 	IPXEScript string
+
+	// HTTPBoot answers UEFI HTTP Boot clients (option 60 HTTPClient) with
+	// a proxy OFFER whose option 67 is HTTPBootBase/<file>. When false
+	// such clients are ignored (logged once) so deployments without
+	// --secureBoot behave exactly as before.
+	HTTPBoot bool
+	// HTTPBootBase is the URL directory holding the signed shims, e.g.
+	// "http://192.168.1.10:8080/boot/sb" (no trailing slash).
+	HTTPBootBase      string
+	HTTPBootEFIFile   string
+	HTTPBootARM64File string
 
 	Port67   int
 	Port4011 int
@@ -67,6 +95,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.IPXEScript == "" {
 		c.IPXEScript = DefaultIPXEScript
+	}
+	if c.HTTPBootEFIFile == "" {
+		c.HTTPBootEFIFile = DefaultHTTPBootEFIFile
+	}
+	if c.HTTPBootARM64File == "" {
+		c.HTTPBootARM64File = DefaultHTTPBootARM64File
 	}
 	if c.Port67 == 0 {
 		c.Port67 = dhcpv4.ServerPort
@@ -93,6 +127,9 @@ func handle(pkt *dhcpv4.DHCPv4, c Config) (*dhcpv4.DHCPv4, bool) {
 	}
 	log := slog.With("xid", pkt.TransactionID.String(), "mac", pkt.ClientHWAddr.String())
 
+	if isHTTPBootClient(pkt) {
+		return handleHTTPBoot(pkt, c, log)
+	}
 	if !strings.HasPrefix(pkt.ClassIdentifier(), pxeClientPrefix) {
 		log.Debug("ProxyDHCP ignoring non-PXE packet", "classIdentifier", pkt.ClassIdentifier())
 		return nil, false
@@ -188,6 +225,105 @@ func bootFileForArch(arch iana.Arch, c Config, log *slog.Logger) string {
 	default:
 		log.Warn("ProxyDHCP: unknown client architecture, falling back to the BIOS binary", "arch", arch, "file", c.BIOSFile)
 		return c.BIOSFile
+	}
+}
+
+// isHTTPBootClient recognises a UEFI HTTP Boot DHCP client: option 60
+// starting with HTTPClient, or one of the RFC 4578 "boot from HTTP"
+// architectures on a packet that is not a PXEClient. A PXEClient packet is
+// never reclassified, so the legacy PXE path is untouched.
+func isHTTPBootClient(pkt *dhcpv4.DHCPv4) bool {
+	class := pkt.ClassIdentifier()
+	if strings.HasPrefix(class, httpClientPrefix) {
+		return true
+	}
+	if strings.HasPrefix(class, pxeClientPrefix) {
+		return false
+	}
+	for _, arch := range pkt.ClientArch() {
+		switch arch {
+		case iana.EFI_X86_HTTP, iana.EFI_X86_64_HTTP, iana.EFI_ARM64_HTTP:
+			return true
+		}
+	}
+	return false
+}
+
+var httpBootDisabledOnce sync.Once
+
+// handleHTTPBoot is the UEFI HTTP Boot half of the protocol (UEFI 2.10
+// section 24.7, EDK2 HttpBootDxe): the client only ever consumes a proxy
+// OFFER with yiaddr 0, option 60 HTTPClient and an http:// URI in option
+// 67; it never sends a REQUEST to the proxy and ignores port 4011, siaddr,
+// option 43 and option 66.
+func handleHTTPBoot(pkt *dhcpv4.DHCPv4, c Config, log *slog.Logger) (*dhcpv4.DHCPv4, bool) {
+	if !c.HTTPBoot {
+		httpBootDisabledOnce.Do(func() {
+			log.Info("ProxyDHCP ignoring UEFI HTTP Boot clients; start with --secureBoot to answer them (logged once)", "classIdentifier", pkt.ClassIdentifier())
+		})
+		return nil, false
+	}
+	if isSet(pkt.GatewayIPAddr) && !c.Relay {
+		log.Debug("ProxyDHCP ignoring relayed HTTP Boot packet", "giaddr", pkt.GatewayIPAddr)
+		return nil, false
+	}
+	if sid := pkt.ServerIdentifier(); sid != nil && !sid.Equal(c.ServerIP) {
+		log.Debug("ProxyDHCP ignoring HTTP Boot packet addressed to another server", "serverIdentifier", sid)
+		return nil, false
+	}
+	if pkt.MessageType() != dhcpv4.MessageTypeDiscover {
+		log.Debug("ProxyDHCP ignoring HTTP Boot message; only DISCOVER is answered", "type", pkt.MessageType())
+		return nil, false
+	}
+	if c.HTTPBootBase == "" {
+		log.Error("ProxyDHCP cannot answer HTTP Boot client: no HTTPBootBase URL configured")
+		return nil, false
+	}
+
+	var arch iana.Arch
+	if archs := pkt.ClientArch(); len(archs) > 0 {
+		arch = archs[0]
+	} else {
+		arch = iana.EFI_X86_64_HTTP
+	}
+	file := httpBootFileForArch(arch, c, log)
+	url := strings.TrimSuffix(c.HTTPBootBase, "/") + "/" + file
+
+	reply, err := dhcpv4.NewReplyFromRequest(pkt,
+		dhcpv4.WithMessageType(dhcpv4.MessageTypeOffer),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(c.ServerIP)),
+		dhcpv4.WithOption(dhcpv4.OptClassIdentifier(httpClientPrefix)),
+		dhcpv4.WithOptionCopied(pkt, dhcpv4.OptionClientMachineIdentifier),
+		dhcpv4.WithOption(dhcpv4.OptBootFileName(url)),
+	)
+	if err != nil {
+		log.Error("ProxyDHCP could not build HTTP Boot OFFER", "error", err)
+		return nil, false
+	}
+	if n := len(reply.ToBytes()); n > maxHTTPBootReply {
+		log.Error("ProxyDHCP HTTP Boot OFFER exceeds the client's maximum message size; shorten --serverIP/--serverHttpPort URL", "size", n, "max", maxHTTPBootReply, "url", url)
+		return nil, false
+	}
+	log.Info("ProxyDHCP HTTP Boot OFFER", "arch", arch, "url", url)
+	return reply, true
+}
+
+// httpBootFileForArch picks the signed shim for an HTTP Boot client. Only
+// the x86-64 shims are synced; the others are named so the log says what
+// the client asked for.
+func httpBootFileForArch(arch iana.Arch, c Config, log *slog.Logger) string {
+	switch arch {
+	case iana.EFI_X86_64_HTTP:
+		return c.HTTPBootEFIFile
+	case iana.EFI_X86_HTTP:
+		log.Warn("ProxyDHCP: 32-bit UEFI HTTP Boot client, sending the x86-64 shim which will not run on it", "arch", arch, "file", c.HTTPBootEFIFile)
+		return c.HTTPBootEFIFile
+	case iana.EFI_ARM64_HTTP:
+		log.Warn("ProxyDHCP: ARM64 UEFI HTTP Boot client; Booty does not ship this file so the boot will fail", "arch", arch, "file", c.HTTPBootARM64File)
+		return c.HTTPBootARM64File
+	default:
+		log.Warn("ProxyDHCP: unexpected HTTP Boot client architecture, sending the x86-64 shim", "arch", arch, "file", c.HTTPBootEFIFile)
+		return c.HTTPBootEFIFile
 	}
 }
 
