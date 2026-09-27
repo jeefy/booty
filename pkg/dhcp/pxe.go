@@ -79,6 +79,13 @@ type Config struct {
 	HTTPBootEFIFile   string
 	HTTPBootARM64File string
 
+	// HostHTTPBoot, when set, is consulted for every x86-64 UEFI HTTP Boot
+	// DISCOVER before the shim answer, with or without HTTPBoot: handled
+	// false keeps the default behaviour; handled true answers with url, or
+	// stays silent when url is empty so the firmware moves on to its next
+	// boot option (an installed disk).
+	HostHTTPBoot func(mac net.HardwareAddr) (url string, handled bool)
+
 	Port67   int
 	Port4011 int
 }
@@ -276,12 +283,6 @@ var httpBootDisabledOnce sync.Once
 // 67; it never sends a REQUEST to the proxy and ignores port 4011, siaddr,
 // option 43 and option 66.
 func handleHTTPBoot(pkt *dhcpv4.DHCPv4, c Config, log *slog.Logger) (*dhcpv4.DHCPv4, bool) {
-	if !c.HTTPBoot {
-		httpBootDisabledOnce.Do(func() {
-			log.Info("ProxyDHCP ignoring UEFI HTTP Boot clients; start with --secureBoot to answer them (logged once)", "classIdentifier", pkt.ClassIdentifier())
-		})
-		return nil, false
-	}
 	if isSet(pkt.GatewayIPAddr) && !c.Relay {
 		log.Debug("ProxyDHCP ignoring relayed HTTP Boot packet", "giaddr", pkt.GatewayIPAddr)
 		return nil, false
@@ -294,10 +295,6 @@ func handleHTTPBoot(pkt *dhcpv4.DHCPv4, c Config, log *slog.Logger) (*dhcpv4.DHC
 		log.Debug("ProxyDHCP ignoring HTTP Boot message; only DISCOVER is answered", "type", pkt.MessageType())
 		return nil, false
 	}
-	if c.HTTPBootBase == "" {
-		log.Error("ProxyDHCP cannot answer HTTP Boot client: no HTTPBootBase URL configured")
-		return nil, false
-	}
 
 	var arch iana.Arch
 	if archs := pkt.ClientArch(); len(archs) > 0 {
@@ -305,9 +302,32 @@ func handleHTTPBoot(pkt *dhcpv4.DHCPv4, c Config, log *slog.Logger) (*dhcpv4.DHC
 	} else {
 		arch = iana.EFI_X86_64_HTTP
 	}
-	file := httpBootFileForArch(arch, c, log)
-	url := strings.TrimSuffix(c.HTTPBootBase, "/") + "/" + file
+	if c.HostHTTPBoot != nil && arch == iana.EFI_X86_64_HTTP {
+		if url, handled := c.HostHTTPBoot(pkt.ClientHWAddr); handled {
+			if url == "" {
+				log.Debug("ProxyDHCP offering no HTTP Boot file to this host; its firmware boots the next option")
+				return nil, false
+			}
+			return httpBootOffer(pkt, c, arch, url, log)
+		}
+	}
 
+	if !c.HTTPBoot {
+		httpBootDisabledOnce.Do(func() {
+			log.Info("ProxyDHCP ignoring UEFI HTTP Boot clients; start with --secureBoot to answer them (logged once)", "classIdentifier", pkt.ClassIdentifier())
+		})
+		return nil, false
+	}
+	if c.HTTPBootBase == "" {
+		log.Error("ProxyDHCP cannot answer HTTP Boot client: no HTTPBootBase URL configured")
+		return nil, false
+	}
+	file := httpBootFileForArch(arch, c, log)
+	return httpBootOffer(pkt, c, arch, strings.TrimSuffix(c.HTTPBootBase, "/")+"/"+file, log)
+}
+
+// httpBootOffer builds the proxy OFFER carrying url in option 67.
+func httpBootOffer(pkt *dhcpv4.DHCPv4, c Config, arch iana.Arch, url string, log *slog.Logger) (*dhcpv4.DHCPv4, bool) {
 	reply, err := dhcpv4.NewReplyFromRequest(pkt,
 		dhcpv4.WithMessageType(dhcpv4.MessageTypeOffer),
 		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(c.ServerIP)),

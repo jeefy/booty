@@ -198,3 +198,78 @@ func TestHTTPBootOfferOwnReplyIsIgnored(t *testing.T) {
 	offer := mustHandle(t, ovmfDiscover(t), c)
 	mustBeSilent(t, offer, c)
 }
+
+func TestHostHTTPBootOverride(t *testing.T) {
+	const bluefinURL = "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-ff/bluefin-server-netboot.efi"
+	var asked []string
+	decide := func(url string, handled bool) func(net.HardwareAddr) (string, bool) {
+		return func(mac net.HardwareAddr) (string, bool) {
+			asked = append(asked, mac.String())
+			return url, handled
+		}
+	}
+	cases := []struct {
+		name     string
+		httpBoot bool
+		url      string
+		handled  bool
+		arch     iana.Arch
+		want     string
+	}{
+		{"bluefin host with --secureBoot", true, bluefinURL, true, iana.EFI_X86_64_HTTP, bluefinURL},
+		{"bluefin host without --secureBoot", false, bluefinURL, true, iana.EFI_X86_64_HTTP, bluefinURL},
+		{"installed bluefin host stays silent", true, "", true, iana.EFI_X86_64_HTTP, ""},
+		{"other hosts keep the shim", true, "", false, iana.EFI_X86_64_HTTP, testHTTPBootBase + "/" + DefaultHTTPBootEFIFile},
+		{"other hosts without --secureBoot stay silent", false, "", false, iana.EFI_X86_64_HTTP, ""},
+		{"arm64 is not asked", true, bluefinURL, true, iana.EFI_ARM64_HTTP, testHTTPBootBase + "/" + DefaultHTTPBootARM64File},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			asked = nil
+			c := httpBootConfig()
+			c.HTTPBoot = tc.httpBoot
+			c.HostHTTPBoot = decide(tc.url, tc.handled)
+			pkt := httpPacket(t, dhcpv4.MessageTypeDiscover, tc.arch)
+			if tc.want == "" {
+				mustBeSilent(t, pkt, c)
+				return
+			}
+			reply := mustHandle(t, pkt, c)
+			if reply.MessageType() != dhcpv4.MessageTypeOffer || !reply.YourIPAddr.IsUnspecified() {
+				t.Fatalf("want a proxy OFFER without an address: %s", reply.Summary())
+			}
+			if got := reply.ClassIdentifier(); got != "HTTPClient" {
+				t.Errorf("option 60 = %q", got)
+			}
+			if got := reply.BootFileNameOption(); got != tc.want {
+				t.Errorf("option 67 = %q, want %q", got, tc.want)
+			}
+			if tc.arch == iana.EFI_X86_64_HTTP && (len(asked) != 1 || asked[0] != testMAC.String()) {
+				t.Errorf("HostHTTPBoot asked for %v", asked)
+			}
+			if tc.arch != iana.EFI_X86_64_HTTP && len(asked) != 0 {
+				t.Errorf("only x86-64 HTTP clients are overridden, asked %v", asked)
+			}
+		})
+	}
+
+	t.Run("OVMF capture gets the bluefin URL", func(t *testing.T) {
+		c := httpBootConfig()
+		c.HTTPBoot = false
+		c.HostHTTPBoot = decide(bluefinURL, true)
+		reply := mustHandle(t, ovmfDiscover(t), c)
+		if got := reply.BootFileNameOption(); got != bluefinURL {
+			t.Fatalf("option 67 = %q", got)
+		}
+		if n := len(reply.ToBytes()); n > maxHTTPBootReply {
+			t.Fatalf("OFFER of %d bytes exceeds %d", n, maxHTTPBootReply)
+		}
+	})
+
+	t.Run("REQUESTs and relayed packets are never answered", func(t *testing.T) {
+		c := httpBootConfig()
+		c.HostHTTPBoot = decide(bluefinURL, true)
+		mustBeSilent(t, httpPacket(t, dhcpv4.MessageTypeRequest, iana.EFI_X86_64_HTTP), c)
+		mustBeSilent(t, httpPacket(t, dhcpv4.MessageTypeDiscover, iana.EFI_X86_64_HTTP, dhcpv4.WithGatewayIP(net.IPv4(10, 0, 0, 1))), c)
+	})
+}
