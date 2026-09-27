@@ -41,9 +41,19 @@ func pxePacket(t *testing.T, mt dhcpv4.MessageType, arch iana.Arch, mods ...dhcp
 	return pkt
 }
 
+// portFor is the port a well-behaved client sends this message to: DISCOVER
+// (and everything else) to 67, the PXE boot-server REQUEST to 4011.
+func portFor(pkt *dhcpv4.DHCPv4, c Config) int {
+	c = c.withDefaults()
+	if pkt.MessageType() == dhcpv4.MessageTypeRequest && !isHTTPBootClient(pkt) {
+		return c.Port4011
+	}
+	return c.Port67
+}
+
 func mustHandle(t *testing.T, pkt *dhcpv4.DHCPv4, c Config) *dhcpv4.DHCPv4 {
 	t.Helper()
-	reply, ok := handle(pkt, c)
+	reply, ok := handle(pkt, c, portFor(pkt, c))
 	if !ok || reply == nil {
 		t.Fatalf("expected a reply, got silence")
 	}
@@ -52,7 +62,7 @@ func mustHandle(t *testing.T, pkt *dhcpv4.DHCPv4, c Config) *dhcpv4.DHCPv4 {
 
 func mustBeSilent(t *testing.T, pkt *dhcpv4.DHCPv4, c Config) {
 	t.Helper()
-	if reply, ok := handle(pkt, c); ok || reply != nil {
+	if reply, ok := handle(pkt, c, portFor(pkt, c)); ok || reply != nil {
 		t.Fatalf("expected silence, got %s", reply.Summary())
 	}
 }
@@ -468,5 +478,24 @@ func TestOfferVendorOptionsLayout(t *testing.T) {
 	}
 	if binary.BigEndian.Uint16(want[5:7]) != 0 {
 		t.Error("boot server type must be 0x0000")
+	}
+}
+
+// TestRequestOnPort67IsIgnored pins the fix for the OVMF failure seen live:
+// the client's broadcast DHCPREQUEST for the real server's lease also
+// reaches port 67, and a ProxyDHCP ACK to it (yiaddr 0, boot file set) made
+// the firmware DECLINE the lease. Only 4011 answers REQUESTs.
+func TestRequestOnPort67IsIgnored(t *testing.T) {
+	c := Config{ServerIP: testServerIP}
+	pkt := pxePacket(t, dhcpv4.MessageTypeRequest, iana.EFI_X86_64)
+	if reply, ok := handle(pkt, c, c.withDefaults().Port67); ok || reply != nil {
+		t.Fatalf("REQUEST on 67 must be silent, got %s", reply.Summary())
+	}
+	if reply, ok := handle(pkt, c, c.withDefaults().Port4011); !ok || reply == nil || reply.MessageType() != dhcpv4.MessageTypeAck {
+		t.Fatalf("REQUEST on 4011 must be ACKed")
+	}
+	disc := pxePacket(t, dhcpv4.MessageTypeDiscover, iana.EFI_X86_64)
+	if reply, ok := handle(disc, c, c.withDefaults().Port4011); ok || reply != nil {
+		t.Fatalf("DISCOVER on 4011 must be silent, got %s", reply.Summary())
 	}
 }

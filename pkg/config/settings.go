@@ -23,7 +23,9 @@ var Keys = []string{
 	HostnameTemplate, BluefinRepo, BluefinVersion, GithubToken,
 	InstallMinDuration, ClusterDistribution, ControlPlane, ControlPlaneEndpt,
 	ClusterCADir, CNI, CNIRelease, PodCIDR, ServiceCIDR, K0sTokenFile,
-	Kubeconfig, ControlPlaneDisk, K0sVersion,
+	Kubeconfig, ControlPlaneDisk, K0sVersion, EFIBootloader, SecureBoot,
+	SecureBootIPXEShim, SecureBootIPXE, FedoraShimVersion, FedoraGrubVersion,
+	SecureBootTrusted,
 }
 
 // Where a setting's effective value comes from, mirroring viper's

@@ -144,3 +144,23 @@ func openRequest(filename string) (io.ReadCloser, error) {
 func IPXEStub(serverHostPort string) string {
 	return fmt.Sprintf("#!ipxe\nchain http://%s/booty.ipxe?mac=${mac}\n", serverHostPort)
 }
+
+// SecureBootAutoexec is served as /boot/sb/autoexec.ipxe. The signed iPXE
+// carries no Booty script, but an HTTP-booted iPXE fetches autoexec.ipxe
+// from the directory it was loaded from before anything else, so this is
+// how it reaches /booty.ipxe. It runs before iPXE has configured the NIC,
+// hence the dhcp step; the URL is Booty's own, not ${next-server}.
+func SecureBootAutoexec(serverHostPort string) string {
+	return fmt.Sprintf(`#!ipxe
+:start
+dhcp || goto retry
+chain http://%[1]s/booty.ipxe?mac=${mac}&sb=1 || goto shell
+exit
+:retry
+sleep 5
+goto start
+:shell
+echo Booty: could not reach %[1]s - dropping to the iPXE shell
+shell
+`, serverHostPort)
+}

@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -523,6 +525,79 @@ func TestFlatcarPin(t *testing.T) {
 	}
 }
 
+func TestInfoSecureBootBlock(t *testing.T) {
+	srv, dir := newTestServer(t)
+	viper.Set(config.SecureBoot, true)
+	viper.Set(config.SecureBootTrusted, "flatcar")
+	viper.Set(config.SecureBootIPXEShim, "ipxe-16.1")
+	viper.Set(config.SecureBootIPXE, "v2.0.0")
+	viper.Set(config.FedoraShimVersion, "16.1-7")
+	viper.Set(config.FedoraGrubVersion, "2.12-64.fc44")
+	t.Cleanup(func() {
+		viper.Set(config.SecureBoot, false)
+		viper.Set(config.SecureBootTrusted, "")
+	})
+	bundle := "ipxe-16.1_v2.0.0_shim-16.1-7_grub-2.12-64.fc44"
+	sbDir := filepath.Join(dir, "secureboot")
+	if err := os.MkdirAll(filepath.Join(sbDir, bundle, "fedora"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"bundleVersion":"` + bundle + `","files":[{"name":"ipxe-shimx64.efi","sha256":"00"},{"name":"fedora/shimx64.efi","sha256":"00"}]}`
+	for name, content := range map[string]string{
+		filepath.Join(bundle, "manifest.json"):      manifest,
+		filepath.Join(bundle, "ipxe-shimx64.efi"):   "SHIM",
+		filepath.Join(bundle, "fedora/shimx64.efi"): "FEDORA",
+		"flatcar-ca.json":                           `{"flatcarVersion":"4757.2.0","sha256":"ebb170da","subject":"CN=Flatcar CA","notAfter":"2037-01-19","source":"x"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(sbDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(bundle, filepath.Join(sbDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := do(t, http.MethodGet, srv.URL+"/info", "")
+	var info struct {
+		SecureBoot struct {
+			Enabled   bool     `json:"enabled"`
+			Ready     bool     `json:"ready"`
+			Bundle    string   `json:"bundleVersion"`
+			Trusted   []string `json:"trusted"`
+			BootURL   string   `json:"bootURL"`
+			FlatcarCA *struct {
+				FlatcarVersion string `json:"flatcarVersion"`
+				Sha256         string `json:"sha256"`
+				URL            string `json:"url"`
+			} `json:"flatcarCA"`
+		} `json:"secureBoot"`
+	}
+	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
+		t.Fatal(err)
+	}
+	sb := info.SecureBoot
+	if !sb.Enabled || !sb.Ready || sb.Bundle != bundle || sb.BootURL != "http://192.168.1.10:8080/boot/sb" {
+		t.Fatalf("secureBoot = %+v", sb)
+	}
+	if len(sb.Trusted) != 2 || sb.Trusted[0] != "microsoft" || sb.Trusted[1] != "flatcar" {
+		t.Errorf("trusted = %v", sb.Trusted)
+	}
+	if sb.FlatcarCA == nil || sb.FlatcarCA.Sha256 != "ebb170da" || sb.FlatcarCA.FlatcarVersion != "4757.2.0" || sb.FlatcarCA.URL != "http://192.168.1.10:8080/boot/secureboot/flatcar-ca.der" {
+		t.Errorf("flatcarCA = %+v", sb.FlatcarCA)
+	}
+
+	if err := os.Remove(filepath.Join(sbDir, bundle, "fedora/shimx64.efi")); err != nil {
+		t.Fatal(err)
+	}
+	r = do(t, http.MethodGet, srv.URL+"/info", "")
+	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.SecureBoot.Ready {
+		t.Error("ready must drop when a bundle member is missing")
+	}
+}
+
 func TestInfoAndVersion(t *testing.T) {
 	srv, _ := newTestServer(t)
 	r := do(t, http.MethodGet, srv.URL+"/info", "")
@@ -533,10 +608,13 @@ func TestInfoAndVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"flatcar", "coreos", "bluefin", "booty", "fleet"} {
+	for _, key := range []string{"flatcar", "coreos", "bluefin", "booty", "fleet", "secureBoot"} {
 		if _, ok := info[key]; !ok {
 			t.Fatalf("info missing %q: %s", key, r.body)
 		}
+	}
+	if sb := info["secureBoot"]; sb["enabled"] != false || sb["ready"] != false || sb["bundleVersion"] != "" || sb["flatcarCA"] != nil {
+		t.Fatalf("info.secureBoot must be off by default: %v", sb)
 	}
 	if _, ok := info["flatcar"]["pinnedVersion"]; !ok {
 		t.Fatalf("info.flatcar missing pinnedVersion: %s", r.body)
@@ -600,32 +678,32 @@ func TestDataHandler(t *testing.T) {
 func TestBootHandler(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	for name, want := range map[string]string{
-		"undionly.kpxe": "BIOS-IPXE",
-		"ipxe.efi":      "EFI-IPXE",
-		"snponly.efi":   "SNP-IPXE",
+	for name, want := range map[string][2]string{
+		"undionly.kpxe": {"BIOS-IPXE", "application/octet-stream"},
+		"ipxe.efi":      {"EFI-IPXE", "application/efi"},
+		"snponly.efi":   {"SNP-IPXE", "application/efi"},
 	} {
 		r := do(t, http.MethodGet, srv.URL+"/boot/"+name, "")
-		if r.status != http.StatusOK || r.body != want {
+		if r.status != http.StatusOK || r.body != want[0] {
 			t.Errorf("/boot/%s: status %d body %q", name, r.status, r.body)
 		}
-		if r.contentType != "application/octet-stream" {
-			t.Errorf("/boot/%s: content-type %q", name, r.contentType)
+		if r.contentType != want[1] {
+			t.Errorf("/boot/%s: content-type %q, want %q", name, r.contentType, want[1])
 		}
 	}
 
-	head, err := http.Head(srv.URL + "/boot/ipxe.efi")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := head.Body.Close(); err != nil {
-		t.Errorf("close: %v", err)
-	}
+	head := doHead(t, srv.URL+"/boot/ipxe.efi")
 	if head.StatusCode != http.StatusOK || head.ContentLength != int64(len("EFI-IPXE")) {
 		t.Errorf("HEAD /boot/ipxe.efi: status %d length %d", head.StatusCode, head.ContentLength)
 	}
+	if got := head.Header.Get("Content-Type"); got != "application/efi" {
+		t.Errorf("HEAD content-type %q", got)
+	}
+	if got := head.Header.Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("HEAD cache-control %q", got)
+	}
 
-	for _, p := range []string{"/boot/", "/boot/pxelinux.0", "/boot/../boot/ipxe.efi/x", "/boot/ipxe.efi/", "/boot/booty.ipxe"} {
+	for _, p := range []string{"/boot/", "/boot/pxelinux.0", "/boot/../boot/ipxe.efi/x", "/boot/ipxe.efi/", "/boot/booty.ipxe", "/boot/sb/ipxe.efi", "/boot/secureboot/flatcar-ca.der", "/boot/sb/", "/boot/sb/../ipxe.efi", "/boot/../ignition.json", "/boot/sb/../../config/ignition.yaml"} {
 		assertJSONError(t, do(t, http.MethodGet, srv.URL+p, ""), http.StatusNotFound)
 	}
 	assertJSONError(t, do(t, http.MethodPost, srv.URL+"/boot/ipxe.efi", ""), http.StatusMethodNotAllowed)
@@ -633,4 +711,115 @@ func TestBootHandler(t *testing.T) {
 	noFiles := httptest.NewServer(NewHandler(Options{WebDir: t.TempDir()}))
 	t.Cleanup(noFiles.Close)
 	assertJSONError(t, do(t, http.MethodGet, noFiles.URL+"/boot/ipxe.efi", ""), http.StatusNotFound)
+}
+
+// doHead issues a HEAD without following redirects, so a 301 from the mux
+// would surface as a failure instead of being followed.
+func doHead(t *testing.T, url string) *http.Response {
+	t.Helper()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Head(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close: %v", err)
+	}
+	return resp
+}
+
+func TestBootHandlerCollapsesSlashesWithoutRedirect(t *testing.T) {
+	srv, _ := newTestServer(t)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, p := range []string{"/boot//ipxe.efi", "/boot///ipxe.efi", "/boot/./ipxe.efi"} {
+		resp, err := client.Get(srv.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || string(body) != "EFI-IPXE" {
+			t.Errorf("GET %s: status %d body %q (location %q)", p, resp.StatusCode, body, resp.Header.Get("Location"))
+		}
+	}
+	if head := doHead(t, srv.URL+"/boot//ipxe.efi"); head.StatusCode != http.StatusOK || head.ContentLength != int64(len("EFI-IPXE")) {
+		t.Errorf("HEAD /boot//ipxe.efi: status %d length %d", head.StatusCode, head.ContentLength)
+	}
+}
+
+func TestBootHandlerServesSecureBootBundle(t *testing.T) {
+	srv, dir := newTestServer(t)
+	bundle := filepath.Join(dir, "secureboot", "bundle-1")
+	for name, content := range map[string]string{
+		"ipxe-shimx64.efi":    "SHIM",
+		"ipxe.efi":            "SB-IPXE",
+		"fedora/shimx64.efi":  "FEDORA-SHIM",
+		"fedora/grubx64.efi":  "FEDORA-GRUB",
+		"manifest.json":       "{}",
+		"../flatcar-ca.der":   "DER",
+		"../flatcar-ca.pem":   "PEM",
+		"../bundle-0/old.efi": "OLD",
+	} {
+		full := filepath.Join(bundle, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("bundle-1", filepath.Join(dir, "secureboot", "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	for p, want := range map[string][2]string{
+		"/boot/sb/ipxe-shimx64.efi":           {"SHIM", "application/efi"},
+		"/boot/sb//ipxe.efi":                  {"SB-IPXE", "application/efi"},
+		"/boot/sb/fedora/shimx64.efi":         {"FEDORA-SHIM", "application/efi"},
+		"/boot/secureboot/fedora/shimx64.efi": {"FEDORA-SHIM", "application/efi"},
+		"/boot/secureboot/fedora/grubx64.efi": {"FEDORA-GRUB", "application/efi"},
+		"/boot/secureboot/ipxe-shimx64.efi":   {"SHIM", "application/efi"},
+		"/boot/secureboot/flatcar-ca.der":     {"DER", "application/octet-stream"},
+		"/boot/secureboot/flatcar-ca.pem":     {"PEM", "application/octet-stream"},
+		"/boot/secureboot//flatcar-ca.der":    {"DER", "application/octet-stream"},
+		"/boot/secureboot/manifest.json":      {"{}", "application/octet-stream"},
+		"/boot/ipxe.efi":                      {"EFI-IPXE", "application/efi"},
+	} {
+		r := do(t, http.MethodGet, srv.URL+p, "")
+		if r.status != http.StatusOK || r.body != want[0] || r.contentType != want[1] {
+			t.Errorf("GET %s: %+v, want %v", p, r, want)
+		}
+	}
+	head := doHead(t, srv.URL+"/boot/sb/ipxe-shimx64.efi")
+	if head.StatusCode != http.StatusOK || head.ContentLength != 4 || head.Header.Get("Content-Type") != "application/efi" {
+		t.Errorf("HEAD /boot/sb/ipxe-shimx64.efi: status %d length %d type %q", head.StatusCode, head.ContentLength, head.Header.Get("Content-Type"))
+	}
+
+	for _, p := range []string{"/boot/sb/", "/boot/sb/fedora", "/boot/sb/fedora/", "/boot/sb/missing.efi", "/boot/secureboot/bundle-0/old.efi", "/boot/secureboot/current/ipxe.efi/", "/boot/sb/../../config/ignition.yaml", "/boot/sb/..%2F..%2Fhardware.json", "/boot/secureboot/../hardware.json", "/boot/secureboot/flatcar-ca.txt"} {
+		assertJSONError(t, do(t, http.MethodGet, srv.URL+p, ""), http.StatusNotFound)
+	}
+}
+
+func TestBootSecureBootAutoexecScript(t *testing.T) {
+	srv, _ := newTestServer(t)
+	resp, err := http.Get(srv.URL + "/boot/sb/autoexec.ipxe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer config.CloseQuietly(resp.Body, "autoexec")
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	body := string(raw)
+	for _, want := range []string{"#!ipxe", "dhcp || goto retry", "/booty.ipxe?mac=${mac}", "shell"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("autoexec.ipxe missing %q:\n%s", want, body)
+		}
+	}
+	if resp.Header.Get("Content-Length") != strconv.Itoa(len(raw)) {
+		t.Errorf("Content-Length %q for %d bytes", resp.Header.Get("Content-Length"), len(raw))
+	}
 }

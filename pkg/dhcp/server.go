@@ -97,7 +97,7 @@ func (s *Server) serve(conn *net.UDPConn, errCh chan<- error) {
 			slog.Debug("ProxyDHCP dropping malformed packet", "from", src, "error", err)
 			continue
 		}
-		reply, ok := handle(pkt, s.cfg)
+		reply, ok := handle(pkt, s.cfg, conn.LocalAddr().(*net.UDPAddr).Port)
 		if !ok {
 			continue
 		}

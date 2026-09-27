@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -10,6 +12,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/kubeadm"
+	"github.com/jeefy/booty/pkg/tftp"
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
@@ -115,13 +120,22 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.HandleFunc(credsPathPrefix, handleCredsRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
-	mux.Handle("/boot/", http.StripPrefix("/boot/", bootHandler{files: o.BootFiles}))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
 
 	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(versions.RegistryBlobDir())))
 	mux.Handle("/v2/", ociRegistry)
 
-	return logRequest(mux)
+	// /boot/ is routed before the mux: UEFI HTTP Boot firmware and shim
+	// never follow redirects, and http.ServeMux answers unclean paths such
+	// as /boot/sb//ipxe.efi with a 301. bootHandler cleans the path itself.
+	boot := bootHandler{files: o.BootFiles, secureBootDir: config.SecureBootPath()}
+	return logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, bootPathPrefix) {
+			boot.ServeHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 }
 
 // Start binds the listener synchronously and serves in the background so
@@ -235,11 +249,29 @@ func (h *dataHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.files.ServeHTTP(w, r)
 }
 
-// bootHandler serves the embedded iPXE binaries (config.BootFileNames) as
-// application/octet-stream for firmware and iPXE clients that chain over
-// HTTP instead of TFTP.
+// bootHandler serves the boot loaders firmware and iPXE fetch over HTTP:
+// the embedded iPXE binaries at /boot/<name>, the Secure Boot bundle
+// (data/secureboot/current/) at /boot/sb/<name> and /boot/secureboot/<path>,
+// and the Flatcar CA at /boot/secureboot/flatcar-ca.{der,pem}. It is raw on
+// purpose: repeated slashes are collapsed without a redirect, HEAD is
+// answered with the same headers as GET, Content-Length is always set,
+// .efi files are application/efi (UEFI firmware needs that or the suffix)
+// and nothing is listed.
 type bootHandler struct {
-	files fs.FS
+	files         fs.FS
+	secureBootDir string
+}
+
+const (
+	bootPathPrefix       = "/boot/"
+	bootSBPrefix         = "sb/"
+	bootSecureBootPrefix = "secureboot/"
+	efiContentType       = "application/efi"
+)
+
+type bootFile struct {
+	io.ReadCloser
+	size int64
 }
 
 func (h bootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -247,27 +279,87 @@ func (h bootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	name := r.URL.Path
-	if h.files == nil || !config.IsBootFile(name) {
+	clean := path.Clean(r.URL.Path)
+	if !strings.HasPrefix(clean, bootPathPrefix) || strings.HasSuffix(r.URL.Path, "/") || slices.Contains(strings.Split(r.URL.Path, "/"), "..") {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	data, err := fs.ReadFile(h.files, name)
-	if err != nil {
-		slog.Error("Embedded boot file unreadable", "name", name, "error", err)
-		writeError(w, http.StatusInternalServerError, "boot file unavailable")
+	rel := strings.TrimPrefix(clean, bootPathPrefix)
+	f, ok := h.open(rel)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+	defer config.CloseQuietly(f, rel)
+
+	contentType := "application/octet-stream"
+	if strings.EqualFold(path.Ext(rel), ".efi") {
+		contentType = efiContentType
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(f.size, 10))
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		return
 	}
-	if _, err := w.Write(data); err != nil {
-		slog.Debug("Writing boot file failed", "name", name, "error", err)
+	if _, err := io.Copy(w, f); err != nil {
+		slog.Debug("Writing boot file failed", "name", rel, "error", err)
 	}
+}
+
+// open resolves a cleaned path below /boot/ to a file. Embedded names are
+// exact matches; everything under sb/ and secureboot/ is looked up inside
+// data/secureboot/ through os.Root so no request can leave that tree.
+func (h bootHandler) open(rel string) (*bootFile, bool) {
+	switch {
+	case rel == bootSBPrefix+"autoexec.ipxe":
+		script := tftp.SecureBootAutoexec(config.ServerHostPort())
+		return &bootFile{ReadCloser: io.NopCloser(strings.NewReader(script)), size: int64(len(script))}, true
+	case strings.HasPrefix(rel, bootSBPrefix):
+		return h.openSecureBoot(path.Join(config.SecureBootCurrentLink, strings.TrimPrefix(rel, bootSBPrefix)))
+	case strings.HasPrefix(rel, bootSecureBootPrefix):
+		sub := strings.TrimPrefix(rel, bootSecureBootPrefix)
+		if f, ok := h.openSecureBoot(path.Join(config.SecureBootCurrentLink, sub)); ok {
+			return f, true
+		}
+		if sub == config.SecureBootFlatcarCADER || sub == config.SecureBootFlatcarCAPEM {
+			return h.openSecureBoot(sub)
+		}
+		return nil, false
+	case h.files != nil && config.IsBootFile(rel):
+		data, err := fs.ReadFile(h.files, rel)
+		if err != nil {
+			slog.Error("Embedded boot file unreadable", "name", rel, "error", err)
+			return nil, false
+		}
+		return &bootFile{ReadCloser: io.NopCloser(bytes.NewReader(data)), size: int64(len(data))}, true
+	}
+	return nil, false
+}
+
+func (h bootHandler) openSecureBoot(rel string) (*bootFile, bool) {
+	if h.secureBootDir == "" {
+		return nil, false
+	}
+	if _, err := config.CleanRelPath(rel); err != nil {
+		return nil, false
+	}
+	root, err := os.OpenRoot(h.secureBootDir)
+	if err != nil {
+		return nil, false
+	}
+	defer config.CloseQuietly(root, h.secureBootDir)
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, false
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		config.CloseQuietly(f, rel)
+		return nil, false
+	}
+	return &bootFile{ReadCloser: f, size: info.Size()}, true
 }
 
 func hostFromQuery(r *http.Request) (string, error) {

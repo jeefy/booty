@@ -156,6 +156,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		CoreOSArch:    viper.GetString(config.CoreOSArchitecture),
 		CoreOSVersion: state.CurrentCoreOSVersion(),
 		OSTreeImage:   resolveOSTreeImage(host),
+		SecureBoot:    r.URL.Query().Get("sb") == "1",
 	}
 	if host != nil {
 		vars.Hostname = host.Hostname
@@ -167,7 +168,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 			recordInstallServed(mac, host, now)
 		}
 	}
-	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault)
+	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
 }
 

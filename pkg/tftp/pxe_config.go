@@ -28,9 +28,13 @@ set STREAM [[coreos-channel]]
 set VERSION [[coreos-version]]
 set ARCH [[coreos-arch]]
 
-kernel ${BASEURL}/fedora-coreos-${VERSION}-live-kernel-${ARCH} enforcing=0 initrd=main coreos.live.rootfs_url=${BASEURL}/fedora-coreos-${VERSION}-live-rootfs.${ARCH}.img ignition.firstboot ignition.platform.id=metal ignition.firstboot=1 ignition.config.url=${CONFIGURL}
+[[secure-boot-shim]]kernel ${BASEURL}/fedora-coreos-${VERSION}-live-kernel-${ARCH} enforcing=0 initrd=main coreos.live.rootfs_url=${BASEURL}/fedora-coreos-${VERSION}-live-rootfs.${ARCH}.img ignition.firstboot ignition.platform.id=metal ignition.firstboot=1 ignition.config.url=${CONFIGURL}
 initrd --name main ${BASEURL}/fedora-coreos-${VERSION}-live-initramfs.${ARCH}.img
-boot
+boot || goto shell
+exit
+:shell
+echo Booty: boot failed - dropping to the iPXE shell
+shell
 `,
 
 	"bluefin.ipxe": `#!ipxe
@@ -105,7 +109,21 @@ type TemplateVars struct {
 	CoreOSArch    string
 	CoreOSVersion string
 	OSTreeImage   string
-	Bluefin       BluefinVars
+	// SecureBoot is set when the client arrived through the signed iPXE
+	// (its autoexec.ipxe adds sb=1): kernels then go through firmware
+	// verification, so the coreos script loads Fedora's shim first.
+	SecureBoot bool
+	Bluefin    BluefinVars
+}
+
+// secureBootShim is the iPXE line that makes the following kernel command
+// verify against the Fedora shim's vendor certificate instead of the
+// firmware db, which only holds Microsoft's keys.
+func (v TemplateVars) secureBootShim() string {
+	if !v.SecureBoot {
+		return ""
+	}
+	return "shim http://" + v.Server + "/boot/secureboot/fedora/shimx64.efi || goto shell\n"
 }
 
 // BluefinVars fills the bluefin.ipxe template. Vmlinuz/Initrd/DDI/DDISha256
@@ -164,6 +182,7 @@ func Render(template string, v TemplateVars) string {
 		"[[install-disk-arg]]", v.Bluefin.installDiskArg(),
 		"[[install-disk-label]]", v.Bluefin.installDiskLabel(),
 		"[[creds-args]]", v.Bluefin.credsArgs(),
+		"[[secure-boot-shim]]", v.secureBootShim(),
 	).Replace(template)
 }
 
