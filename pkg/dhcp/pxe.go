@@ -118,9 +118,17 @@ func (c Config) validate() error {
 	return nil
 }
 
-// handle is the whole ProxyDHCP protocol: it returns the reply for pkt, or
-// (nil, false) when Booty must stay silent. It never touches a socket.
-func handle(pkt *dhcpv4.DHCPv4, c Config) (*dhcpv4.DHCPv4, bool) {
+// handle is the whole ProxyDHCP protocol: it returns the reply for pkt
+// received on localPort, or (nil, false) when Booty must stay silent. It
+// never touches a socket.
+//
+// The port matters: a PXE client broadcasts its DHCPREQUEST for the real
+// server's lease on port 67 too, and a ProxyDHCP ACK to that (yiaddr 0,
+// boot file set) makes EDK2 firmware refuse the lease ("Lease confirmed
+// isn't the same as that in the offer", followed by a DHCPDECLINE) and the
+// boot fails. So DISCOVERs are answered only on 67 and REQUESTs only on 4011
+// (PXE spec 2.1 section 2.2.3), as seen on the wire with OVMF.
+func handle(pkt *dhcpv4.DHCPv4, c Config, localPort int) (*dhcpv4.DHCPv4, bool) {
 	c = c.withDefaults()
 	if pkt == nil || pkt.OpCode != dhcpv4.OpcodeBootRequest {
 		return nil, false
@@ -128,6 +136,9 @@ func handle(pkt *dhcpv4.DHCPv4, c Config) (*dhcpv4.DHCPv4, bool) {
 	log := slog.With("xid", pkt.TransactionID.String(), "mac", pkt.ClientHWAddr.String())
 
 	if isHTTPBootClient(pkt) {
+		if localPort != c.Port67 {
+			return nil, false
+		}
 		return handleHTTPBoot(pkt, c, log)
 	}
 	if !strings.HasPrefix(pkt.ClassIdentifier(), pxeClientPrefix) {
@@ -150,8 +161,16 @@ func handle(pkt *dhcpv4.DHCPv4, c Config) (*dhcpv4.DHCPv4, bool) {
 
 	switch pkt.MessageType() {
 	case dhcpv4.MessageTypeDiscover:
+		if localPort != c.Port67 {
+			log.Debug("ProxyDHCP ignoring DISCOVER on the boot server port", "port", localPort)
+			return nil, false
+		}
 		return buildOffer(pkt, c, log)
 	case dhcpv4.MessageTypeRequest:
+		if localPort != c.Port4011 {
+			log.Debug("ProxyDHCP ignoring REQUEST on port 67; that lease belongs to the DHCP server", "port", localPort)
+			return nil, false
+		}
 		return buildAck(pkt, c, archs[0], log)
 	default:
 		log.Debug("ProxyDHCP ignoring message type", "type", pkt.MessageType())
