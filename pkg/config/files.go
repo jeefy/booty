@@ -42,7 +42,7 @@ func Download(ctx context.Context, client *http.Client, url, dest string, h cryp
 	}
 	defer CloseQuietly(resp.Body, url)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed for %s: HTTP %d", url, resp.StatusCode)
+		return &HTTPStatusError{URL: url, StatusCode: resp.StatusCode}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -89,6 +89,17 @@ func Download(ctx context.Context, client *http.Client, url, dest string, h cryp
 	}
 	slog.Info("Download completed", "url", url, "dest", dest, "size_bytes", n)
 	return nil
+}
+
+// HTTPStatusError is Download's error for a non-200 answer, so callers can
+// tell a missing file (404) from a failed transfer.
+type HTTPStatusError struct {
+	URL        string
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("download failed for %s: HTTP %d", e.URL, e.StatusCode)
 }
 
 // WriteFileAtomic writes data to path via a temporary file in the same
