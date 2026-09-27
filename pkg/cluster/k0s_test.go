@@ -29,7 +29,7 @@ func k0sManager(t *testing.T, mode Mode, mutate func(*Settings)) *Manager {
 }
 
 var k0sHosts = map[string]*hardware.Host{
-	"52:54:00:aa:00:40": {MAC: "52:54:00:aa:00:40", Hostname: "bluefin-cp", OS: "bluefin", Role: hardware.RoleControlPlane},
+	"52:54:00:aa:00:40": {MAC: "52:54:00:aa:00:40", Hostname: "bluefin-cp", OS: "bluefin", Role: hardware.RoleControlPlane, StateDisk: "/dev/sdb"},
 	"52:54:00:aa:00:41": {MAC: "52:54:00:aa:00:41", Hostname: "w-flatcar", OS: "flatcar"},
 	"52:54:00:aa:00:42": {MAC: "52:54:00:aa:00:42", Hostname: "w-coreos", OS: "coreos", Role: hardware.RoleWorker},
 	"52:54:00:aa:00:43": {MAC: "52:54:00:aa:00:43", Hostname: "w-bluefin", OS: "bluefin"},

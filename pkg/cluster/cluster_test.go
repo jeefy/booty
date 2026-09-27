@@ -259,8 +259,16 @@ func TestWarningsControlPlaneDisk(t *testing.T) {
 		t.Fatalf("a PXE k0s controller needs the disk too: %v", w)
 	}
 	hosts["aa:bb:cc:dd:ee:01"].OS = "bluefin"
-	if w := m.Warnings(hosts); len(w) != 0 {
-		t.Fatalf("bluefin installs to disk and is exempt: %v", w)
+	if w := m.Warnings(hosts); len(w) != 1 || !strings.Contains(w[0], "diskless control-plane host without a stateDisk") {
+		t.Fatalf("a diskless bluefin controller keeps its state in RAM: %v", w)
+	}
+	for _, persistent := range []hardware.Host{{StateDisk: "/dev/sdb"}, {Mode: hardware.ModeInstalled}, {DoInstall: true}} {
+		h := persistent
+		h.MAC, h.OS, h.Role = "aa:bb:cc:dd:ee:01", "bluefin", hardware.RoleControlPlane
+		hosts["aa:bb:cc:dd:ee:01"] = &h
+		if w := m.Warnings(hosts); len(w) != 0 {
+			t.Fatalf("bluefin with persistent /var %+v is fine: %v", h, w)
+		}
 	}
 	for os, want := range map[string]bool{"": true, "flatcar": true, "coreos": true, "bluefin": false} {
 		if got := NeedsControlPlaneDisk(os); got != want {
