@@ -139,7 +139,8 @@ func handleDataRequest(w http.ResponseWriter, r *http.Request) {
 
 // handleBootedRequest is the install-complete callback POSTed by the
 // installed system (see examples/*.but). It is the only place doInstall is
-// cleared when --doInstallClearOn=booted.
+// cleared when --doInstallClearOn=booted; a Bluefin host that was
+// installing becomes mode installed.
 func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -160,6 +161,9 @@ func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
 		h.Booted = time.Now().UTC().Format(time.RFC3339)
 		if ip != "" {
 			h.IP = ip
+		}
+		if h.OS == "bluefin" && h.DoInstall {
+			h.Mode = hardware.ModeInstalled
 		}
 		h.DoInstall = false
 		h.InstallServedAt = ""

@@ -124,13 +124,18 @@ func NewHandler(o Options) http.Handler {
 	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(versions.RegistryBlobDir())))
 	mux.Handle("/v2/", ociRegistry)
 
-	// /boot/ is routed before the mux: UEFI HTTP Boot firmware and shim
-	// never follow redirects, and http.ServeMux answers unclean paths such
-	// as /boot/sb//ipxe.efi with a 301. bootHandler cleans the path itself.
+	// /boot/ and /bluefin/ are routed before the mux: UEFI HTTP Boot
+	// firmware and shim never follow redirects, and http.ServeMux answers
+	// unclean paths such as /boot/sb//ipxe.efi with a 301. Both handlers
+	// clean the path themselves.
 	boot := bootHandler{files: o.BootFiles, secureBootDir: config.SecureBootPath()}
 	return logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, bootPathPrefix) {
 			boot.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, bluefinPathPrefix) {
+			handleBluefinRequest(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
