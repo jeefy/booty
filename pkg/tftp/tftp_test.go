@@ -239,61 +239,33 @@ func TestIPXEScriptRendering(t *testing.T) {
 }
 
 func TestBluefinScriptRendering(t *testing.T) {
-	vars := TemplateVars{
-		Server:   "192.168.1.10:8080",
-		Hostname: "srv1",
-		Bluefin: BluefinVars{
-			Version:     "26.08.0",
-			Vmlinuz:     "bluefin-server-pxe-vmlinuz-26.08.0",
-			Initrd:      "bluefin-server-pxe-initrd-26.08.0.cpio.gz",
-			DDI:         "bluefin-server-ddi-4593.2.5.raw.zst",
-			DDISha256:   strings.Repeat("a", 64),
-			InstallDisk: "/dev/vda",
-			CredsURL:    "http://192.168.1.10:8080/creds/aa:bb:cc:dd:ee:03.tar",
-			CredsSha256: strings.Repeat("b", 64),
-		},
-	}
+	const url = "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/bluefin-server-netboot.efi"
 	host := &hardware.Host{MAC: "aa:bb:cc:dd:ee:03", OS: "bluefin", DoInstall: true, InstallDisk: "/dev/vda"}
-	vars.MenuDefault = MenuDefaultForHost(host)
 	if got := OSForHost(host); got != "bluefin" {
 		t.Fatalf("OSForHost=%q", got)
 	}
-	out := IPXEScript(OSForHost(host), vars)
-	for _, want := range []string{
-		"#!ipxe\niseq ${platform} efi || goto not-efi\n",
-		"set BASEURL http://192.168.1.10:8080/data/bluefin/current\n",
-		"menu Booty - Bluefin Server 26.08.0 - srv1\n",
-		"Install Bluefin Server to /dev/vda (wipes it)\n",
-		"choose --timeout ${menu-timeout} --default install selected || goto run-from-disk\n",
-		"kernel ${BASEURL}/bluefin-server-pxe-vmlinuz-26.08.0 systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended inst.ddi_url=${BASEURL}/bluefin-server-ddi-4593.2.5.raw.zst inst.ddi_sha256=" + strings.Repeat("a", 64) + " inst.target_disk=/dev/vda inst.creds_url=http://192.168.1.10:8080/creds/aa:bb:cc:dd:ee:03.tar inst.creds_sha256=" + strings.Repeat("b", 64) + "\n",
-		"initrd ${BASEURL}/bluefin-server-pxe-initrd-26.08.0.cpio.gz\n",
-		":run-from-disk\nexit\n",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("bluefin script missing %q:\n%s", want, out)
+	for _, sb := range []bool{false, true} {
+		out := IPXEScript("bluefin", TemplateVars{Server: "192.168.1.10:8080", Hostname: "srv1", BluefinBootURL: url, SecureBoot: sb})
+		for _, want := range []string{
+			"#!ipxe\niseq ${platform} efi || goto not-efi\n",
+			"echo Switch this machine's network boot to UEFI HTTP Boot (IPv4)",
+			"echo   " + url + "\n",
+			"menu Booty - Bluefin Server: switch to UEFI HTTP Boot - srv1\n",
+			"item --key d run-from-disk Boot from disk\n",
+			"item --key s shell         iPXE shell\n",
+			"choose --timeout ${menu-timeout} --default run-from-disk selected || goto run-from-disk\n",
+			":run-from-disk\nexit\n",
+			":not-efi\necho Bluefin Server needs UEFI",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("sb=%v: bluefin script missing %q:\n%s", sb, want, out)
+			}
 		}
-	}
-	if strings.Contains(out, "[[") {
-		t.Fatalf("bluefin script has placeholders:\n%s", out)
-	}
-
-	vars.Bluefin.InstallDisk, vars.Bluefin.CredsURL = "", ""
-	host.DoInstall = false
-	vars.MenuDefault = MenuDefaultForHost(host)
-	out = IPXEScript("bluefin", vars)
-	if strings.Contains(out, "inst.target_disk") || strings.Contains(out, "inst.creds_") || !strings.Contains(out, "to the first writable disk (wipes it)") || !strings.Contains(out, "--default run-from-disk") {
-		t.Fatalf("optional args must vanish without disk/creds:\n%s", out)
-	}
-	if !strings.Contains(out, "inst.ddi_sha256="+strings.Repeat("a", 64)) {
-		t.Fatalf("ddi sha is mandatory:\n%s", out)
-	}
-
-	out = IPXEScript("bluefin", TemplateVars{Server: "192.168.1.10:8080", Hostname: "srv1", MenuDefault: "install"})
-	if !strings.Contains(out, "echo Bluefin artifacts not downloaded yet") || strings.Contains(out, "kernel ") || strings.Contains(out, "item --key i install") || strings.Contains(out, "[[") {
-		t.Fatalf("without a cached release only run-from-disk/shell are offered:\n%s", out)
-	}
-	if !strings.Contains(out, ":run-from-disk\nexit\n") || !strings.Contains(out, "srv1") {
-		t.Fatalf("pending menu wrong:\n%s", out)
+		for _, absent := range []string{"[[", "\nkernel ", "\ninitrd ", "install", "inst."} {
+			if strings.Contains(out, absent) {
+				t.Errorf("sb=%v: bluefin script must not contain %q:\n%s", sb, absent, out)
+			}
+		}
 	}
 }
 
@@ -305,16 +277,12 @@ func TestSecureBootScriptVariants(t *testing.T) {
 		CoreOSArch:      "x86_64",
 		CoreOSVersion:   "43.20260901.3.0",
 		FlatcarCASha256: "ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2",
-		Bluefin: BluefinVars{
-			Version: "26.08.0", Vmlinuz: "bluefin-server-pxe-vmlinuz-26.08.0",
-			Initrd: "bluefin-server-pxe-initrd-26.08.0.cpio.gz", DDI: "ddi.raw.zst", DDISha256: strings.Repeat("a", 64),
-		},
+		BluefinBootURL:  "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-53/bluefin-server-netboot.efi",
 	}
 	const (
 		shimLine   = "shim http://192.168.1.10:8080/boot/secureboot/fedora/shimx64.efi || goto shell\n"
 		caLine     = "echo   CA SHA256: ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2\n"
 		caURL      = "echo   Download:  http://192.168.1.10:8080/boot/secureboot/flatcar-ca.der\n"
-		unsigned   = "echo Bluefin Server's installed system (systemd-boot and its UKI) is not signed"
 		refuseMenu = "menu Booty - Secure Boot: "
 	)
 
@@ -340,15 +308,15 @@ func TestSecureBootScriptVariants(t *testing.T) {
 				"choose --timeout ${menu-timeout} --default run-from-disk selected || goto run-from-disk\n",
 				"set menu-timeout 30000\n", ":run-from-disk\nexit\n", ":reboot\nreboot\n",
 			},
-			[]string{"\nkernel ", "\ninitrd ", unsigned}},
+			[]string{"\nkernel ", "\ninitrd ", "Bluefin"}},
 		{"flatcar sb trusted", "flatcar", true, true, false, []string{"kernel http://192.168.1.10:8080/data/flatcar_production_pxe.vmlinuz"}, []string{"shim ", refuseMenu}},
-		{"bluefin plain", "bluefin", false, false, false, []string{"item --key i install"}, []string{refuseMenu}},
-		{"bluefin sb untrusted", "bluefin", true, false, true,
-			[]string{"Bluefin Server cannot boot that way", caLine, caURL, unsigned, "menu Booty - Secure Boot: Bluefin Server refused - sb1\n"},
-			[]string{"\nkernel ", "item --key i install", "inst.ddi_url"}},
-		{"bluefin sb trusted", "bluefin", true, true, true,
-			[]string{unsigned, "menu Booty - Secure Boot: Bluefin Server refused - sb1\n"},
-			[]string{"\nkernel ", "CA SHA256", "item --key i install"}},
+		{"bluefin plain", "bluefin", false, false, false, []string{"switch to UEFI HTTP Boot - sb1"}, []string{refuseMenu, "\nkernel "}},
+		{"bluefin sb untrusted", "bluefin", true, false, false,
+			[]string{"switch to UEFI HTTP Boot - sb1", "/bluefin/aa-bb-cc-dd-ee-53/bluefin-server-netboot.efi"},
+			[]string{refuseMenu, "\nkernel ", "CA SHA256"}},
+		{"bluefin sb trusted", "bluefin", true, true, false,
+			[]string{"switch to UEFI HTTP Boot - sb1"},
+			[]string{refuseMenu, "\nkernel ", "CA SHA256"}},
 		{"unknown sb", "unknown", true, false, false, []string{"Unknown Host"}, []string{refuseMenu, "shim "}},
 	}
 	for _, tc := range tests {

@@ -215,7 +215,7 @@ func TestK0sFragmentSkipsBluefinAndNil(t *testing.T) {
 	opts := k0sOptions(t, k0s.Worker, "bluefin", cni.None, "")
 	cfg, err := Fragment(&hardware.Host{MAC: "x", OS: "bluefin"}, opts)
 	if err != nil || len(cfg.Systemd.Units) != 0 || len(cfg.Storage.Files) != 0 {
-		t.Fatalf("bluefin is provisioned through creds, not Ignition: %v %+v", err, cfg)
+		t.Fatalf("bluefin gets its k0s pieces from its node Ignition, not the Flatcar/CoreOS profile: %v %+v", err, cfg)
 	}
 	cfg, err = Fragment(&hardware.Host{MAC: "x", OS: "flatcar"}, Options{})
 	if err != nil || len(cfg.Systemd.Units) != 0 {

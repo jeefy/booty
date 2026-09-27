@@ -39,41 +39,19 @@ shell
 
 	"bluefin.ipxe": `#!ipxe
 iseq ${platform} efi || goto not-efi
-set BASEURL http://[[server]]/data/bluefin/current
-set menu-timeout 5000
+echo
+echo Booty: [[hostname]] is a Bluefin Server host. Bluefin Server boots its signed netboot UKI
+echo straight from the firmware: iPXE cannot hand the UKI the URL it downloads the OS image from.
+echo Switch this machine's network boot to UEFI HTTP Boot (IPv4) in the firmware setup; Booty's
+echo ProxyDHCP (--proxyDHCP) answers it with, or point your DHCP server's HTTPClient boot file at:
+echo   [[bluefin-boot-url]]
+echo
+set menu-timeout 30000
 :start
-menu Booty - Bluefin Server [[bluefin-version]] - [[hostname]]
-item --key i install       Install Bluefin Server to [[install-disk-label]] (wipes it)
+menu Booty - Bluefin Server: switch to UEFI HTTP Boot - [[hostname]]
 item --key d run-from-disk Boot from disk
-item shell                 iPXE shell
-item reboot                Reboot
-choose --timeout ${menu-timeout} --default [[menu-default]] selected || goto run-from-disk
-set menu-timeout 0
-goto ${selected}
-:install
-kernel ${BASEURL}/[[bluefin-vmlinuz]] systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended inst.ddi_url=${BASEURL}/[[bluefin-ddi]] inst.ddi_sha256=[[bluefin-ddi-sha256]] [[install-disk-arg]] [[creds-args]]
-initrd ${BASEURL}/[[bluefin-initrd]]
-boot || goto shell
-:run-from-disk
-exit
-:shell
-shell
-goto start
-:reboot
-reboot
-:not-efi
-echo Bluefin Server needs UEFI (this machine booted iPXE in ${platform} mode); dropping to shell
-shell
-`,
-
-	"bluefin-pending.ipxe": `#!ipxe
-echo Bluefin artifacts not downloaded yet
-set menu-timeout 5000
-:start
-menu Booty - Bluefin Server (no release cached yet) - [[hostname]]
-item --key d run-from-disk Boot from disk
-item shell                 iPXE shell
-item reboot                Reboot
+item --key s shell         iPXE shell
+item --key r reboot        Reboot
 choose --timeout ${menu-timeout} --default run-from-disk selected || goto run-from-disk
 set menu-timeout 0
 goto ${selected}
@@ -84,6 +62,9 @@ shell
 goto start
 :reboot
 reboot
+:not-efi
+echo Bluefin Server needs UEFI (this machine booted iPXE in ${platform} mode); dropping to shell
+shell
 `,
 
 	"unknown.ipxe": `#!ipxe
@@ -128,7 +109,6 @@ const secureBootRefusedKey = "secureboot-refused"
 
 var secureBootOSLabels = map[string]string{
 	"flatcar": "Flatcar",
-	"bluefin": "Bluefin Server",
 }
 
 type TemplateVars struct {
@@ -150,7 +130,9 @@ type TemplateVars struct {
 	// FlatcarCASha256 is the fingerprint of the Flatcar CA Booty serves at
 	// /boot/secureboot/flatcar-ca.der, shown in the refusal menu.
 	FlatcarCASha256 string
-	Bluefin         BluefinVars
+	// BluefinBootURL is the UEFI HTTP Boot URL of a Bluefin host's netboot
+	// UKI, printed by the bluefin menu.
+	BluefinBootURL string
 }
 
 // secureBootShim is the iPXE line that makes the following kernel command
@@ -165,19 +147,10 @@ func (v TemplateVars) secureBootShim() string {
 
 // SecureBootRefused reports whether a Secure Boot client registered as os
 // gets the refusal menu instead of a kernel: Flatcar unless the operator
-// asserted its CA is enrolled, Bluefin always (its installed UKI and
-// systemd-boot are unsigned, so an install could never boot).
+// asserted its CA is enrolled. Bluefin never boots through iPXE, so its own
+// menu (switch to UEFI HTTP Boot) is served either way.
 func SecureBootRefused(os string, v TemplateVars) bool {
-	if !v.SecureBoot {
-		return false
-	}
-	switch os {
-	case "flatcar":
-		return !v.SecureBootTrustedFlatcar
-	case "bluefin":
-		return true
-	}
-	return false
+	return v.SecureBoot && os == "flatcar" && !v.SecureBootTrustedFlatcar
 }
 
 func (v TemplateVars) flatcarCALines() string {
@@ -195,63 +168,11 @@ echo --secureBootTrusted=flatcar, or disable Secure Boot on this machine.
 `
 }
 
-const bluefinUnsignedLines = `echo Bluefin Server's installed system (systemd-boot and its UKI) is not signed, so an
-echo installed Bluefin never boots with Secure Boot enabled. Booty refuses to install it on
-echo a Secure Boot host. Disable Secure Boot to install Bluefin Server, or wait for
-echo upstream (projectbluefin/server) to sign its images.
-`
-
-func (v TemplateVars) secureBootRefusal(os string) string {
-	var sb strings.Builder
-	if !v.SecureBootTrustedFlatcar {
-		sb.WriteString(v.flatcarCALines())
-	}
-	if os == "bluefin" {
-		if sb.Len() > 0 {
-			sb.WriteString("echo\n")
-		}
-		sb.WriteString(bluefinUnsignedLines)
-	}
-	return sb.String()
-}
-
-// BluefinVars fills the bluefin.ipxe template. Vmlinuz/Initrd/DDI/DDISha256
-// come from the served release's manifest; an empty Vmlinuz means no release
-// is cached and the pending menu is served instead.
-type BluefinVars struct {
-	Version   string
-	Vmlinuz   string
-	Initrd    string
-	DDI       string
-	DDISha256 string
-	// InstallDisk is the host's installDisk; empty lets the installer pick
-	// the first writable disk.
-	InstallDisk string
-	// CredsURL/CredsSha256 point the installer at the host's credentials
-	// bundle; both empty omits inst.creds_*.
-	CredsURL    string
-	CredsSha256 string
-}
-
-func (b BluefinVars) installDiskArg() string {
-	if b.InstallDisk == "" {
+func (v TemplateVars) secureBootRefusal() string {
+	if v.SecureBootTrustedFlatcar {
 		return ""
 	}
-	return "inst.target_disk=" + b.InstallDisk
-}
-
-func (b BluefinVars) installDiskLabel() string {
-	if b.InstallDisk == "" {
-		return "the first writable disk"
-	}
-	return b.InstallDisk
-}
-
-func (b BluefinVars) credsArgs() string {
-	if b.CredsURL == "" || b.CredsSha256 == "" {
-		return ""
-	}
-	return "inst.creds_url=" + b.CredsURL + " inst.creds_sha256=" + b.CredsSha256
+	return v.flatcarCALines()
 }
 
 func Render(template string, v TemplateVars) string {
@@ -263,14 +184,7 @@ func Render(template string, v TemplateVars) string {
 		"[[coreos-arch]]", v.CoreOSArch,
 		"[[coreos-version]]", v.CoreOSVersion,
 		"[[ostree-image]]", v.OSTreeImage,
-		"[[bluefin-version]]", v.Bluefin.Version,
-		"[[bluefin-vmlinuz]]", v.Bluefin.Vmlinuz,
-		"[[bluefin-initrd]]", v.Bluefin.Initrd,
-		"[[bluefin-ddi]]", v.Bluefin.DDI,
-		"[[bluefin-ddi-sha256]]", v.Bluefin.DDISha256,
-		"[[install-disk-arg]]", v.Bluefin.installDiskArg(),
-		"[[install-disk-label]]", v.Bluefin.installDiskLabel(),
-		"[[creds-args]]", v.Bluefin.credsArgs(),
+		"[[bluefin-boot-url]]", v.BluefinBootURL,
 		"[[secure-boot-shim]]", v.secureBootShim(),
 	).Replace(template)
 }
@@ -299,18 +213,14 @@ func MenuDefaultForHost(host *hardware.Host) string {
 }
 
 // IPXEScript renders the iPXE script for os, falling back to the unknown-host
-// menu when no template exists. Bluefin hosts get the pending menu until a
-// release is cached; Secure Boot clients whose OS cannot pass firmware
-// verification get the refusal menu (see SecureBootRefused).
+// menu when no template exists. Secure Boot clients whose OS cannot pass
+// firmware verification get the refusal menu (see SecureBootRefused).
 func IPXEScript(os string, v TemplateVars) string {
 	if SecureBootRefused(os, v) {
 		return Render(strings.NewReplacer(
 			"[[os-label]]", secureBootOSLabels[os],
-			"[[secure-boot-refusal]]", v.secureBootRefusal(os),
+			"[[secure-boot-refusal]]", v.secureBootRefusal(),
 		).Replace(PXEConfig[secureBootRefusedKey+".ipxe"]), v)
-	}
-	if os == "bluefin" && v.Bluefin.Vmlinuz == "" {
-		os = "bluefin-pending"
 	}
 	tmpl, ok := PXEConfig[os+".ipxe"]
 	if !ok {

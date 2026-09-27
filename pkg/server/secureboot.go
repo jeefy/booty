@@ -63,11 +63,7 @@ func secureBootWarnings(hosts map[string]*hardware.Host) []string {
 				warnings = append(warnings, fmt.Sprintf("host %s (flatcar): Secure Boot host; the Flatcar CA is not in --%s, boot refused", mac, config.SecureBootTrusted))
 			}
 		case "bluefin":
-			if h.DoInstall {
-				warnings = append(warnings, fmt.Sprintf("host %s (bluefin): Secure Boot host; the installed Bluefin image is unsigned, install refused", mac))
-			} else {
-				warnings = append(warnings, fmt.Sprintf("host %s (bluefin): Secure Boot host; the installed Bluefin image is unsigned and will not boot with Secure Boot enabled", mac))
-			}
+			warnings = append(warnings, fmt.Sprintf("host %s (bluefin): reached Booty through the signed iPXE; Bluefin boots its signed netboot UKI only through UEFI HTTP Boot (%s)", mac, bluefinBootURL(mac)))
 		}
 	}
 	return warnings

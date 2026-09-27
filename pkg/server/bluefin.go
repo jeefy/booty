@@ -1,179 +1,21 @@
 package server
 
 import (
-	"context"
-	"fmt"
-	"log/slog"
-	"net/http"
 	"strings"
-	"time"
 
-	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/config"
-	"github.com/jeefy/booty/pkg/creds"
-	"github.com/jeefy/booty/pkg/hardware"
-	ign "github.com/jeefy/booty/pkg/ignition"
-	"github.com/jeefy/booty/pkg/tftp"
-	"github.com/jeefy/booty/pkg/versions"
-	"github.com/spf13/viper"
 )
 
 const (
-	credsPathPrefix = "/creds/"
-	credsTarSuffix  = ".tar"
-	credsSumSuffix  = ".tar.sha256"
+	bluefinPathPrefix = "/bluefin/"
+	// bluefinBootFile is the name Booty hands UEFI HTTP Boot clients; any
+	// *.efi below /bluefin/<mac>/ serves the current netboot UKI.
+	bluefinBootFile = "bluefin-server-netboot.efi"
 )
 
-func credsURL(mac string) string {
-	return "http://" + config.ServerHostPort() + credsPathPrefix + mac + credsTarSuffix
-}
-
-// hostCredentials renders the credentials bundle for host with the current
-// --builtin toggles, SSH keys and, under --clusterDistribution=k0s, the
-// host's k0s node. A k0s render refusal (no endpoint yet, unreadable
-// --k0sTokenFile) is logged and the bundle served without the k0s pieces:
-// a 4xx here would abort the Bluefin install itself, and GET /cluster
-// carries the warning.
-//
-// It is called twice per install: from /booty.ipxe, which embeds the
-// bundle's sha256 as inst.creds_sha256, and from /creds/<mac>.tar seconds
-// later when the installer downloads it. Both mint, so a k0s worker's join
-// token comes from the Minter's per-MAC cache (ttl/2, 30 minutes by
-// default) on the second call and the bytes match; a bundle rendered
-// after the cache window would carry a new token and fail the installer's
-// digest check, which re-PXEs and renders both afresh.
-func hostCredentials(ctx context.Context, host *hardware.Host) ([]byte, error) {
-	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
-	if err != nil {
-		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
-	}
-	in := creds.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}
-	if m := clusterManager; m != nil && m.Settings.Distribution == cluster.K0s {
-		node, err := m.K0sNodeFiles(ctx, hardware.Snapshot().Hosts, host, config.ServerHostPort(), true)
-		if err != nil {
-			slog.Error("k0s node unavailable; serving the credentials bundle without it", "mac", host.MAC, "role", cluster.RoleOf(host), "error", err)
-		}
-		in.K0s = node
-	}
-	return creds.Bundle(in, builtinFeatures())
-}
-
-// handleCredsRequest serves GET /creds/<mac>.tar (the bundle) and
-// /creds/<mac>.tar.sha256 (its hex digest) for registered hosts.
-func handleCredsRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	name := strings.TrimPrefix(r.URL.Path, credsPathPrefix)
-	var rawMAC string
-	var wantSum bool
-	switch {
-	case strings.HasSuffix(name, credsSumSuffix):
-		rawMAC, wantSum = strings.TrimSuffix(name, credsSumSuffix), true
-	case strings.HasSuffix(name, credsTarSuffix):
-		rawMAC = strings.TrimSuffix(name, credsTarSuffix)
-	default:
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	mac, err := hardware.NormalizeMAC(rawMAC)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	host, ok := hardware.Get(mac)
-	if !ok {
-		writeError(w, http.StatusNotFound, "host not registered")
-		return
-	}
-	bundle, err := hostCredentials(r.Context(), host)
-	if err != nil {
-		slog.Error("Rendering credentials bundle failed", "mac", mac, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to render credentials")
-		return
-	}
-	if wantSum {
-		writeText(w, http.StatusOK, creds.Sum(bundle)+"\n")
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.Header().Set("Content-Length", fmt.Sprint(len(bundle)))
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return
-	}
-	if _, err := w.Write(bundle); err != nil {
-		slog.Debug("Writing credentials bundle failed", "mac", mac, "error", err)
-	}
-}
-
-// bluefinVars fills the bluefin.ipxe placeholders from the served release's
-// manifest and the host. Without a cached release it is empty, which makes
-// tftp serve the pending menu.
-func bluefinVars(ctx context.Context, mac string, host *hardware.Host) tftp.BluefinVars {
-	m, ok := versions.CurrentBluefinManifest()
-	if !ok {
-		return tftp.BluefinVars{}
-	}
-	v := tftp.BluefinVars{
-		Version:     m.Version,
-		Vmlinuz:     m.Vmlinuz,
-		Initrd:      m.Initrd,
-		DDI:         m.DDI,
-		DDISha256:   m.DDISha256,
-		InstallDisk: host.InstallDisk,
-	}
-	bundle, err := hostCredentials(ctx, host)
-	if err != nil {
-		slog.Error("Rendering credentials bundle failed; serving install without inst.creds_*", "mac", mac, "error", err)
-		return v
-	}
-	if len(bundle) > 0 && builtinFeatures().Enabled() {
-		v.CredsURL = credsURL(mac)
-		v.CredsSha256 = creds.Sum(bundle)
-	}
-	return v
-}
-
-// applyNextBootClear implements --doInstallClearOn=next-boot for Bluefin:
-// the first /booty.ipxe fetch at least --installMinDuration after the install
-// stanza was served clears doInstall (the installer rebooted into the new
-// system, which PXEs again); an earlier one means the installer crashed and
-// keeps install. It returns the host as it should be rendered.
-func applyNextBootClear(mac string, host *hardware.Host, now time.Time) *hardware.Host {
-	if host == nil || !host.DoInstall || host.OS != "bluefin" || viper.GetString(config.DoInstallClearOn) != config.ClearOnNextBoot {
-		return host
-	}
-	served, err := time.Parse(time.RFC3339, host.InstallServedAt)
-	if err != nil {
-		return host
-	}
-	if elapsed := now.Sub(served); elapsed < viper.GetDuration(config.InstallMinDuration) {
-		slog.Info("Re-PXE too soon after install was served; keeping doInstall", "mac", mac, "elapsed", elapsed.Round(time.Second), "min", viper.GetDuration(config.InstallMinDuration))
-		return host
-	}
-	updated, err := hardware.Update(mac, func(h *hardware.Host) {
-		h.DoInstall = false
-		h.InstallServedAt = ""
-	})
-	if err != nil {
-		slog.Error("Could not clear doInstall", "mac", mac, "error", err)
-		return host
-	}
-	slog.Info("Cleared doInstall", "mac", mac, "trigger", "next boot after install")
-	return updated
-}
-
-// recordInstallServed stamps installServedAt when the Bluefin install stanza
-// is the menu default, so applyNextBootClear can measure from it.
-func recordInstallServed(mac string, host *hardware.Host, now time.Time) {
-	if host == nil || !host.DoInstall || host.OS != "bluefin" {
-		return
-	}
-	stamp := now.UTC().Format(time.RFC3339)
-	if _, err := hardware.Update(mac, func(h *hardware.Host) { h.InstallServedAt = stamp }); err != nil {
-		slog.Error("Could not record install served", "mac", mac, "error", err)
-	}
+// bluefinBootURL is the UEFI HTTP Boot URL of mac's netboot UKI. The MAC is
+// written with dashes so no firmware URL parser trips over colons in the
+// path; the route accepts either form.
+func bluefinBootURL(mac string) string {
+	return "http://" + config.ServerHostPort() + bluefinPathPrefix + strings.ReplaceAll(mac, ":", "-") + "/" + bluefinBootFile
 }

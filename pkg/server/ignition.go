@@ -146,10 +146,8 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid mac address")
 		return
 	}
-	now := time.Now()
 	secureBoot := r.URL.Query().Get("sb") == "1"
-	host := applyNextBootClear(mac, lookupHost(mac, remoteIP(r)), now)
-	host = recordSecureBoot(mac, host, secureBoot, isPreview(r))
+	host := recordSecureBoot(mac, lookupHost(mac, remoteIP(r)), secureBoot, isPreview(r))
 
 	vars := tftp.TemplateVars{
 		Server:                   config.ServerHostPort(),
@@ -172,10 +170,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	case tftp.SecureBootRefused(os, vars):
 		slog.Warn("Secure Boot host cannot boot its OS; serving the refusal menu", "mac", mac, "os", os, "trustedFlatcar", vars.SecureBootTrustedFlatcar, "doInstall", host.DoInstall)
 	case os == "bluefin":
-		vars.Bluefin = bluefinVars(r.Context(), mac, host)
-		if vars.Bluefin.Vmlinuz != "" {
-			recordInstallServed(mac, host, now)
-		}
+		vars.BluefinBootURL = bluefinBootURL(mac)
 	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
