@@ -29,7 +29,12 @@ type Host struct {
 	InstallServedAt string `json:"installServedAt,omitempty"`
 	// Role is the host's place in the cluster: RoleControlPlane or
 	// RoleWorker; empty means worker.
-	Role          string `json:"role,omitempty"`
+	Role string `json:"role,omitempty"`
+	// SecureBoot records that the host's last /booty.ipxe fetch arrived
+	// through the Secure Boot path: the signed iPXE that only UEFI HTTP Boot
+	// hands out (its autoexec adds sb=1). It is not a firmware attestation;
+	// a plain PXE fetch clears it again.
+	SecureBoot    bool   `json:"secureBoot,omitempty"`
 	Running       string `json:"running"`
 	LastCheck     string `json:"lastCheck"`
 	RebootPending bool   `json:"rebootPending"`
@@ -359,6 +364,31 @@ func (db *DB) MarkBooted(mac, ip string, at time.Time) error {
 	return err
 }
 
+// SetSecureBoot records whether mac's last boot-script fetch came through
+// the Secure Boot path. It persists only when the value changes, so the
+// per-boot call does not rewrite the map. changed reports a persisted write.
+func (db *DB) SetSecureBoot(mac string, secureBoot bool) (changed bool, err error) {
+	mac, err = NormalizeMAC(mac)
+	if err != nil {
+		return false, err
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.maybeReload()
+	h, ok := db.hosts[mac]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if h.SecureBoot == secureBoot {
+		return false, nil
+	}
+	h.SecureBoot = secureBoot
+	if err := db.persist(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Snapshot returns a deep copy of the registered and unknown hosts.
 func (db *DB) Snapshot() BootyData {
 	db.mu.Lock()
@@ -452,6 +482,14 @@ func MarkBooted(mac, ip string, at time.Time) error {
 		return ErrNoDatabase
 	}
 	return db.MarkBooted(mac, ip, at)
+}
+
+func SetSecureBoot(mac string, secureBoot bool) (bool, error) {
+	db := current()
+	if db == nil {
+		return false, ErrNoDatabase
+	}
+	return db.SetSecureBoot(mac, secureBoot)
 }
 
 func Snapshot() BootyData {
