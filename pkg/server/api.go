@@ -51,6 +51,9 @@ func validateHost(h *hardware.Host) error {
 	if err := hardware.ValidateRole(h.Role); err != nil {
 		return err
 	}
+	if err := hardware.ValidateBluefinFields(h); err != nil {
+		return err
+	}
 	if h.IgnitionFile != "" {
 		clean, err := config.CleanRelPath(h.IgnitionFile)
 		if err != nil {
