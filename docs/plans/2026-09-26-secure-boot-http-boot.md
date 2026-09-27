@@ -66,3 +66,13 @@ Distro shim → GRUB path; Booty signing anything (no private keys in Booty); HT
 - Firmware that ignores proxy HTTP-Boot offers (some Dell/HP?) — real-hardware step will tell; fallback is putting `HTTPClient`+URL on the real DHCP server, which UniFi can't do.
 - Flatcar rotates its "temporary" CA (did in 2026-04) → users must re-enroll; Booty shows the current fingerprint and warns when the synced shim's CA changes.
 - ipxe SB build lacks Booty's embedded script: relies on ProxyDHCP answering the iPXE user-class DHCP, which needs `--proxyDHCP` on. Documented as a hard requirement for Secure Boot.
+
+## Evidence: S1 QEMU runs (Sisyphus, 2026-09-26, bridged lab, Booty owns ProxyDHCP 67/4011 + TFTP 69, dnsmasq leases only)
+
+Firmware: `OVMF_CODE.secboot.fd` (`-machine q35,smm=on`, pflash secure) with the shipped `OVMF_VARS.secboot.fd` (Microsoft PK/KEK/db pre-enrolled).
+
+- **Baseline**: UEFI PXE → unsigned `ipxe.efi` → firmware `Access Denied` / `Secure Boot` violation → falls through to `>>Start HTTP Boot over IPv4` (nobody answered before S1).
+- **First live ProxyDHCP run found a real bug**: the client's broadcast DHCPREQUEST (port 67) for the *DHCP server's* lease was ACKed by Booty (yiaddr 0 + boot file) → EDK2 `Lease confirmed isn't the same as that in the offer` → DHCPDECLINE → PXE never reached TFTP. Fixed: REQUESTs answered on 4011 only. After the fix, non-SB UEFI PXE via ProxyDHCP works (OFFER → 4011 ACK `ipxe.efi` → TFTP → iPXE → 4011 ACK `booty.ipxe` → menu).
+- **HTTP Boot**: OVMF sent 4 HTTPv4 DISCOVERs (0/4/12/28 s) with only dnsmasq's address offer and gave up — confirms the proxy URI OFFER is required. With Booty's OFFER (opt 60 `HTTPClient`, opt 67 `http://10.77.0.1:18094/boot/sb/ipxe-shimx64.efi`): `HEAD`+`GET ipxe-shimx64.efi`, shim probed `revocations_sku.efi`/`revocations_sbat.efi`/`shim_certificate_0.efi` (404, fine), `GET ipxe.efi` (SB build), then **iPXE fetched `/boot/sb/autoexec.ipxe`** — and did *not* use the ProxyDHCP boot file. Serving Booty's chain script (with `sb=1`) as `autoexec.ipxe` completes the path with no TFTP involved.
+- **FCOS (`sb-fcos`, stock Microsoft keys)**: `shim …/boot/secureboot/fedora/shimx64.efi` + `kernel` → live kernel accepted → Ignition (`/ignition.json`, builtin, user) applied → SSH: `SecureBoot enabled`, hostname `sb-fcos`, `/sys/firmware/efi` present. Without the `shim` line the same kernel failed with iPXE `Error 0x7f04819a` (image verification).
+- **Flatcar (`sb-flatcar`)**: stock keys → `0x7f04819a` as expected. After `virt-fw-vars --add-db` of Booty's extracted `flatcar-ca.der` (CN=Flatcar Container Linux Secure Boot Development CA, `EB:B1:70:DA…DB:A2`) into the vars: boots, `SecureBoot-…` efivar = 1, Flatcar 4757.2.0, Ignition applied.
