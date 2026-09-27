@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -798,5 +799,27 @@ func TestBootHandlerServesSecureBootBundle(t *testing.T) {
 
 	for _, p := range []string{"/boot/sb/", "/boot/sb/fedora", "/boot/sb/fedora/", "/boot/sb/missing.efi", "/boot/secureboot/bundle-0/old.efi", "/boot/secureboot/current/ipxe.efi/", "/boot/sb/../../config/ignition.yaml", "/boot/sb/..%2F..%2Fhardware.json", "/boot/secureboot/../hardware.json", "/boot/secureboot/flatcar-ca.txt"} {
 		assertJSONError(t, do(t, http.MethodGet, srv.URL+p, ""), http.StatusNotFound)
+	}
+}
+
+func TestBootSecureBootAutoexecScript(t *testing.T) {
+	srv, _ := newTestServer(t)
+	resp, err := http.Get(srv.URL + "/boot/sb/autoexec.ipxe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	body := string(raw)
+	for _, want := range []string{"#!ipxe", "dhcp || goto retry", "/booty.ipxe?mac=${mac}", "shell"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("autoexec.ipxe missing %q:\n%s", want, body)
+		}
+	}
+	if resp.Header.Get("Content-Length") != strconv.Itoa(len(raw)) {
+		t.Errorf("Content-Length %q for %d bytes", resp.Header.Get("Content-Length"), len(raw))
 	}
 }

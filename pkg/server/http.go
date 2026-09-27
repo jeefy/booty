@@ -22,6 +22,7 @@ import (
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/kubeadm"
+	"github.com/jeefy/booty/pkg/tftp"
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
@@ -312,6 +313,9 @@ func (h bootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // data/secureboot/ through os.Root so no request can leave that tree.
 func (h bootHandler) open(rel string) (*bootFile, bool) {
 	switch {
+	case rel == bootSBPrefix+"autoexec.ipxe":
+		script := tftp.SecureBootAutoexec(config.ServerHostPort())
+		return &bootFile{ReadCloser: io.NopCloser(strings.NewReader(script)), size: int64(len(script))}, true
 	case strings.HasPrefix(rel, bootSBPrefix):
 		return h.openSecureBoot(path.Join(config.SecureBootCurrentLink, strings.TrimPrefix(rel, bootSBPrefix)))
 	case strings.HasPrefix(rel, bootSecureBootPrefix):
