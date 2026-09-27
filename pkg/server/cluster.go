@@ -25,6 +25,9 @@ type clusterHost struct {
 	OS       string `json:"os"`
 	Role     string `json:"role"`
 	Booted   string `json:"booted"`
+	// SecureBoot mirrors hardware.Host.SecureBoot: the host's last boot
+	// script was fetched through the Secure Boot path.
+	SecureBoot bool `json:"secureBoot"`
 }
 
 // clusterResponse is what GET /cluster returns. It carries no key
@@ -100,7 +103,7 @@ func clusterStatus(hosts map[string]*hardware.Host) clusterResponse {
 		Ready:        ready.Ready,
 		ReadyAt:      ready.ReadyAt,
 		Hosts:        []clusterHost{},
-		Warnings:     m.Warnings(hosts),
+		Warnings:     append(m.Warnings(hosts), secureBootWarnings(hosts)...),
 	}
 	if m.PKI != nil {
 		resp.CAFingerprint = m.PKI.Fingerprint()
@@ -113,7 +116,7 @@ func clusterStatus(hosts map[string]*hardware.Host) clusterResponse {
 		slog.Debug("Cluster endpoint unresolved", "error", err)
 	}
 	for _, h := range hosts {
-		resp.Hosts = append(resp.Hosts, clusterHost{MAC: h.MAC, Hostname: h.Hostname, OS: h.OS, Role: string(cluster.RoleOf(h)), Booted: h.Booted})
+		resp.Hosts = append(resp.Hosts, clusterHost{MAC: h.MAC, Hostname: h.Hostname, OS: h.OS, Role: string(cluster.RoleOf(h)), Booted: h.Booted, SecureBoot: h.SecureBoot})
 	}
 	sort.Slice(resp.Hosts, func(i, j int) bool { return resp.Hosts[i].MAC < resp.Hosts[j].MAC })
 	return resp

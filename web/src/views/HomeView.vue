@@ -5,6 +5,7 @@ import { ApiError, apiGet, apiPost, errorMessage } from '@/api'
 import {
   normalizeBootyData,
   normalizeClusterInfo,
+  normalizeSecureBootInfo,
   type BootyData,
   type ClusterInfo,
   type Info,
@@ -31,6 +32,7 @@ const pin = ref<PinState>({ pinned: false, version: '', current: '' })
 const cluster = ref<ClusterInfo | null>(null)
 const clusterError = ref('')
 const fingerprintCopied = ref(false)
+const caCopied = ref(false)
 
 const loading = ref(true)
 const error = ref('')
@@ -58,6 +60,11 @@ const pending = computed(() =>
     target: targetVersion(host, info.value)
   }))
 )
+const secureBoot = computed(() => normalizeSecureBootInfo(info.value.secureBoot))
+const secureBootState = computed(() => {
+  if (!secureBoot.value.enabled) return 'off'
+  return secureBoot.value.ready ? 'ready' : 'syncing artefacts'
+})
 const clusterRoles = computed(() => {
   const hosts = cluster.value?.hosts ?? []
   const controlPlane = hosts.filter((h) => h.role === 'control-plane').length
@@ -101,19 +108,33 @@ async function load(showSpinner = true) {
 }
 
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
+let caCopiedTimer: ReturnType<typeof setTimeout> | undefined
+
+async function copyToClipboard(value: string): Promise<boolean> {
+  if (!value || !navigator.clipboard) return false
+  try {
+    await navigator.clipboard.writeText(value)
+  } catch {
+    return false
+  }
+  return true
+}
 
 async function copyFingerprint() {
-  const fingerprint = cluster.value?.caFingerprint
-  if (!fingerprint || !navigator.clipboard) return
-  try {
-    await navigator.clipboard.writeText(fingerprint)
-  } catch {
-    return
-  }
+  if (!(await copyToClipboard(cluster.value?.caFingerprint ?? ''))) return
   fingerprintCopied.value = true
   if (copiedTimer) clearTimeout(copiedTimer)
   copiedTimer = setTimeout(() => {
     fingerprintCopied.value = false
+  }, COPIED_FEEDBACK_MS)
+}
+
+async function copyFlatcarCA() {
+  if (!(await copyToClipboard(secureBoot.value.flatcarCA?.sha256 ?? ''))) return
+  caCopied.value = true
+  if (caCopiedTimer) clearTimeout(caCopiedTimer)
+  caCopiedTimer = setTimeout(() => {
+    caCopied.value = false
   }, COPIED_FEEDBACK_MS)
 }
 
@@ -156,6 +177,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (copiedTimer) clearTimeout(copiedTimer)
+  if (caCopiedTimer) clearTimeout(caCopiedTimer)
 })
 </script>
 
@@ -355,6 +377,101 @@ onUnmounted(() => {
         </div>
       </template>
 
+      <div class="section-title">Secure Boot</div>
+      <div
+        class="panel secure-boot-panel fade-in"
+        :class="{
+          'secure-boot-panel--ready': secureBoot.enabled && secureBoot.ready,
+          'secure-boot-panel--alert': secureBoot.warnings.length > 0
+        }"
+        data-testid="secure-boot-card"
+      >
+        <div class="secure-boot-head">
+          <span
+            class="status-dot"
+            :class="{ 'status-dot--ready': secureBoot.enabled && secureBoot.ready }"
+            aria-hidden="true"
+          ></span>
+          <span class="secure-boot-state" data-testid="secure-boot-state">
+            Secure Boot: {{ secureBootState }}
+          </span>
+          <span v-if="!secureBoot.enabled" class="stat-hint secure-boot-hint" data-testid="secure-boot-off-hint">
+            UEFI HTTP Boot clients are ignored. Start Booty with
+            <code>--secureBoot --proxyDHCP</code> to serve Secure Boot machines.
+          </span>
+          <span v-else class="stat-hint secure-boot-hint">
+            Trusted CAs:
+            <span class="mono" data-testid="secure-boot-trusted">{{ secureBoot.trusted.join(', ') }}</span>
+          </span>
+        </div>
+        <template v-if="secureBoot.enabled">
+          <dl class="secure-boot-facts" data-testid="secure-boot-facts">
+            <dt class="stat-label">Bundle</dt>
+            <dd>
+              <span v-if="secureBoot.bundleVersion" class="mono truncate secure-boot-value" :title="secureBoot.bundleVersion">{{
+                secureBoot.bundleVersion
+              }}</span>
+              <span v-else class="text-secondary">—</span>
+            </dd>
+            <dt class="stat-label">Boot URL</dt>
+            <dd>
+              <span v-if="secureBoot.bootURL" class="mono truncate secure-boot-value" :title="secureBoot.bootURL">{{
+                secureBoot.bootURL
+              }}</span>
+              <span v-else class="text-secondary">—</span>
+            </dd>
+            <dt class="stat-label">Flatcar CA</dt>
+            <dd class="secure-boot-ca">
+              <template v-if="secureBoot.flatcarCA">
+                <span
+                  class="mono truncate secure-boot-value"
+                  :title="`${secureBoot.flatcarCA.subject} (Flatcar ${secureBoot.flatcarCA.flatcarVersion}, valid until ${secureBoot.flatcarCA.notAfter})`"
+                  data-testid="secure-boot-ca"
+                  >{{ secureBoot.flatcarCA.sha256 }}</span
+                >
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline-secondary secure-boot-copy"
+                  :title="caCopied ? 'Copied' : 'Copy the SHA256 fingerprint'"
+                  data-testid="secure-boot-copy"
+                  @click="copyFlatcarCA"
+                >
+                  {{ caCopied ? 'Copied' : 'Copy' }}
+                </button>
+                <a
+                  v-if="secureBoot.flatcarCA.url"
+                  class="btn btn-sm btn-outline-secondary secure-boot-copy"
+                  :href="secureBoot.flatcarCA.url"
+                  download="flatcar-ca.der"
+                  title="Download the DER certificate to enroll in the firmware db"
+                  data-testid="secure-boot-download"
+                  >Download .der</a
+                >
+              </template>
+              <span v-else class="text-secondary" data-testid="secure-boot-ca-missing">
+                not extracted yet (needs a synced Flatcar release)
+              </span>
+            </dd>
+          </dl>
+          <p class="small text-secondary secure-boot-note mb-0">
+            Fedora CoreOS boots with stock Microsoft keys. Flatcar needs this CA enrolled in the
+            machine's <code>db</code> and <code>--secureBootTrusted=flatcar</code>; Bluefin Server's
+            installed image is unsigned and cannot boot with Secure Boot on.
+          </p>
+        </template>
+        <div
+          v-if="secureBoot.warnings.length"
+          class="alert alert-warning secure-boot-warnings mb-0"
+          role="status"
+          data-testid="secure-boot-warnings"
+        >
+          <strong class="me-1">Needs attention.</strong>
+          <ul class="secure-boot-warning-list mb-0">
+            <li v-for="(warning, index) in secureBoot.warnings" :key="index">{{ warning }}</li>
+          </ul>
+        </div>
+      </div>
+
       <div class="section-title">Flatcar version pin</div>
       <div class="panel p-3 pin-panel fade-in">
         <p v-if="pin.pinned" class="mb-3">
@@ -548,6 +665,90 @@ onUnmounted(() => {
 }
 
 .cluster-warning-list {
+  padding-left: var(--booty-space-3);
+  margin-top: var(--booty-space-1);
+}
+
+.secure-boot-panel {
+  position: relative;
+  overflow: hidden;
+  padding: var(--booty-space-3);
+}
+
+.secure-boot-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--booty-border);
+}
+
+.secure-boot-panel--ready::before {
+  background: var(--bs-success);
+}
+
+.secure-boot-panel--alert::before {
+  background: var(--bs-warning);
+}
+
+.secure-boot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-2);
+}
+
+.secure-boot-state {
+  font-weight: 600;
+}
+
+.secure-boot-hint {
+  margin-left: auto;
+  margin-top: 0;
+}
+
+.secure-boot-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--booty-space-2) var(--booty-space-4);
+  align-items: baseline;
+  margin: var(--booty-space-3) 0 0;
+}
+
+.secure-boot-facts dt,
+.secure-boot-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.secure-boot-value {
+  max-width: 100%;
+}
+
+.secure-boot-ca {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-2);
+}
+
+.secure-boot-ca .secure-boot-value {
+  max-width: 28rem;
+}
+
+.secure-boot-copy {
+  flex-shrink: 0;
+}
+
+.secure-boot-note {
+  margin-top: var(--booty-space-3);
+}
+
+.secure-boot-warnings {
+  margin-top: var(--booty-space-3);
+}
+
+.secure-boot-warning-list {
   padding-left: var(--booty-space-3);
   margin-top: var(--booty-space-1);
 }

@@ -1,6 +1,7 @@
 package hardware
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -263,6 +264,64 @@ func TestMarkBooted(t *testing.T) {
 	}
 	if err := db.MarkBooted("aa:bb:cc:dd:ee:02", "", at); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSetSecureBoot(t *testing.T) {
+	db, path := openTestDB(t)
+	if _, err := db.Put(Host{MAC: "aa:bb:cc:dd:ee:01", OS: "flatcar"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("secureBoot")) {
+		t.Fatalf("secureBoot must be omitted while false:\n%s", data)
+	}
+
+	changed, err := db.SetSecureBoot("AA:BB:CC:DD:EE:01", true)
+	if err != nil || !changed {
+		t.Fatalf("SetSecureBoot(true): changed=%v err=%v", changed, err)
+	}
+	if h, _ := db.Get("aa:bb:cc:dd:ee:01"); !h.SecureBoot {
+		t.Fatalf("flag not set: %+v", h)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err = db.SetSecureBoot("aa:bb:cc:dd:ee:01", true)
+	if err != nil || changed {
+		t.Fatalf("repeated SetSecureBoot(true) must be a no-op: changed=%v err=%v", changed, err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Fatal("unchanged flag must not rewrite the hardware map")
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := reopened.Get("aa:bb:cc:dd:ee:01"); !h.SecureBoot {
+		t.Fatal("secureBoot not persisted")
+	}
+	if data, _ := os.ReadFile(path); !bytes.Contains(data, []byte(`"secureBoot": true`)) {
+		t.Fatalf("secureBoot missing from the map:\n%s", data)
+	}
+
+	changed, err = db.SetSecureBoot("aa:bb:cc:dd:ee:01", false)
+	if err != nil || !changed {
+		t.Fatalf("SetSecureBoot(false): changed=%v err=%v", changed, err)
+	}
+	if h, _ := db.Get("aa:bb:cc:dd:ee:01"); h.SecureBoot {
+		t.Fatal("flag not cleared")
+	}
+	if _, err := db.SetSecureBoot("aa:bb:cc:dd:ee:02", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if _, err := db.SetSecureBoot("bogus", true); !errors.Is(err, ErrInvalidMAC) {
+		t.Fatalf("expected ErrInvalidMAC, got %v", err)
 	}
 }
 

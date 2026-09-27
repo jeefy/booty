@@ -248,6 +248,52 @@ describe('HostsView', () => {
     ).toBe(false)
   })
 
+  it('shows a Secure Boot badge next to the OS only for hosts flagged secureBoot', async () => {
+    const { wrapper } = mountWithData({
+      hosts: {
+        [hostA.mac]: { ...hostA, secureBoot: true },
+        [hostB.mac]: { ...hostB, secureBoot: false },
+        [hostC.mac]: hostC
+      },
+      unknownHosts: {}
+    })
+    await flushPromises()
+
+    const badge = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-secure-boot"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('Secure Boot')
+    expect(badge.classes()).toContain('badge')
+    expect(badge.find('svg').exists()).toBe(true)
+    expect(badge.attributes('title')).toContain('Secure Boot path')
+    const osCell = badge.element.closest('td')!
+    expect(osCell.textContent).toContain('flatcar')
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-secure-boot"]').exists()
+    ).toBe(false)
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:03"] [data-testid="host-secure-boot"]').exists()
+    ).toBe(false)
+  })
+
+  it('keeps secureBoot in the /register payload when editing a flagged host', async () => {
+    const { wrapper, handlers, calls } = mountWithData({
+      hosts: { [hostA.mac]: { ...hostA, secureBoot: true } },
+      unknownHosts: {}
+    })
+    handlers['/register'] = (init) => jsonResponse({ status: 'ok', host: requestBody(init) })
+    await flushPromises()
+
+    await wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="edit"]').trigger('click')
+    await wrapper.find('tr[data-mac-edit="aa:bb:cc:dd:ee:01"] form').trigger('submit')
+    await flushPromises()
+
+    const register = calls.find((c) => c.url === '/register')
+    expect(requestBody<Host>(register!.init).secureBoot).toBe(true)
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-secure-boot"]').exists()
+    ).toBe(true)
+  })
+
   it('sends role to /register when the user picks Control plane while editing', async () => {
     const { wrapper, handlers, calls } = mountWithData()
     handlers['/register'] = (init) => jsonResponse({ status: 'ok', host: requestBody(init) })

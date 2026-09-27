@@ -244,6 +244,9 @@ type secureBootInfo struct {
 	Trusted       []string       `json:"trusted"`
 	BootURL       string         `json:"bootURL"`
 	FlatcarCA     *flatcarCAInfo `json:"flatcarCA"`
+	// Warnings names the hosts seen through the Secure Boot path whose OS
+	// cannot boot that way (see secureBootWarnings).
+	Warnings []string `json:"warnings"`
 }
 
 type flatcarCAInfo struct {
@@ -254,13 +257,8 @@ type flatcarCAInfo struct {
 	URL            string `json:"url"`
 }
 
-func currentSecureBootInfo() secureBootInfo {
-	info := secureBootInfo{Enabled: viper.GetBool(config.SecureBoot)}
-	trusted, err := config.ParseSecureBootTrusted(viper.GetString(config.SecureBootTrusted))
-	if err != nil {
-		trusted = []string{config.SecureBootTrustMicrosoft}
-	}
-	info.Trusted = trusted
+func currentSecureBootInfo(hosts map[string]*hardware.Host) secureBootInfo {
+	info := secureBootInfo{Enabled: viper.GetBool(config.SecureBoot), Trusted: secureBootTrusted(), Warnings: secureBootWarnings(hosts)}
 	if !info.Enabled {
 		return info
 	}
@@ -293,7 +291,7 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 			info.Fleet.PendingReboots++
 		}
 	}
-	info.SecureBoot = currentSecureBootInfo()
+	info.SecureBoot = currentSecureBootInfo(hosts)
 	writeJSON(w, http.StatusOK, info)
 }
 

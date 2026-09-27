@@ -506,13 +506,61 @@ Machines with Secure Boot enabled refuse Booty's own `ipxe.efi`: it is not signe
 
 ### What boots under Secure Boot
 
-| OS | Kernel signer | Boots with stock (Microsoft) keys? | What to do |
+| OS | Kernel signer | Boots with stock (Microsoft) keys? | What Booty does for a Secure Boot host |
 |---|---|---|---|
-| Fedora CoreOS | Fedora CA (via Fedora's Microsoft-signed shim) | **yes** | nothing; Booty serves the Fedora shim (`shim-x64-16.1-7`, dual-signed) and GRUB for iPXE's `shim` command (S2 wires the script) |
-| Flatcar | *Flatcar Container Linux Secure Boot Development CA* (self-signed, not Microsoft-trusted; Flatcar's own shim is signed by it too) | no | enroll the Flatcar CA in the machine's `db` (`sbctl`, firmware setup UI); Booty serves it at `/boot/secureboot/flatcar-ca.der` / `.pem` with its SHA256 in `/info`, then pass `--secureBootTrusted=flatcar` |
-| Bluefin Server, PXE installer | same Flatcar CA (its PXE kernel is a Flatcar kernel) | no | as Flatcar for the installer; **the installed system's UKI and systemd-boot are unsigned and will not boot under Secure Boot** until upstream signs them |
+| Fedora CoreOS | Fedora CA (via Fedora's Microsoft-signed shim) | **yes** | `shim http://<booty>/boot/secureboot/fedora/shimx64.efi` before the `kernel` line, so the live kernel is verified against the Fedora vendor certificate instead of `db` (verified in QEMU: FCOS boots, `SecureBoot enabled` inside the guest) |
+| Flatcar | *Flatcar Container Linux Secure Boot Development CA* (self-signed, not Microsoft-trusted; Flatcar's own shim is signed by it too) | no | with `--secureBootTrusted=flatcar`: the normal `kernel` line, which the firmware accepts once the CA is enrolled (verified in QEMU). Without it: the **refusal menu** below |
+| Bluefin Server | PXE installer: the same Flatcar CA (its kernel is a Flatcar kernel). **Installed system: unsigned** (systemd-boot and the UKI) | no | always the refusal menu: even with the CA enrolled an installed Bluefin would never boot with Secure Boot on, so Booty refuses to install it on a Secure Boot host |
+| unregistered MAC | -- | -- | the usual unknown-host menu; nothing is recorded |
 
-`--secureBootTrusted` (comma separated; `microsoft` is always implied, `flatcar` is the only other value) is your assertion about the fleet's firmware `db`; it is reported in `/info` and will drive the per-OS script variants. Flatcar has already rotated this "development" CA once; when the extracted certificate changes between releases Booty logs a warning with both fingerprints, and machines have to enroll the new one.
+`--secureBootTrusted` (comma separated; `microsoft` is always implied, `flatcar` is the only other value) is **your assertion** about the fleet's firmware `db`, nothing Booty can check: with `flatcar` in the list a Secure Boot Flatcar host gets the plain kernel and fails at iPXE (`Error 0x7f04819a`, image verification) if the CA is in fact missing on that machine; without it Booty refuses rather than letting the boot fail. It is reported in `/info` and the UI. Flatcar has already rotated this "development" CA once; when the extracted certificate changes between releases Booty logs a warning with both fingerprints, and machines have to enroll the new one.
+
+### The `secureBoot` host flag
+
+Each registered host carries `secureBoot: true|false` (in `/hosts`, `/booty.json`, `/cluster`'s host list and as a shield badge next to the OS in the UI). It records **which path the host's last boot script came through**: the signed iPXE from the HTTP Boot path fetches `/booty.ipxe?mac=…&sb=1` (its `autoexec.ipxe` adds the flag; the unsigned TFTP/PXE iPXE never does), so `sb=1` can only come from a firmware that accepted the Microsoft-signed shim, i.e. one that has Secure Boot enforcing. A plain `/booty.ipxe` fetch (the machine PXE-booted the unsigned `ipxe.efi`, so Secure Boot is off or the firmware fell back) clears the flag. It is not a firmware attestation and not user-editable -- `POST /register` stores whatever the UI sends back, the next boot overwrites it -- and `preview=1` fetches never touch it. The hardware map is rewritten only when the value changes.
+
+### The refusal menu
+
+A Secure Boot Flatcar host without `--secureBootTrusted=flatcar`, and every Secure Boot Bluefin host, gets this instead of a kernel (30 s timeout, *Boot from disk* is the default so an already-installed machine keeps working):
+
+```
+Booty: this machine reached Booty through Secure Boot, and Flatcar cannot boot that way.
+
+The kernel is signed by the Flatcar Container Linux Secure Boot CA, which this
+firmware does not trust (Booty was not started with --secureBootTrusted=flatcar).
+  CA SHA256: ebb170da86aa56bae7abd15214c6ee48171d4bde8bc437400e16752c4925dba2
+  Download:  http://<booty>/boot/secureboot/flatcar-ca.der
+Enroll that certificate in the firmware db (firmware setup UI, or sbctl enroll-keys
+--microsoft with it added as a custom db key), restart Booty with
+--secureBootTrusted=flatcar, or disable Secure Boot on this machine.
+
+  Booty - Secure Boot: Flatcar refused - <hostname>
+  [d] Boot from disk   [r] Reboot   [s] iPXE shell
+```
+
+For Bluefin the CA paragraph is only shown while `flatcar` is not trusted, and a second paragraph explains that the installed image is unsigned and the install is refused. The host's `doInstall` is left untouched (you may still set it in the UI or via `/register`; it takes effect once the machine boots without Secure Boot), `installServedAt` is not stamped, and Booty logs `Secure Boot host cannot boot its OS; serving the refusal menu`. Every such host is also listed in `GET /info`'s `secureBoot.warnings` and in `GET /cluster`'s `warnings` (shown on the Overview page):
+
+```
+host aa:bb:cc:dd:ee:01 (flatcar): Secure Boot host; the Flatcar CA is not in --secureBootTrusted, boot refused
+host aa:bb:cc:dd:ee:02 (bluefin): Secure Boot host; the installed Bluefin image is unsigned, install refused
+host aa:bb:cc:dd:ee:03 (bluefin): Secure Boot host; the installed Bluefin image is unsigned and will not boot with Secure Boot enabled
+```
+
+The warnings follow the host flag, so they stay until the machine boots again without `sb=1`, and they are computed even after `--secureBoot` is switched off.
+
+### Enrolling the Flatcar CA
+
+Booty extracts the CA from the Flatcar release it serves and offers it at `http://<booty>/boot/secureboot/flatcar-ca.der` (and `.pem`); the SHA256 is in `/info` (`secureBoot.flatcarCA.sha256`), on the Overview page (with copy and download buttons) and in the refusal menu, so you can compare it with what the firmware shows after enrolment. Enrol it in **`db`** (not MOK: iPXE loads the kernel through the firmware's `LoadImage`, which consults `db`/`dbx` only), keeping the Microsoft certificates so the iPXE shim keeps loading:
+
+* **Firmware setup UI**: most vendors have *Secure Boot → Custom/Key Management → Enroll DB key from file*; put `flatcar-ca.der` on a FAT USB stick. Enrolling on the machine itself (not through Booty) is the point: the firmware, not the network, decides what it trusts.
+* **`sbctl`** from a Linux system on that machine in setup mode: `sbctl create-keys`, convert the certificate to an EFI signature list (`cert-to-efi-sig-list -g "$(uuidgen)" flatcar-ca.pem flatcar-ca.esl`, from efitools), drop it into `sbctl`'s custom `db` directory (`/var/lib/sbctl/keys/custom/db/` in current versions; `sbctl enroll-keys --help` names it) and run `sbctl enroll-keys --microsoft --custom`. `--microsoft` keeps the Microsoft UEFI CA in `db`, which the iPXE shim and the Fedora shim need.
+* **OVMF / QEMU** (what the S1/S2 lab did): `virt-fw-vars --input OVMF_VARS.secboot.fd --output vars-flatcar.fd --add-db <owner-guid> flatcar-ca.der` (from `python3-virt-firmware`), then boot the guest with `-drive if=pflash,unit=1,file=vars-flatcar.fd` next to `OVMF_CODE.secboot.fd`. `EnrollDefaultKeys.efi` alone only installs the Microsoft set.
+
+After that, start Booty with `--secureBootTrusted=flatcar`; the Overview page's Secure Boot card lists `flatcar` under *Trusted CAs* and the Flatcar warnings disappear. When Flatcar rotates the CA (the `flatcarCA.flatcarVersion` and fingerprint change, logged at sync time), repeat the enrolment before the next reboot.
+
+### Bluefin Server and Secure Boot
+
+Bluefin Server's PXE installer kernel is a Flatcar kernel and boots once the Flatcar CA is enrolled, but the system it writes to disk -- systemd-boot and the `bluefin-server.efi` UKI -- carries no signature at all (checked on `installer-v26.08.0`), so the firmware refuses it on the next boot and the machine falls back to PXE forever. Booty therefore never offers *Install* to a Secure Boot Bluefin host, regardless of `--secureBootTrusted`, and says so in the menu and the warnings. Disable Secure Boot on machines meant for Bluefin Server, or follow upstream: signing the UKI and systemd-boot is a [projectbluefin/server](https://github.com/projectbluefin/server) matter (shim-review for their own CA, or a MOK-based flow), and Booty will lift the refusal once released images are signed.
 
 **Microsoft UEFI CA 2011 expiry.** The 2011 CA expired on 2026-06-27; new hardware may only carry the 2023 CA, older hardware may only carry 2011. Both shims Booty serves are dual-signed, so either works. If you pin other versions, prefer dual-signed builds.
 
@@ -530,7 +578,7 @@ Machines with Secure Boot enabled refuse Booty's own `ipxe.efi`: it is not signe
 
 The RPMs are read in Go (lead, headers, `PAYLOADCOMPRESSOR`, cpio) -- Fedora 44/45 packages are zstd-compressed; an xz payload is refused with a clear error rather than pulling in another dependency. Everything under `/boot/sb/` and `/boot/secureboot/` is `data/secureboot/current/` (plus the two CA files); paths are cleaned without redirects, there is no listing and no way out of that directory.
 
-`GET /info` gains `"secureBoot":{"enabled","ready","bundleVersion","trusted":[...],"bootURL","flatcarCA":{"flatcarVersion","sha256","subject","notAfter","url"}}`; `ready` means the current bundle is complete on disk. `/config` lists the flags.
+`GET /info` gains `"secureBoot":{"enabled","ready","bundleVersion","trusted":[...],"bootURL","flatcarCA":{"flatcarVersion","sha256","subject","notAfter","url"},"warnings":[...]}`; `ready` means the current bundle is complete on disk, `warnings` lists the Secure Boot hosts that cannot boot their OS (see [The refusal menu](#the-refusal-menu)). `/config` lists the flags. The Overview page shows the block as a *Secure Boot* card (a one-line "Secure Boot: off" when the flag is not set).
 
 ### Testing without root
 

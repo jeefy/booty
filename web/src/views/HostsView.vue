@@ -254,8 +254,28 @@ onMounted(() => {
                 </td>
                 <td class="mono">{{ host.ip || '—' }}</td>
                 <td>
-                  <span v-if="host.os" class="badge text-bg-light border">{{ host.os }}</span>
-                  <span v-else class="text-secondary">default</span>
+                  <div class="os-cell">
+                    <span v-if="host.os" class="badge text-bg-light border">{{ host.os }}</span>
+                    <span v-else class="text-secondary">default</span>
+                    <span
+                      v-if="host.secureBoot"
+                      class="badge text-bg-light border secure-boot"
+                      title="Last boot script fetched through the Secure Boot path (UEFI HTTP Boot, signed iPXE)"
+                      data-testid="host-secure-boot"
+                    >
+                      <svg
+                        class="secure-boot-icon"
+                        viewBox="0 0 16 16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M8 .5 2 2.8v4.4c0 3.6 2.6 6.6 6 7.8 3.4-1.2 6-4.2 6-7.8V2.8L8 .5Zm2.7 5.2-3.2 3.6a.6.6 0 0 1-.9 0L5.3 8a.6.6 0 1 1 .9-.8l.9.9 2.7-3.1a.6.6 0 1 1 .9.7Z"
+                        />
+                      </svg>
+                      Secure Boot
+                    </span>
+                  </div>
                 </td>
                 <td data-testid="host-running">
                   <template v-if="runningLabels[mac]">
@@ -484,5 +504,25 @@ onMounted(() => {
 
 .running {
   max-width: 12rem;
+}
+
+.os-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-1);
+}
+
+.secure-boot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.secure-boot-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  fill: var(--bs-success);
 }
 </style>

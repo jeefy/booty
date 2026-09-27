@@ -147,22 +147,31 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	secureBoot := r.URL.Query().Get("sb") == "1"
 	host := applyNextBootClear(mac, lookupHost(mac, remoteIP(r)), now)
+	host = recordSecureBoot(mac, host, secureBoot, isPreview(r))
 
 	vars := tftp.TemplateVars{
-		Server:        config.ServerHostPort(),
-		MenuDefault:   tftp.MenuDefaultForHost(host),
-		CoreOSChannel: viper.GetString(config.CoreOSChannel),
-		CoreOSArch:    viper.GetString(config.CoreOSArchitecture),
-		CoreOSVersion: state.CurrentCoreOSVersion(),
-		OSTreeImage:   resolveOSTreeImage(host),
-		SecureBoot:    r.URL.Query().Get("sb") == "1",
+		Server:                   config.ServerHostPort(),
+		MenuDefault:              tftp.MenuDefaultForHost(host),
+		CoreOSChannel:            viper.GetString(config.CoreOSChannel),
+		CoreOSArch:               viper.GetString(config.CoreOSArchitecture),
+		CoreOSVersion:            state.CurrentCoreOSVersion(),
+		OSTreeImage:              resolveOSTreeImage(host),
+		SecureBoot:               secureBoot,
+		SecureBootTrustedFlatcar: secureBootTrustedFlatcar(),
 	}
 	if host != nil {
 		vars.Hostname = host.Hostname
 	}
+	if ca, ok := versions.CurrentFlatcarCA(); ok {
+		vars.FlatcarCASha256 = ca.Sha256
+	}
 	os := tftp.OSForHost(host)
-	if os == "bluefin" {
+	switch {
+	case tftp.SecureBootRefused(os, vars):
+		slog.Warn("Secure Boot host cannot boot its OS; serving the refusal menu", "mac", mac, "os", os, "trustedFlatcar", vars.SecureBootTrustedFlatcar, "doInstall", host.DoInstall)
+	case os == "bluefin":
 		vars.Bluefin = bluefinVars(r.Context(), mac, host)
 		if vars.Bluefin.Vmlinuz != "" {
 			recordInstallServed(mac, host, now)

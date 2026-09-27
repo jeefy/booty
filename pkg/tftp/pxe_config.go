@@ -99,6 +99,36 @@ exit
 :reboot
 reboot
 `,
+
+	"secureboot-refused.ipxe": `#!ipxe
+echo
+echo Booty: this machine reached Booty through Secure Boot, and [[os-label]] cannot boot that way.
+echo
+[[secure-boot-refusal]]echo
+set menu-timeout 30000
+:start
+menu Booty - Secure Boot: [[os-label]] refused - [[hostname]]
+item --key d run-from-disk Boot from disk
+item --key r reboot        Reboot
+item --key s shell         iPXE shell
+choose --timeout ${menu-timeout} --default run-from-disk selected || goto run-from-disk
+set menu-timeout 0
+goto ${selected}
+:run-from-disk
+exit
+:reboot
+reboot
+:shell
+shell
+goto start
+`,
+}
+
+const secureBootRefusedKey = "secureboot-refused"
+
+var secureBootOSLabels = map[string]string{
+	"flatcar": "Flatcar",
+	"bluefin": "Bluefin Server",
 }
 
 type TemplateVars struct {
@@ -113,7 +143,14 @@ type TemplateVars struct {
 	// (its autoexec.ipxe adds sb=1): kernels then go through firmware
 	// verification, so the coreos script loads Fedora's shim first.
 	SecureBoot bool
-	Bluefin    BluefinVars
+	// SecureBootTrustedFlatcar is the operator's --secureBootTrusted=flatcar
+	// assertion that the fleet's firmware db holds the Flatcar CA, which is
+	// what lets Flatcar-signed kernels pass firmware verification.
+	SecureBootTrustedFlatcar bool
+	// FlatcarCASha256 is the fingerprint of the Flatcar CA Booty serves at
+	// /boot/secureboot/flatcar-ca.der, shown in the refusal menu.
+	FlatcarCASha256 string
+	Bluefin         BluefinVars
 }
 
 // secureBootShim is the iPXE line that makes the following kernel command
@@ -124,6 +161,58 @@ func (v TemplateVars) secureBootShim() string {
 		return ""
 	}
 	return "shim http://" + v.Server + "/boot/secureboot/fedora/shimx64.efi || goto shell\n"
+}
+
+// SecureBootRefused reports whether a Secure Boot client registered as os
+// gets the refusal menu instead of a kernel: Flatcar unless the operator
+// asserted its CA is enrolled, Bluefin always (its installed UKI and
+// systemd-boot are unsigned, so an install could never boot).
+func SecureBootRefused(os string, v TemplateVars) bool {
+	if !v.SecureBoot {
+		return false
+	}
+	switch os {
+	case "flatcar":
+		return !v.SecureBootTrustedFlatcar
+	case "bluefin":
+		return true
+	}
+	return false
+}
+
+func (v TemplateVars) flatcarCALines() string {
+	fingerprint := v.FlatcarCASha256
+	if fingerprint == "" {
+		fingerprint = "(not extracted yet: Booty has not synced a Flatcar release)"
+	}
+	return `echo The kernel is signed by the Flatcar Container Linux Secure Boot CA, which this
+echo firmware does not trust (Booty was not started with --secureBootTrusted=flatcar).
+echo   CA SHA256: ` + fingerprint + `
+echo   Download:  http://` + v.Server + `/boot/secureboot/flatcar-ca.der
+echo Enroll that certificate in the firmware db (firmware setup UI, or sbctl enroll-keys
+echo --microsoft with it added as a custom db key), restart Booty with
+echo --secureBootTrusted=flatcar, or disable Secure Boot on this machine.
+`
+}
+
+const bluefinUnsignedLines = `echo Bluefin Server's installed system (systemd-boot and its UKI) is not signed, so an
+echo installed Bluefin never boots with Secure Boot enabled. Booty refuses to install it on
+echo a Secure Boot host. Disable Secure Boot to install Bluefin Server, or wait for
+echo upstream (projectbluefin/server) to sign its images.
+`
+
+func (v TemplateVars) secureBootRefusal(os string) string {
+	var sb strings.Builder
+	if !v.SecureBootTrustedFlatcar {
+		sb.WriteString(v.flatcarCALines())
+	}
+	if os == "bluefin" {
+		if sb.Len() > 0 {
+			sb.WriteString("echo\n")
+		}
+		sb.WriteString(bluefinUnsignedLines)
+	}
+	return sb.String()
 }
 
 // BluefinVars fills the bluefin.ipxe template. Vmlinuz/Initrd/DDI/DDISha256
@@ -211,8 +300,15 @@ func MenuDefaultForHost(host *hardware.Host) string {
 
 // IPXEScript renders the iPXE script for os, falling back to the unknown-host
 // menu when no template exists. Bluefin hosts get the pending menu until a
-// release is cached.
+// release is cached; Secure Boot clients whose OS cannot pass firmware
+// verification get the refusal menu (see SecureBootRefused).
 func IPXEScript(os string, v TemplateVars) string {
+	if SecureBootRefused(os, v) {
+		return Render(strings.NewReplacer(
+			"[[os-label]]", secureBootOSLabels[os],
+			"[[secure-boot-refusal]]", v.secureBootRefusal(os),
+		).Replace(PXEConfig[secureBootRefusedKey+".ipxe"]), v)
+	}
 	if os == "bluefin" && v.Bluefin.Vmlinuz == "" {
 		os = "bluefin-pending"
 	}

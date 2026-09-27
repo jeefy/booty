@@ -8,6 +8,7 @@ import {
   normalizeClusterInfo,
   normalizeEffectiveConfig,
   normalizeHost,
+  normalizeSecureBootInfo,
   normalizeTemplateDocument,
   normalizeTemplateValidation
 } from '@/types'
@@ -201,7 +202,7 @@ describe('normalizeClusterInfo', () => {
       ready: true,
       caFingerprint: 'sha256:abc',
       hosts: [
-        { mac: 'aa:bb:cc:dd:ee:01', hostname: 'cp', os: 'flatcar', role: 'control-plane' },
+        { mac: 'aa:bb:cc:dd:ee:01', hostname: 'cp', os: 'flatcar', role: 'control-plane', secureBoot: true },
         { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', role: '' },
         { mac: 'aa:bb:cc:dd:ee:03' }
       ],
@@ -216,9 +217,16 @@ describe('normalizeClusterInfo', () => {
       caFingerprint: 'sha256:abc'
     })
     expect(info.hosts).toEqual([
-      { mac: 'aa:bb:cc:dd:ee:01', hostname: 'cp', os: 'flatcar', role: 'control-plane', booted: '' },
-      { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', os: '', role: 'worker', booted: '' },
-      { mac: 'aa:bb:cc:dd:ee:03', hostname: '', os: '', role: 'worker', booted: '' }
+      {
+        mac: 'aa:bb:cc:dd:ee:01',
+        hostname: 'cp',
+        os: 'flatcar',
+        role: 'control-plane',
+        booted: '',
+        secureBoot: true
+      },
+      { mac: 'aa:bb:cc:dd:ee:02', hostname: 'w1', os: '', role: 'worker', booted: '', secureBoot: false },
+      { mac: 'aa:bb:cc:dd:ee:03', hostname: '', os: '', role: 'worker', booted: '', secureBoot: false }
     ])
     expect(info.warnings).toEqual(['CA key readable on the boot VLAN'])
 
@@ -230,5 +238,51 @@ describe('normalizeClusterInfo', () => {
     expect(unknown.distribution).toBe('kubeadm')
     expect(unknown.controlPlane).toBe('external')
     expect(unknown.cni).toBe('none')
+  })
+})
+
+describe('normalizeSecureBootInfo', () => {
+  it('is off with empty lists and no CA for a null or sparse payload', () => {
+    expect(normalizeSecureBootInfo(null)).toEqual({
+      enabled: false,
+      ready: false,
+      bundleVersion: '',
+      trusted: [],
+      bootURL: '',
+      flatcarCA: null,
+      warnings: []
+    })
+    expect(normalizeSecureBootInfo({ enabled: true, flatcarCA: {} })).toMatchObject({
+      enabled: true,
+      flatcarCA: null
+    })
+  })
+
+  it('keeps the CA when it has a fingerprint and drops empty warnings and trust entries', () => {
+    const info = normalizeSecureBootInfo({
+      enabled: true,
+      ready: true,
+      bundleVersion: 'ipxe-16.1_v2.0.0_shim-16.1-7_grub-2.12-64.fc44',
+      trusted: ['microsoft', 'flatcar', '', null],
+      bootURL: 'http://10.0.0.1/boot/sb',
+      flatcarCA: { sha256: 'ebb170da', flatcarVersion: '4757.2.0', url: 'http://10.0.0.1/boot/secureboot/flatcar-ca.der' },
+      warnings: ['host aa (flatcar): Secure Boot host; boot refused', '', null]
+    })
+    expect(info.trusted).toEqual(['microsoft', 'flatcar'])
+    expect(info.flatcarCA).toEqual({
+      sha256: 'ebb170da',
+      flatcarVersion: '4757.2.0',
+      subject: '',
+      notAfter: '',
+      url: 'http://10.0.0.1/boot/secureboot/flatcar-ca.der'
+    })
+    expect(info.warnings).toEqual(['host aa (flatcar): Secure Boot host; boot refused'])
+  })
+})
+
+describe('normalizeHost secureBoot', () => {
+  it('passes the server flag through and leaves it absent for older servers', () => {
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01' })).not.toHaveProperty('secureBoot')
+    expect(normalizeHost({ mac: 'aa:bb:cc:dd:ee:01', secureBoot: true }).secureBoot).toBe(true)
   })
 })
