@@ -372,3 +372,40 @@ func TestNonSecureBootRenderingUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestBluefinChainScript(t *testing.T) {
+	v := TemplateVars{
+		Server: "192.168.1.10:8080", Hostname: "srv1",
+		BluefinBootURL:      "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/bluefin-server-netboot.efi",
+		BluefinVersion:      "20260927.123",
+		BluefinChainURL:     "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/bluefin-server-netboot_20260927.123.efi",
+		BluefinChainCmdline: "usrhash=abc rd.systemd.pull=raw:rootdisk:http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/bluefin-server_20260927.123.raw",
+	}
+	out := IPXEScript("bluefin", v)
+	for _, want := range []string{
+		"set menu-timeout 5000\n",
+		"choose --timeout ${menu-timeout} --default netboot selected || goto run-from-disk\n",
+		":netboot\nchain " + v.BluefinChainURL + " " + v.BluefinChainCmdline + " || goto chain-failed\n",
+		":run-from-disk\nexit\n", ":shell\nshell\n", ":reboot\nreboot\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "[[") {
+		t.Fatalf("placeholders:\n%s", out)
+	}
+
+	sb := v
+	sb.SecureBoot = true
+	sb.BluefinReason = []string{"with Secure Boot on, nope."}
+	if out := IPXEScript("bluefin", sb); strings.Contains(out, "\nchain ") || !strings.Contains(out, "echo with Secure Boot on, nope.\n") || !strings.Contains(out, "switch to UEFI HTTP Boot") {
+		t.Fatalf("Secure Boot never chainloads:\n%s", out)
+	}
+
+	installed := v
+	installed.BluefinInstalled = true
+	if out := IPXEScript("bluefin", installed); out != "#!ipxe\necho Booty: srv1 is an installed Bluefin Server host; booting from disk\nexit\n" {
+		t.Fatalf("installed:\n%s", out)
+	}
+}

@@ -40,9 +40,8 @@ shell
 	"bluefin.ipxe": `#!ipxe
 iseq ${platform} efi || goto not-efi
 echo
-echo Booty: [[hostname]] is a Bluefin Server host. Bluefin Server boots its signed netboot UKI
-echo straight from the firmware: iPXE cannot hand the UKI the URL it downloads the OS image from.
-echo Switch this machine's network boot to UEFI HTTP Boot (IPv4) in the firmware setup; Booty's
+echo Booty: [[hostname]] is a Bluefin Server host, and Booty cannot chainload it from iPXE:
+[[bluefin-reason]]echo Switch this machine's network boot to UEFI HTTP Boot (IPv4) in the firmware setup; Booty's
 echo ProxyDHCP (--proxyDHCP) answers it with, or point your DHCP server's HTTPClient boot file at:
 echo   [[bluefin-boot-url]]
 echo
@@ -65,6 +64,42 @@ reboot
 :not-efi
 echo Bluefin Server needs UEFI (this machine booted iPXE in ${platform} mode); dropping to shell
 shell
+`,
+
+	"bluefin-chain.ipxe": `#!ipxe
+iseq ${platform} efi || goto not-efi
+iseq ${buildarch} x86_64 || goto not-efi
+set menu-timeout 5000
+:start
+menu Booty - Bluefin Server [[bluefin-version]] (diskless) - [[hostname]]
+item --key n netboot       Boot Bluefin Server [[bluefin-version]] diskless
+item --key d run-from-disk Boot from disk
+item --key s shell         iPXE shell
+item --key r reboot        Reboot
+choose --timeout ${menu-timeout} --default netboot selected || goto run-from-disk
+set menu-timeout 0
+goto ${selected}
+:netboot
+chain [[bluefin-chain-url]] [[bluefin-chain-cmdline]] || goto chain-failed
+:chain-failed
+echo Booty: chainloading the Bluefin Server netboot UKI failed
+prompt --timeout 5000 Press any key for the menu, or wait to boot from disk || goto run-from-disk
+goto start
+:run-from-disk
+exit
+:shell
+shell
+goto start
+:reboot
+reboot
+:not-efi
+echo Bluefin Server needs x86-64 UEFI (this machine booted iPXE ${buildarch} in ${platform} mode); dropping to shell
+shell
+`,
+
+	"bluefin-installed.ipxe": `#!ipxe
+echo Booty: [[hostname]] is an installed Bluefin Server host; booting from disk
+exit
 `,
 
 	"unknown.ipxe": `#!ipxe
@@ -133,6 +168,18 @@ type TemplateVars struct {
 	// BluefinBootURL is the UEFI HTTP Boot URL of a Bluefin host's netboot
 	// UKI, printed by the bluefin menu.
 	BluefinBootURL string
+	// BluefinReason explains, one echo line each, why the bluefin menu
+	// asks for UEFI HTTP Boot instead of chainloading.
+	BluefinReason []string
+	// BluefinVersion, BluefinChainURL and BluefinChainCmdline select the
+	// chainload menu: iPXE boots the netboot UKI at BluefinChainURL with
+	// BluefinChainCmdline, which systemd-stub uses instead of the UKI's own
+	// .cmdline when Secure Boot is off.
+	BluefinVersion      string
+	BluefinChainURL     string
+	BluefinChainCmdline string
+	// BluefinInstalled makes a Bluefin host boot its disk.
+	BluefinInstalled bool
 }
 
 // secureBootShim is the iPXE line that makes the following kernel command
@@ -175,6 +222,27 @@ func (v TemplateVars) secureBootRefusal() string {
 	return v.flatcarCALines()
 }
 
+func (v TemplateVars) bluefinReason() string {
+	var sb strings.Builder
+	for _, line := range v.BluefinReason {
+		sb.WriteString("echo " + line + "\n")
+	}
+	return sb.String()
+}
+
+// bluefinScript picks the Bluefin menu: boot from disk once installed, the
+// chainload menu when Secure Boot is off and a command line was derived,
+// the switch-to-UEFI-HTTP-Boot menu otherwise.
+func bluefinScript(v TemplateVars) string {
+	switch {
+	case v.BluefinInstalled:
+		return "bluefin-installed"
+	case !v.SecureBoot && v.BluefinChainURL != "" && v.BluefinChainCmdline != "":
+		return "bluefin-chain"
+	}
+	return "bluefin"
+}
+
 func Render(template string, v TemplateVars) string {
 	return strings.NewReplacer(
 		"[[server]]", v.Server,
@@ -185,6 +253,10 @@ func Render(template string, v TemplateVars) string {
 		"[[coreos-version]]", v.CoreOSVersion,
 		"[[ostree-image]]", v.OSTreeImage,
 		"[[bluefin-boot-url]]", v.BluefinBootURL,
+		"[[bluefin-reason]]", v.bluefinReason(),
+		"[[bluefin-version]]", v.BluefinVersion,
+		"[[bluefin-chain-url]]", v.BluefinChainURL,
+		"[[bluefin-chain-cmdline]]", v.BluefinChainCmdline,
 		"[[secure-boot-shim]]", v.secureBootShim(),
 	).Replace(template)
 }
@@ -221,6 +293,9 @@ func IPXEScript(os string, v TemplateVars) string {
 			"[[os-label]]", secureBootOSLabels[os],
 			"[[secure-boot-refusal]]", v.secureBootRefusal(),
 		).Replace(PXEConfig[secureBootRefusedKey+".ipxe"]), v)
+	}
+	if os == "bluefin" {
+		os = bluefinScript(v)
 	}
 	tmpl, ok := PXEConfig[os+".ipxe"]
 	if !ok {
