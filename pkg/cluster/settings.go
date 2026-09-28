@@ -15,6 +15,7 @@ import (
 	"github.com/jeefy/booty/pkg/cluster/k0s"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/profile"
 	"github.com/spf13/viper"
 )
 
@@ -106,6 +107,13 @@ func (s Settings) ManagedKubeadm() bool { return s.Managed() && s.Distribution =
 // ManagedK0s reports whether Booty renders a k0s controller.
 func (s Settings) ManagedK0s() bool { return s.Managed() && s.Distribution == K0s }
 
+// BluefinKubeadmWorkers reports whether Bluefin worker hosts join an
+// external kubeadm cluster through the kubeadm sysext, as
+// --profile=kubeadm-worker makes Flatcar and CoreOS workers do.
+func (s Settings) BluefinKubeadmWorkers() bool {
+	return s.Distribution == Kubeadm && !s.Managed() && s.Profile == profile.KubeadmWorker
+}
+
 // Validate checks the flag values against each other. It is what cmd/main
 // runs at startup; every message names the offending flag.
 func (s Settings) Validate() error {
@@ -179,8 +187,9 @@ func readableCADir(dir string) error {
 }
 
 // Supports reports whether hosts running os can run distribution: Bluefin
-// Server ships k0s and has no containerd/kubelet for kubeadm; Flatcar and
-// Fedora CoreOS take both. An empty os is Booty's default (Flatcar).
+// Server ships k0s and gets containerd/kubelet for kubeadm only as a worker
+// of an external cluster (BluefinKubeadmWorkers); Flatcar and Fedora
+// CoreOS take both. An empty os is Booty's default (Flatcar).
 func Supports(os string, distribution Distribution) bool {
 	switch os {
 	case "bluefin":

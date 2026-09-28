@@ -148,7 +148,8 @@ func (m *Manager) Warnings(hosts map[string]*hardware.Host) []string {
 	sort.Strings(macs)
 	for _, mac := range macs {
 		h := hosts[mac]
-		if !Supports(h.OS, m.Settings.Distribution) {
+		bluefinWorker := h.OS == "bluefin" && !h.IsControlPlane() && m.Settings.BluefinKubeadmWorkers()
+		if !Supports(h.OS, m.Settings.Distribution) && !bluefinWorker {
 			warnings = append(warnings, fmt.Sprintf("host %s (%s) unsupported under %s", mac, h.OS, m.Settings.Distribution))
 		}
 	}
