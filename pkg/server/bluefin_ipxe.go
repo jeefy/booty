@@ -23,27 +23,67 @@ const (
 	maxUKICmdlineLen = 64 << 10
 )
 
-// ukiCmdline reads the embedded kernel command line of the UKI at path:
-// its PE .cmdline section without the trailing NUL padding.
-func ukiCmdline(path string) (string, error) {
-	f, err := pe.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+// ukiPayload is where a PE section's payload sits in the UKI file.
+type ukiPayload struct {
+	offset, size int64
+}
+
+// ukiInfo is what Booty needs from a netboot UKI: its section payloads
+// (served individually on the BIOS path) and its embedded command line.
+type ukiInfo struct {
+	sections   map[string]ukiPayload
+	cmdline    string
+	cmdlineErr error
+}
+
+// payloadSize is a section's payload length: VirtualSize is the real size
+// (systemd-ukify pads SizeOfRawData to the file alignment), but never more
+// than what is in the file; 0 means unset.
+func payloadSize(s *pe.Section) int64 {
+	if s.VirtualSize != 0 && s.VirtualSize < s.Size {
+		return int64(s.VirtualSize)
 	}
-	defer config.CloseQuietly(f, path)
-	s := f.Section(ukiCmdlineName)
-	if s == nil {
+	return int64(s.Size)
+}
+
+// readUKI reads the section table of the UKI at path and its .cmdline
+// section, without the trailing NUL padding.
+func readUKI(path string) (*ukiInfo, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer config.CloseQuietly(fh, path)
+	info, err := fh.Stat()
+	if err != nil {
+		return nil, err
+	}
+	f, err := pe.NewFile(fh)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	u := &ukiInfo{sections: map[string]ukiPayload{}}
+	for _, s := range f.Sections {
+		p := ukiPayload{offset: int64(s.Offset), size: payloadSize(s)}
+		if p.offset < 0 || p.offset+p.size > info.Size() {
+			return nil, fmt.Errorf("%s: section %s lies outside the file", path, s.Name)
+		}
+		u.sections[s.Name] = p
+	}
+	u.cmdline, u.cmdlineErr = sectionCmdline(fh, path, u.sections)
+	return u, nil
+}
+
+func sectionCmdline(fh *os.File, path string, sections map[string]ukiPayload) (string, error) {
+	p, ok := sections[ukiCmdlineName]
+	if !ok {
 		return "", fmt.Errorf("%s: no %s section", path, ukiCmdlineName)
 	}
-	size := s.Size
-	if s.VirtualSize > 0 && s.VirtualSize < size {
-		size = s.VirtualSize
+	if p.size > maxUKICmdlineLen {
+		return "", fmt.Errorf("%s: %s section of %d bytes is implausibly large", path, ukiCmdlineName, p.size)
 	}
-	if size > maxUKICmdlineLen {
-		return "", fmt.Errorf("%s: %s section of %d bytes is implausibly large", path, ukiCmdlineName, size)
-	}
-	data := make([]byte, size)
-	if _, err := s.ReadAt(data, 0); err != nil {
+	data := make([]byte, p.size)
+	if _, err := fh.ReadAt(data, p.offset); err != nil {
 		return "", fmt.Errorf("%s: reading %s: %w", path, ukiCmdlineName, err)
 	}
 	cmdline := strings.TrimRight(string(bytes.TrimRight(data, "\x00")), " \t\r\n")
@@ -51,6 +91,15 @@ func ukiCmdline(path string) (string, error) {
 		return "", fmt.Errorf("%s: empty %s section", path, ukiCmdlineName)
 	}
 	return cmdline, nil
+}
+
+// ukiCmdline reads the embedded kernel command line of the UKI at path.
+func ukiCmdline(path string) (string, error) {
+	u, err := readUKI(path)
+	if err != nil {
+		return "", err
+	}
+	return u.cmdline, u.cmdlineErr
 }
 
 // argSpans returns the [start, end) byte ranges of the whitespace-separated
@@ -132,36 +181,50 @@ func ipxeSafeArgs(s string) error {
 	return nil
 }
 
-type ukiCmdlineEntry struct {
-	cmdline string
-	err     error
+type cachedUKIEntry struct {
+	uki *ukiInfo
+	err error
 }
 
-// ukiCmdlineCache holds the embedded cmdline per netboot UKI (version,
-// sha256, size and mtime), so the UKI is parsed once per release.
-var ukiCmdlineCache = struct {
+// ukiCache holds the parsed UKI per release file (version, sha256, size and
+// mtime), so a UKI is parsed once per release.
+var ukiCache = struct {
 	sync.Mutex
-	m map[string]ukiCmdlineEntry
-}{m: map[string]ukiCmdlineEntry{}}
+	m map[string]cachedUKIEntry
+}{m: map[string]cachedUKIEntry{}}
+
+// bluefinUKIPath is the netboot UKI of release m.
+func bluefinUKIPath(m versions.BluefinManifest) string {
+	return config.DataPath(config.BluefinDir, m.Version, m.NetbootUKI)
+}
+
+// cachedUKI returns release m's parsed netboot UKI and the file's stat.
+func cachedUKI(m versions.BluefinManifest) (*ukiInfo, os.FileInfo, error) {
+	path := bluefinUKIPath(m)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := fmt.Sprintf("%s|%s|%d|%d", m.Version, m.SHA256Sums[m.NetbootUKI], info.Size(), info.ModTime().UnixNano())
+	ukiCache.Lock()
+	defer ukiCache.Unlock()
+	if e, ok := ukiCache.m[key]; ok {
+		return e.uki, info, e.err
+	}
+	uki, err := readUKI(path)
+	if len(ukiCache.m) >= 8 {
+		clear(ukiCache.m)
+	}
+	ukiCache.m[key] = cachedUKIEntry{uki: uki, err: err}
+	return uki, info, err
+}
 
 func cachedUKICmdline(m versions.BluefinManifest) (string, error) {
-	path := config.DataPath(config.BluefinDir, m.Version, m.NetbootUKI)
-	info, err := os.Stat(path)
+	uki, _, err := cachedUKI(m)
 	if err != nil {
 		return "", err
 	}
-	key := fmt.Sprintf("%s|%s|%d|%d", m.Version, m.SHA256Sums[m.NetbootUKI], info.Size(), info.ModTime().UnixNano())
-	ukiCmdlineCache.Lock()
-	defer ukiCmdlineCache.Unlock()
-	if e, ok := ukiCmdlineCache.m[key]; ok {
-		return e.cmdline, e.err
-	}
-	cmdline, err := ukiCmdline(path)
-	if len(ukiCmdlineCache.m) >= 8 {
-		clear(ukiCmdlineCache.m)
-	}
-	ukiCmdlineCache.m[key] = ukiCmdlineEntry{cmdline: cmdline, err: err}
-	return cmdline, err
+	return uki.cmdline, uki.cmdlineErr
 }
 
 // bluefinChainURL names the release's netboot UKI explicitly, so the UKI
@@ -207,32 +270,75 @@ var (
 	reasonNoCmdline = []string{"the current release's netboot UKI has no usable command line (see Booty's log)."}
 )
 
-// bluefinIPXEVars fills the Bluefin part of the /booty.ipxe render. It
-// records nothing: the chainloaded UKI's GET does the boot bookkeeping.
+// bluefinIPXEVars fills the Bluefin part of the /booty.ipxe render: the
+// EFI branch (chainload with Secure Boot off, the UEFI HTTP Boot menu
+// otherwise) and the legacy BIOS branch, which Secure Boot does not affect.
+// Both use the same derived command line and fail closed the same way. It
+// records nothing: the UKI or kernel GET does the boot bookkeeping.
 func bluefinIPXEVars(mac string, host *hardware.Host, secureBoot bool, vars *tftp.TemplateVars) {
 	vars.BluefinBootURL = bluefinBootURL(mac)
 	if host.Installed() && !host.DoInstall {
 		vars.BluefinInstalled = true
 		return
 	}
-	if secureBoot {
+	m, haveRelease := versions.CurrentBluefinManifest()
+	var cmdline string
+	var cmdlineErr error
+	if haveRelease {
+		if cmdline, cmdlineErr = bluefinChainCmdline(mac, m); cmdlineErr != nil {
+			slog.Error("Cannot derive the Bluefin netboot command line; serving the UEFI HTTP Boot and BIOS fallback menus", "mac", mac, "version", m.Version, "error", cmdlineErr)
+		}
+	}
+	switch {
+	case secureBoot:
 		vars.BluefinReason = reasonSecureBoot
-		return
-	}
-	m, ok := versions.CurrentBluefinManifest()
-	if !ok {
+	case !haveRelease:
 		vars.BluefinReason = reasonNoRelease
-		return
-	}
-	cmdline, err := bluefinChainCmdline(mac, m)
-	if err != nil {
-		slog.Error("Cannot chainload the Bluefin netboot UKI from iPXE; serving the UEFI HTTP Boot menu", "mac", mac, "version", m.Version, "error", err)
+	case cmdlineErr != nil:
 		vars.BluefinReason = reasonNoCmdline
-		return
+	default:
+		vars.BluefinVersion = m.Version
+		vars.BluefinChainURL = bluefinChainURL(mac, m.Version)
+		vars.BluefinChainCmdline = cmdline
 	}
-	vars.BluefinVersion = m.Version
-	vars.BluefinChainURL = bluefinChainURL(mac, m.Version)
-	vars.BluefinChainCmdline = cmdline
+	vars.BluefinBIOS = bluefinBIOSVars(mac, host, m, haveRelease, cmdline, cmdlineErr)
+}
+
+var reasonNoBIOSKernel = []string{"the current release's netboot UKI has no .linux or .initrd section (see Booty's log)."}
+
+// bluefinBIOSVars fills the BIOS branch: release m's .linux booted with
+// cmdline, its .ucode (when present) and .initrd as initrds.
+func bluefinBIOSVars(mac string, host *hardware.Host, m versions.BluefinManifest, haveRelease bool, cmdline string, cmdlineErr error) tftp.BluefinBIOS {
+	b := tftp.BluefinBIOS{InstallPending: host.DoInstall, InstallDisk: host.InstallDisk, PreferDisk: host.Installed()}
+	switch {
+	case !haveRelease:
+		b.Reason = reasonNoRelease
+		return b
+	case cmdlineErr != nil:
+		b.Reason = reasonNoCmdline
+		return b
+	}
+	uki, _, err := cachedUKI(m)
+	if err != nil {
+		slog.Error("Bluefin netboot UKI unreadable", "mac", mac, "version", m.Version, "error", err)
+		b.Reason = reasonNoCmdline
+		return b
+	}
+	_, hasLinux := uki.sections[".linux"]
+	_, hasInitrd := uki.sections[".initrd"]
+	if !hasLinux || !hasInitrd {
+		slog.Error("Bluefin netboot UKI cannot be booted in BIOS mode", "mac", mac, "version", m.Version, "linux", hasLinux, "initrd", hasInitrd)
+		b.Reason = reasonNoBIOSKernel
+		return b
+	}
+	b.Version = m.Version
+	b.Cmdline = cmdline
+	b.KernelURL = bluefinSectionURL(mac, m.Version, ".linux")
+	if _, ok := uki.sections[".ucode"]; ok {
+		b.InitrdURLs = append(b.InitrdURLs, bluefinSectionURL(mac, m.Version, ".ucode"))
+	}
+	b.InitrdURLs = append(b.InitrdURLs, bluefinSectionURL(mac, m.Version, ".initrd"))
+	return b
 }
 
 var errNoUKI = errors.New("not a netboot UKI of the current or previous release")

@@ -78,7 +78,9 @@ func BluefinHTTPBoot(hw net.HardwareAddr) (string, bool) {
 
 // handleBluefinRequest serves /bluefin/<mac>/<name> to registered Bluefin
 // hosts: bluefin-server-netboot_<version>.efi is that release's netboot UKI
-// (current or previous), any other *.efi the current one, bluefin-server_<version>.raw
+// (current or previous), any other *.efi the current one,
+// bluefin-server-netboot_<version>.{linux,initrd,ucode} that UKI's section
+// payload (the BIOS path), bluefin-server_<version>.raw
 // the DDI of the current or previous release, SHA256SUMS(.gpg) the current
 // release's, and bluefin-node.ign the host's Ignition config. It is routed
 // before the mux (firmware never follows the mux's clean-path redirects)
@@ -105,6 +107,9 @@ func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.EqualFold(path.Ext(name), ".efi"):
 		serveBluefinUKI(w, r, mac, name)
+		return
+	case isBluefinSectionName(name):
+		serveBluefinUKISection(w, r, mac, name)
 		return
 	case name == bluefinNodeConfig:
 		serveBluefinNodeConfig(w, r, mac)
@@ -159,24 +164,11 @@ func bluefinHost(r *http.Request, mac string) (*hardware.Host, bool) {
 	return host, ok && host.OS == "bluefin"
 }
 
-// serveBluefinUKI answers the firmware's fetch of the netboot UKI. An
-// installed host that is not being reinstalled gets 404 so the firmware
-// moves on to the disk. A real boot records the host's IP and boot time,
-// finishes a pending install (see bluefinInstallDone) and stamps
-// installServedAt when this boot will install.
+// serveBluefinUKI answers the firmware's (or iPXE's) fetch of the netboot
+// UKI, the start of an EFI netboot.
 func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
-	host, ok := bluefinHost(r, mac)
+	host, now, ok := bluefinBootHost(w, r, mac, hardware.PlatformEFI)
 	if !ok {
-		writeError(w, http.StatusNotFound, "host not registered as bluefin")
-		return
-	}
-	now := time.Now()
-	if !isPreview(r) {
-		host = bluefinInstallDone(mac, host, now)
-	}
-	if host.Installed() && !host.DoInstall {
-		slog.Info("Installed Bluefin host asked for the netboot UKI; answering 404 so it boots its disk", "mac", mac)
-		writeError(w, http.StatusNotFound, "host is installed; set doInstall to reinstall it")
 		return
 	}
 	link, file, err := bluefinUKIFor(name)
@@ -184,16 +176,57 @@ func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if !isPreview(r) {
-		if r.Method == http.MethodGet {
-			if err := hardware.MarkBooted(mac, remoteIP(r), now); err != nil {
-				slog.Error("Could not record boot", "mac", mac, "error", err)
-			}
-		}
-		recordInstallServed(mac, host, now)
-		slog.Info("Serving Bluefin netboot UKI", "mac", mac, "file", file, "method", r.Method, "doInstall", host.DoInstall)
-	}
+	recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, file, now)
 	serveBluefinFile(w, r, link, file, efiContentType)
+}
+
+// bluefinBootHost is the shared start of every netboot fetch (the EFI UKI,
+// the BIOS kernel): it resolves the host (auto-registering under
+// --autoRegister=bluefin), finishes a pending install on EFI (see
+// bluefinInstallDone), and answers 404 to an installed host that is not
+// being reinstalled, so the firmware moves on to the disk.
+func bluefinBootHost(w http.ResponseWriter, r *http.Request, mac, platform string) (*hardware.Host, time.Time, bool) {
+	now := time.Now()
+	host, ok := bluefinHost(r, mac)
+	if !ok {
+		writeError(w, http.StatusNotFound, "host not registered as bluefin")
+		return nil, now, false
+	}
+	if !isPreview(r) && platform == hardware.PlatformEFI {
+		host = bluefinInstallDone(mac, host, now)
+	}
+	if host.Installed() && !host.DoInstall {
+		slog.Info("Installed Bluefin host asked to netboot; answering 404 so it boots its disk", "mac", mac, "platform", platform)
+		writeError(w, http.StatusNotFound, "host is installed; set doInstall to reinstall it")
+		return nil, now, false
+	}
+	return host, now, true
+}
+
+// recordBluefinNetboot records a real netboot: a GET stamps booted, the
+// IP and the platform; an EFI boot of a host with doInstall stamps
+// installServedAt. A BIOS boot never installs, so it stamps nothing that
+// could later count as a finished install.
+func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, platform, file string, now time.Time) {
+	if isPreview(r) {
+		return
+	}
+	if r.Method == http.MethodGet {
+		ip, stamp := remoteIP(r), now.UTC().Format(time.RFC3339)
+		if _, err := hardware.Update(mac, func(h *hardware.Host) {
+			h.Booted, h.NetbootPlatform = stamp, platform
+			if ip != "" {
+				h.IP = ip
+			}
+		}); err != nil {
+			slog.Error("Could not record boot", "mac", mac, "error", err)
+		}
+		host.NetbootPlatform = platform
+	}
+	if platform == hardware.PlatformEFI {
+		recordInstallServed(mac, host, now)
+	}
+	slog.Info("Serving Bluefin netboot", "mac", mac, "platform", platform, "file", file, "method", r.Method, "doInstall", host.DoInstall)
 }
 
 // bluefinInstallDone implements --doInstallClearOn=next-boot for Bluefin:
@@ -250,6 +283,12 @@ func markBluefinInstalled(mac, trigger string) (*hardware.Host, error) {
 	return updated, nil
 }
 
+// bluefinInstallsNow reports whether host's node config carries the install
+// unit: doInstall with an installDisk, on an EFI netboot.
+func bluefinInstallsNow(host *hardware.Host) bool {
+	return host.DoInstall && host.InstallDisk != "" && !host.NetbootsBIOS()
+}
+
 // serveBluefinNodeConfig answers the initrd's HEAD and GET of
 // bluefin-node.ign with the host's rendered Ignition config, 404 when there
 // is nothing to configure. Only a real GET records the boot and, under
@@ -280,7 +319,7 @@ func serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) 
 		if err := hardware.MarkBooted(mac, remoteIP(r), time.Now()); err != nil {
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
-		if host.DoInstall && host.InstallDisk != "" && viper.GetString(config.DoInstallClearOn) == config.ClearOnIgnition {
+		if bluefinInstallsNow(host) && viper.GetString(config.DoInstallClearOn) == config.ClearOnIgnition {
 			_, _ = markBluefinInstalled(mac, "ignition fetch")
 		}
 		slog.Info("Serving Bluefin node Ignition", "mac", mac, "bytes", len(body))
@@ -375,6 +414,8 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 	}
 	if host.DoInstall {
 		switch {
+		case host.NetbootsBIOS():
+			slog.Warn("doInstall set but the host netbooted in legacy BIOS mode; installing needs UEFI, booting diskless without installing", "mac", mac)
 		case host.InstallDisk == "":
 			slog.Warn("doInstall set without installDisk; booting diskless without installing", "mac", mac)
 		case !haveRelease:

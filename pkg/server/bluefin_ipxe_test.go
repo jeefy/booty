@@ -99,6 +99,7 @@ func TestUKICmdline(t *testing.T) {
 		if _, _, err := rewriteBootOriginPull(got, "http://h/bluefin/m"); err != nil {
 			t.Fatalf("%s: %v", real, err)
 		}
+		checkRealUKISections(t, real)
 	}
 }
 
@@ -302,5 +303,46 @@ func TestBluefinVersionedUKIRoute(t *testing.T) {
 		if r.status != 200 || r.body != want {
 			t.Errorf("%s: %+v", name, r)
 		}
+	}
+}
+
+// checkRealUKISections checks what the BIOS path serves from a real UKI:
+// .linux is a bzImage and .initrd a compressed stream or cpio archive, both
+// within the file.
+func checkRealUKISections(t *testing.T, path string) {
+	t.Helper()
+	u, err := readUKI(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	read := func(section string, off, n int64) []byte {
+		p, ok := u.sections[section]
+		if !ok || p.size < off+n {
+			t.Fatalf("%s: %+v", section, p)
+		}
+		b := make([]byte, n)
+		if _, err := f.ReadAt(b, p.offset+off); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for name, p := range u.sections {
+		t.Logf("%-9s offset %#x payload %d", name, p.offset, p.size)
+	}
+	if hdr := read(".linux", 0x202, 4); string(hdr) != "HdrS" {
+		t.Fatalf(".linux is not a bzImage: %q at 0x202", hdr)
+	}
+	magic := read(".initrd", 0, 6)
+	known := false
+	for _, m := range [][]byte{{0x28, 0xb5, 0x2f, 0xfd}, {0x1f, 0x8b}, {0xfd, '7', 'z', 'X', 'Z'}, []byte("070701"), {0x02, 0x21, 0x4c, 0x18}} {
+		known = known || bytes.HasPrefix(magic, m)
+	}
+	if !known {
+		t.Fatalf(".initrd starts with % x, not zstd/gzip/xz/lz4/cpio", magic)
 	}
 }
