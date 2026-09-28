@@ -369,8 +369,8 @@ func bluefinExtensions(host *hardware.Host) []string {
 // renderBluefinNode builds the Ignition config (spec 3.6.0) a Bluefin host
 // boots with. Diskless nodes run Ignition on every boot on a fresh tmpfs
 // root, so everything is idempotent: files overwrite, the state disk is
-// created once and never wiped. mint says whether a k0s worker token may
-// be minted (false for previews).
+// created once and never wiped. mint says whether a k0s worker token or a
+// kubeadm join token may be minted (false for previews).
 func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, mint bool) (ign36.Config, error) {
 	var cfg ign36.Config
 	cfg.Ignition.Version = ign36.MaxVersion.String()
@@ -411,6 +411,9 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 			slog.Error("k0s node unavailable; serving the Bluefin node config without it", "mac", mac, "role", cluster.RoleOf(host), "error", err)
 		}
 		addK0sNode(&cfg, node)
+	}
+	if bluefinJoinsKubeadm(mac, host) {
+		addBluefinKubeadmWorker(ctx, &cfg, mac, host, release, haveRelease, mint)
 	}
 	if host.DoInstall {
 		switch {
