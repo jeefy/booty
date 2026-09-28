@@ -350,6 +350,8 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 				root.SSHAuthorizedKeys = append(root.SSHAuthorizedKeys, ign36.SSHAuthorizedKey(k))
 			}
 			cfg.Passwd.Users = append(cfg.Passwd.Users, root)
+			// Bluefin ships sshd disabled by preset; keys are useless without it.
+			cfg.Systemd.Units = append(cfg.Systemd.Units, ign36.Unit{Name: "sshd.service", Enabled: boolPtr(true)})
 		}
 	}
 	if host.StateDisk != "" {

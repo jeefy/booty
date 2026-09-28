@@ -414,8 +414,11 @@ func TestBluefinNodeIgnitionBasics(t *testing.T) {
 	if len(cfg.Passwd.Users) != 1 || cfg.Passwd.Users[0].Name != "root" || len(cfg.Passwd.Users[0].SSHAuthorizedKeys) != 1 || cfg.Passwd.Users[0].SSHAuthorizedKeys[0] != "ssh-ed25519 AAAA... dogfood" {
 		t.Fatalf("root keys: %+v", cfg.Passwd.Users)
 	}
-	if len(cfg.Storage.Disks) != 0 || len(cfg.Storage.Filesystems) != 0 || len(units) != 0 || len(files) != 1 {
-		t.Fatalf("a plain diskless host touches no disk and adds no units: %+v %v", cfg.Storage, units)
+	if u, ok := units["sshd.service"]; !ok || u.Enabled == nil || !*u.Enabled || u.Contents != nil {
+		t.Fatalf("SSH keys enable the image's sshd.service: %v", units)
+	}
+	if len(cfg.Storage.Disks) != 0 || len(cfg.Storage.Filesystems) != 0 || len(units) != 1 || len(files) != 1 {
+		t.Fatalf("a plain diskless host touches no disk and adds only sshd: %+v %v", cfg.Storage, units)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bluefin", "current")); err != nil {
 		t.Fatal(err)
@@ -438,8 +441,8 @@ func TestBluefinNodeIgnitionBasics(t *testing.T) {
 		t.Fatalf("HEAD too: %d", resp.StatusCode)
 	}
 	viper.Set(config.Builtin, "hostname")
-	if _, files, _ := bluefinNode(t, srv.URL, bluefinMAC, ""); len(files) != 1 {
-		t.Fatalf("--builtin=hostname drops the keys: %v", files)
+	if cfg, files, units := bluefinNode(t, srv.URL, bluefinMAC, ""); len(files) != 1 || len(cfg.Passwd.Users) != 0 || len(units) != 0 {
+		t.Fatalf("--builtin=hostname drops the keys and sshd: %v %v", files, units)
 	}
 	for _, p := range []string{"/bluefin/aa-bb-cc-dd-ee-99/bluefin-node.ign", "/bluefin/" + bluefinDashMAC + "/other.ign"} {
 		if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
@@ -468,6 +471,10 @@ func TestBluefinNodeIgnitionStateDiskMatchesUpstreamFixture(t *testing.T) {
 		t.Fatalf("the state filesystem names path /var so Ignition writes /var files onto it: %+v", got.Storage.Filesystems)
 	}
 	got.Storage.Filesystems[0].Path = nil
+	if len(got.Systemd.Units) == 0 || got.Systemd.Units[0].Name != "sshd.service" {
+		t.Fatalf("SSH keys enable sshd ahead of the fixture's units: %+v", got.Systemd.Units)
+	}
+	got.Systemd.Units = got.Systemd.Units[1:]
 	gotJSON, _ := json.Marshal(got)
 	wantJSON, _ := json.Marshal(want)
 	if string(gotJSON) != string(wantJSON) {
