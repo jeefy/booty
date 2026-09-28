@@ -174,7 +174,7 @@ If Booty listens on a non-standard TFTP port (`--tftpPort`), UEFI firmware canno
 4. The OS fetches `http://<serverIP>/ignition.json?mac=<mac>`. For a registered host that is a tiny wrapper whose `ignition.config.merge` points at two children: Booty's builtin fragment (`/ignition/builtin.json`) and the host's Butane template rendered to Ignition (`/ignition/user.json`; variables: `.Hostname`, `.ServerIP`, `.JoinString`, `.OSTreeImage`). Ignition fetches and merges them itself, later entries winning, so your template overrides the builtin (and the `--profile` appended to it). The wrapper fetch records `booted`/`ip` for the host and, by default, clears a pending `doInstall`; the child fetches have no side effects. With `--doInstallClearOn=booted` the flag instead stays set until the installed system calls `POST http://<serverIP>/booted?mac=<mac>` (the builtin `booty-booted.service` does exactly that), so a failed install keeps the host in install mode. `--doInstallClearOn=next-boot` is meant for Bluefin Server; see [Installing to disk](#installing-to-disk). Add `&preview=1` (the UI does) to look at a config without recording a boot. Unregistered hosts receive an Ignition config whose only unit reboots the machine (the "brig").
 5. Kernel/initrd/rootfs are served from `/data/`. Flatcar artifacts live in `data/flatcar/<version>/` behind symlinks at the old paths, so the kernel and initrd always come from the same release and updates are atomic. Bluefin Server releases live in `data/bluefin/<version>/` behind `bluefin/current` and `bluefin/previous` symlinks.
 
-Bluefin Server hosts do not go through iPXE at all: they boot over UEFI HTTP Boot straight into a signed UKI and fetch their own Ignition config from `/bluefin/<mac>/`; see [How a Bluefin host boots](#how-a-bluefin-host-boots).
+Bluefin Server hosts boot a signed UKI instead and fetch their own Ignition config from `/bluefin/<mac>/`: straight from the firmware over UEFI HTTP Boot, or, with Secure Boot off, chainloaded by `/booty.ipxe` in step 3; see [How a Bluefin host boots](#how-a-bluefin-host-boots) and [Chainloading from iPXE](#chainloading-from-ipxe-secure-boot-off).
 
 `/booty.ipxe` and `/ignition.json` fall back to an ARP lookup of the requesting IP when called without `?mac=`; the shipped scripts always pass it.
 
@@ -412,7 +412,7 @@ The template editor behind it:
 
 [Bluefin Server](https://github.com/projectbluefin/server) is an image-based server OS composed from freedesktop-sdk: a read-only erofs `/usr` verified by dm-verity, pinned by a **signed UKI**, with Kubernetes, ZFS and friends as opt-in `systemd-sysext` images. It boots **diskless by default**: the firmware fetches the signed netboot UKI over UEFI HTTP Boot, the UKI's initrd downloads the OS disk image (DDI) from the same directory into RAM, verifies it and runs from a tmpfs root. Booty serves that directory per host, answers the firmware over ProxyDHCP, hands every host its own Ignition config and can install a host to disk.
 
-**UEFI HTTP Boot only.** The UKI's kernel command line is locked by its signature and names the DDI it downloads relative to the URL it was booted from (`rd.systemd.pull=...,bootorigin:rootdisk:bluefin-server_<version>.raw`). iPXE cannot pass that origin on, and Secure Boot firmware rejects Booty's unsigned iPXE anyway, so a Bluefin host that PXE-boots into iPXE gets a menu telling you to switch the machine to *UEFI HTTP Boot (IPv4)* in its firmware setup (with *Boot from disk* / *iPXE shell* / *Reboot*; BIOS iPXE is told Bluefin needs UEFI). The UKI is signed, so this works with Secure Boot on, provided the firmware trusts the image's keys (the release's ESP image enrolls them; see [projectbluefin/server](https://github.com/projectbluefin/server)).
+**UEFI only: HTTP Boot, or PXE with Secure Boot off.** The UKI's kernel command line is embedded and signed, and names the DDI it downloads relative to the URL it was booted from (`rd.systemd.pull=...,bootorigin:rootdisk:bluefin-server_<version>.raw`). UEFI HTTP Boot provides that origin and works with Secure Boot on, provided the firmware trusts the image's keys (the release's ESP image enrolls them; see [projectbluefin/server](https://github.com/projectbluefin/server)). Firmware without HTTP Boot can [chainload the UKI from iPXE](#chainloading-from-ipxe-secure-boot-off) as long as Secure Boot is off. Either way the machine must boot the network in **UEFI** mode: switch legacy/CSM boot off (BIOS iPXE is told Bluefin needs UEFI).
 
 ### Releases
 
@@ -427,11 +427,26 @@ Everything lands in `data/bluefin/<version>/` with a `manifest.json` (`version`,
 ### How a Bluefin host boots
 
 1. The firmware broadcasts a DHCPDISCOVER with option 60 `HTTPClient` and architecture `0x0010` (x86-64 HTTP). With `--proxyDHCP`, Booty answers a registered `os: bluefin` host (or any unknown MAC under `--autoRegister=bluefin`) with a proxy OFFER: option 60 `HTTPClient` and the boot file URL `http://<serverIP>:<port>/bluefin/<mac>/bluefin-server-netboot.efi` (MAC with dashes). This works with or without `--secureBoot`; all other HTTP Boot clients keep the [Secure Boot](#secure-boot-uefi-http-boot) behaviour. Without `--proxyDHCP`, give each Bluefin host that URL as its HTTP Boot file in your DHCP server.
-2. `GET /bluefin/<mac>/<anything>.efi` returns the current netboot UKI (`application/efi`, `HEAD` answered like `GET`). The fetch records the host's `booted`/`ip` for the fleet view.
+2. `GET /bluefin/<mac>/<anything>.efi` returns the current netboot UKI (`bluefin-server-netboot_<version>.efi` returns that release's, current or previous, and 404 for any other version) (`application/efi`, `HEAD` answered like `GET`). The fetch records the host's `booted`/`ip` for the fleet view.
 3. The initrd fetches `bluefin-server_<version>.raw`, `SHA256SUMS` and `SHA256SUMS.gpg` from the same directory: `/bluefin/<mac>/` serves the DDI of the current or the previous release (404 for any other version) and the current release's checksum files.
 4. With no Ignition credential set, the initrd `HEAD`s `/bluefin/<mac>/bluefin-node.ign` and, if it exists, runs Ignition with it (below). 404 means nothing to configure.
 
 Every route under `/bluefin/<mac>/` answers only registered Bluefin hosts (404 otherwise, the MAC may be written with colons or dashes); `?preview=1` shows a file without recording anything.
+
+### Chainloading from iPXE (Secure Boot off)
+
+Older UEFI firmware has PXE but no HTTP Boot (an HP EliteDesk 800 G1, for one). Such a machine UEFI-PXE-boots into Booty's `ipxe.efi` as described in [Booting](#booting-dhcp-and-the-ipxe-bootloaders) (or through [ProxyDHCP](#zero-touch-dhcp-proxydhcp)), and `/booty.ipxe` then chainloads the netboot UKI itself. Two things make that work only with **Secure Boot off**: iPXE hands the UKI a command line, which systemd-stub uses *instead of* the embedded one when Secure Boot is off (and ignores when it is on), and iPXE sets no boot origin, so `bootorigin` pulls would be skipped. Booty therefore passes the UKI's own command line with the pull made explicit:
+
+```
+chain http://<serverIP>:<port>/bluefin/<mac>/bluefin-server-netboot_<version>.efi usrhash=... root=tmpfs \
+  rd.systemd.pull=raw,machine,verify=signature,blockdev:rootdisk:http://<serverIP>:<port>/bluefin/<mac>/bluefin-server_<version>.raw ... console=ttyS0,115200
+```
+
+Booty reads the current release's UKI `.cmdline` PE section once per release, replaces the single `rd.systemd.pull=<options>,bootorigin:rootdisk:<name>` argument with `rd.systemd.pull=<options>:rootdisk:http://<serverIP>:<port>/bluefin/<mac>/<name>` (every other option, `verify=signature` included, and every other argument unchanged; `<mac>` with dashes) and names the UKI by version, so the UKI iPXE fetches always matches the command line even when a new release lands in between. The initrd then pulls the DDI, `SHA256SUMS` and `SHA256SUMS.gpg` from that directory and finds `bluefin-node.ign` next to them, exactly as with HTTP Boot. The menu boots this after 5 s (*Boot from disk* / *iPXE shell* / *Reboot* stay available); a failed chain falls back to the disk after a 5 s prompt. The UKI fetch does the boot and install bookkeeping, the menu itself records nothing.
+
+Booty falls back to the *switch to UEFI HTTP Boot* menu, which says why, when the host's last boot came through Secure Boot (the `secureBoot` host flag), no release is cached, or the UKI's command line is unusable: no `.cmdline` section, not exactly one `bootorigin` pull, a DDI other than the release's, or characters iPXE would expand (`$`, quotes, backslashes) -- the last three are logged as errors. A host in `mode: installed` without `doInstall` gets a script that just boots its disk.
+
+With Secure Boot off nothing verifies the UKI itself; `/usr` is still checked against the `usrhash=` Booty passes (dm-verity), and the DDI against the release's signed `SHA256SUMS`.
 
 ### The node's Ignition config
 
