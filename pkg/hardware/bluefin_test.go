@@ -50,6 +50,9 @@ func TestValidateBluefinFields(t *testing.T) {
 		{name: "default os with extensions", host: Host{Extensions: []string{"zfs"}}, err: ErrBluefinOnly},
 		{name: "coreos with mode", host: Host{OS: "coreos", Mode: ModeDiskless}, err: ErrBluefinOnly},
 		{name: "flatcar untouched", host: Host{OS: "flatcar", InstallDisk: "/dev/sda"}},
+		{name: "bluefin bios platform", host: Host{OS: "bluefin", NetbootPlatform: PlatformPCBIOS}},
+		{name: "bad platform", host: Host{OS: "bluefin", NetbootPlatform: "arm"}, err: ErrInvalidMode},
+		{name: "flatcar platform is cleared", host: Host{OS: "flatcar", NetbootPlatform: PlatformEFI}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,6 +76,9 @@ func TestHostInstalledAndHasExtension(t *testing.T) {
 	var none *Host
 	if none.Installed() || none.HasExtension("k0s") {
 		t.Fatal("nil host must report false")
+	}
+	if !(&Host{NetbootPlatform: PlatformPCBIOS}).NetbootsBIOS() || (&Host{NetbootPlatform: PlatformEFI}).NetbootsBIOS() || (&Host{}).NetbootsBIOS() {
+		t.Fatal("NetbootsBIOS")
 	}
 	if (&Host{OS: "bluefin"}).Installed() {
 		t.Fatal("empty mode is diskless")

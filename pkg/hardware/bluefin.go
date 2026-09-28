@@ -13,6 +13,12 @@ const (
 	ModeInstalled = "installed"
 )
 
+// Firmware a Bluefin host netbooted through, recorded in NetbootPlatform.
+const (
+	PlatformEFI    = "efi"
+	PlatformPCBIOS = "pcbios"
+)
+
 // Bluefin Server opt-in sysexts a host can list in Extensions.
 const (
 	ExtensionZFS         = "zfs"
@@ -79,7 +85,13 @@ func ValidateBluefinFields(h *Host) error {
 		return err
 	}
 	h.Extensions = exts
+	switch h.NetbootPlatform {
+	case "", PlatformEFI, PlatformPCBIOS:
+	default:
+		return fmt.Errorf("%w %q: netbootPlatform must be empty, %q or %q", ErrInvalidMode, h.NetbootPlatform, PlatformEFI, PlatformPCBIOS)
+	}
 	if h.OS != "bluefin" {
+		h.NetbootPlatform = ""
 		for field, set := range map[string]bool{"stateDisk": h.StateDisk != "", "extensions": len(h.Extensions) > 0, "mode": h.Mode != ""} {
 			if set {
 				return fmt.Errorf("%s: %w", field, ErrBluefinOnly)
@@ -103,6 +115,12 @@ func ValidateBluefinFields(h *Host) error {
 // installed disk.
 func (h *Host) Installed() bool {
 	return h != nil && h.Mode == ModeInstalled
+}
+
+// NetbootsBIOS reports whether h's last Bluefin netboot was a legacy BIOS
+// one, which cannot install (that needs UEFI and systemd-boot).
+func (h *Host) NetbootsBIOS() bool {
+	return h != nil && h.NetbootPlatform == PlatformPCBIOS
 }
 
 // HasExtension reports whether h opted into the sysext name.

@@ -36,6 +36,9 @@ type Host struct {
 	StateDisk  string   `json:"stateDisk,omitempty"`
 	Extensions []string `json:"extensions,omitempty"`
 	Mode       string   `json:"mode,omitempty"`
+	// NetbootPlatform is the firmware the last Bluefin netboot came
+	// through: PlatformEFI (UKI) or PlatformPCBIOS (kernel and initrd).
+	NetbootPlatform string `json:"netbootPlatform,omitempty"`
 	// SecureBoot records that the host's last /booty.ipxe fetch arrived
 	// through the Secure Boot path: the signed iPXE that only UEFI HTTP Boot
 	// hands out (its autoexec adds sb=1). It is not a firmware attestation;
