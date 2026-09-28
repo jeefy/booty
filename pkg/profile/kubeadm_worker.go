@@ -305,9 +305,9 @@ UNITS="` + o.KubeletUnitsURL + `"
 curl -fsSL "${UNITS}/kubelet/kubelet.service" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service
 mkdir -p /etc/systemd/system/kubelet.service.d
 curl -fsSL "${UNITS}/kubeadm/10-kubeadm.conf" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --fail-swap-on=false" > /etc/default/kubelet
+echo "KUBELET_EXTRA_ARGS=` + KubeletExtraArgs + `" > /etc/default/kubelet
 mkdir -p /etc/sysconfig
-echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --fail-swap-on=false" > /etc/sysconfig/kubelet
+echo "KUBELET_EXTRA_ARGS=` + KubeletExtraArgs + `" > /etc/sysconfig/kubelet
 systemctl daemon-reload
 systemctl enable kubelet && systemctl start kubelet
 echo "kubelet started"
