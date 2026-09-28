@@ -77,7 +77,8 @@ func BluefinHTTPBoot(hw net.HardwareAddr) (string, bool) {
 }
 
 // handleBluefinRequest serves /bluefin/<mac>/<name> to registered Bluefin
-// hosts: any *.efi is the current netboot UKI, bluefin-server_<version>.raw
+// hosts: bluefin-server-netboot_<version>.efi is that release's netboot UKI
+// (current or previous), any other *.efi the current one, bluefin-server_<version>.raw
 // the DDI of the current or previous release, SHA256SUMS(.gpg) the current
 // release's, and bluefin-node.ign the host's Ignition config. It is routed
 // before the mux (firmware never follows the mux's clean-path redirects)
@@ -103,7 +104,7 @@ func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case strings.EqualFold(path.Ext(name), ".efi"):
-		serveBluefinUKI(w, r, mac)
+		serveBluefinUKI(w, r, mac, name)
 		return
 	case name == bluefinNodeConfig:
 		serveBluefinNodeConfig(w, r, mac)
@@ -163,7 +164,7 @@ func bluefinHost(r *http.Request, mac string) (*hardware.Host, bool) {
 // moves on to the disk. A real boot records the host's IP and boot time,
 // finishes a pending install (see bluefinInstallDone) and stamps
 // installServedAt when this boot will install.
-func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac string) {
+func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
 	host, ok := bluefinHost(r, mac)
 	if !ok {
 		writeError(w, http.StatusNotFound, "host not registered as bluefin")
@@ -178,9 +179,9 @@ func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac string) {
 		writeError(w, http.StatusNotFound, "host is installed; set doInstall to reinstall it")
 		return
 	}
-	m, ok := versions.CurrentBluefinManifest()
-	if !ok {
-		writeError(w, http.StatusNotFound, "no Bluefin release cached yet")
+	link, file, err := bluefinUKIFor(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	if !isPreview(r) {
@@ -190,9 +191,9 @@ func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac string) {
 			}
 		}
 		recordInstallServed(mac, host, now)
-		slog.Info("Serving Bluefin netboot UKI", "mac", mac, "version", m.Version, "method", r.Method, "doInstall", host.DoInstall)
+		slog.Info("Serving Bluefin netboot UKI", "mac", mac, "file", file, "method", r.Method, "doInstall", host.DoInstall)
 	}
-	serveBluefinFile(w, r, config.BluefinCurrentLink, m.NetbootUKI, efiContentType)
+	serveBluefinFile(w, r, link, file, efiContentType)
 }
 
 // bluefinInstallDone implements --doInstallClearOn=next-boot for Bluefin:

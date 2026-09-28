@@ -170,7 +170,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	case tftp.SecureBootRefused(os, vars):
 		slog.Warn("Secure Boot host cannot boot its OS; serving the refusal menu", "mac", mac, "os", os, "trustedFlatcar", vars.SecureBootTrustedFlatcar, "doInstall", host.DoInstall)
 	case os == "bluefin":
-		vars.BluefinBootURL = bluefinBootURL(mac)
+		bluefinIPXEVars(mac, host, secureBoot || host.SecureBoot, &vars)
 	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
