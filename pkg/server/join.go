@@ -59,38 +59,49 @@ func resolveJoinString(ctx context.Context, w http.ResponseWriter, mac string, h
 		}
 		return join
 	}
+	if viper.GetString(config.KubeadmJoin) == config.KubeadmJoinAuto && !profile.AppliesTo(host.OS) {
+		return ""
+	}
+	join, ok := kubeadmJoinString(ctx, mac, host, mint)
+	if !ok {
+		w.Header().Set(WarningHeader, joinUnavailableWarning)
+	}
+	return join
+}
+
+// kubeadmJoinString is the kubeadm join string of a worker: static
+// (--joinStringFile/--joinString), or minted per boot under
+// --kubeadmJoin=auto (the per-MAC cache only when mint is false), with the
+// managed control plane's pre-generated one as the fallback. ok is false
+// when Booty could not provide one it should have; the failure is logged.
+func kubeadmJoinString(ctx context.Context, mac string, host *hardware.Host, mint bool) (string, bool) {
 	if viper.GetString(config.KubeadmJoin) != config.KubeadmJoinAuto {
 		join, err := config.StaticJoinString()
 		if err != nil {
 			slog.Error("Static kubeadm join string unavailable", "mac", mac, "error", err)
-			w.Header().Set(WarningHeader, joinUnavailableWarning)
 		}
 		if join == "" {
 			join = managedJoinString(mac)
 		}
-		return join
-	}
-	if !profile.AppliesTo(host.OS) {
-		return ""
+		return join, err == nil
 	}
 	if !mint {
 		join, ok := joinMinter.Cached(mac)
 		if !ok {
 			join = managedJoinString(mac)
 		}
-		return join
+		return join, true
 	}
 	join, err := joinMinter.JoinString(ctx, mac, host.Hostname)
 	if err != nil {
 		if pre := managedJoinString(mac); pre != "" {
 			slog.Debug("Minting a kubeadm join token failed; serving the pre-generated join string", "mac", mac, "error", err)
-			return pre
+			return pre, true
 		}
 		slog.Error("Could not mint kubeadm join token; serving empty JOIN_STRING", "mac", mac, "hostname", host.Hostname, "error", err)
-		w.Header().Set(WarningHeader, joinUnavailableWarning)
-		return ""
+		return "", false
 	}
-	return join
+	return join, true
 }
 
 // managedJoinString is the pre-generated join string of a managed kubeadm
