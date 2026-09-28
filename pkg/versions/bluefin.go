@@ -44,6 +44,7 @@ const (
 	BluefinSysextZFS         = "zfs"
 	BluefinSysextKubeStellar = "kubestellar"
 	BluefinSysextK0s         = "k0s"
+	BluefinSysextKubeadm     = "kubeadm"
 )
 
 // Overridable in tests to point at an httptest server.
@@ -249,7 +250,8 @@ func (s bluefinSysextSource) raw() string { return strings.TrimSuffix(s.asset, b
 // selectBluefinArtifacts resolves the netboot UKI and DDI of version (both
 // must be listed in SHA256SUMS: Booty does not serve unverified images)
 // and the optional sysexts: zfs_<version>.raw.zst,
-// kubestellar_<version>.raw.zst and the single k0s-*.raw.zst.
+// kubestellar_<version>.raw.zst, kubeadm_<version>.raw.zst and the single
+// k0s-*.raw.zst.
 func selectBluefinArtifacts(version string, sums sha256Sums) (BluefinManifest, []bluefinSysextSource, error) {
 	m := BluefinManifest{
 		Version:    version,
@@ -265,7 +267,7 @@ func selectBluefinArtifacts(version string, sums sha256Sums) (BluefinManifest, [
 		m.SHA256Sums[f] = hash
 	}
 	var sysexts []bluefinSysextSource
-	for _, name := range []string{BluefinSysextKubeStellar, BluefinSysextZFS} {
+	for _, name := range []string{BluefinSysextKubeadm, BluefinSysextKubeStellar, BluefinSysextZFS} {
 		asset := bluefinVersionedSysext(name, version)
 		if hash, ok := sums.hashes[asset]; ok {
 			sysexts = append(sysexts, bluefinSysextSource{name: name, asset: asset, sha256: hash})

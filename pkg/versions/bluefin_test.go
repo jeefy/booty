@@ -28,7 +28,7 @@ const releasesFixture = `[
  {"tag_name":"v20260927.123","draft":false,"prerelease":false,"assets":[
    {"name":"bluefin-server-20260927.123.efi"},{"name":"bluefin-server-netboot_20260927.123.efi"},
    {"name":"bluefin-server-netboot_20260927.123.esp.raw"},{"name":"bluefin-server_20260927.123.raw"},
-   {"name":"k0s-1.36.4-k0s.0.raw.zst"},{"name":"kubestellar_20260927.123.raw.zst"},{"name":"zfs_20260927.123.raw.zst"},
+   {"name":"k0s-1.36.4-k0s.0.raw.zst"},{"name":"kubeadm_20260927.123.raw.zst"},{"name":"kubestellar_20260927.123.raw.zst"},{"name":"zfs_20260927.123.raw.zst"},
    {"name":"SHA256SUMS"},{"name":"SHA256SUMS.gpg"}]},
  {"tag_name":"v20260926.200","draft":false,"prerelease":false,"assets":[
    {"name":"bluefin-server-netboot_20260926.200.efi"},{"name":"bluefin-server_20260926.200.raw"},
@@ -44,6 +44,7 @@ const sumsFixture = `1b394172ba8919c891b7970ad5ebf95ee45ed31be9bbfe2a2ced287d462
 b46f0b26f93335e81b9d332872a31112bf1d6269d301b079029670453a9ed428 *bluefin-server_20260927.123.raw
 57cef665ebb243ab51d647898b785f8080dc507d38dfa23c3f80fc4f88990f9f *bluefin-server-20260927.123.efi
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa *k0s-1.36.4-k0s.0.raw.zst
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee *kubeadm_20260927.123.raw.zst
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *kubestellar_20260927.123.raw.zst
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc *zfs_20260927.123.raw.zst
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd *zfs_20260926.200.raw.zst
@@ -54,7 +55,7 @@ func TestSelectBluefinRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(releases) != 4 || releases[0].Version != "20260927.123" || len(releases[0].Assets) != 9 {
+	if len(releases) != 4 || releases[0].Version != "20260927.123" || len(releases[0].Assets) != 10 {
 		t.Fatalf("parse: %+v", releases)
 	}
 	rel, err := selectBluefinRelease(releases)
@@ -126,11 +127,11 @@ func TestSelectBluefinArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sums.order) != 8 {
+	if len(sums.order) != 9 {
 		t.Fatalf("parse: %+v", sums)
 	}
 
-	t.Run("netboot UKI, DDI and the three sysexts", func(t *testing.T) {
+	t.Run("netboot UKI, DDI and the four sysexts", func(t *testing.T) {
 		m, sysexts, err := selectBluefinArtifacts("20260927.123", sums)
 		if err != nil {
 			t.Fatal(err)
@@ -151,6 +152,7 @@ func TestSelectBluefinArtifacts(t *testing.T) {
 		}
 		want := map[string]string{
 			"k0s":         "k0s-1.36.4-k0s.0.raw.zst k0s-1.36.4-k0s.0.raw a",
+			"kubeadm":     "kubeadm_20260927.123.raw.zst kubeadm_20260927.123.raw e",
 			"kubestellar": "kubestellar_20260927.123.raw.zst kubestellar_20260927.123.raw b",
 			"zfs":         "zfs_20260927.123.raw.zst zfs_20260927.123.raw c",
 		}
@@ -344,6 +346,7 @@ func TestBluefinVersionCheckInstallsRelease(t *testing.T) {
 	rel := newFakeRelease(t, ver, map[string]string{
 		"zfs_" + ver + ".raw.zst":         "ZFS-SYSEXT",
 		"kubestellar_" + ver + ".raw.zst": "KS-SYSEXT",
+		"kubeadm_" + ver + ".raw.zst":     "KUBEADM-SYSEXT",
 		"k0s-1.36.4-k0s.0.raw.zst":        "K0S-SYSEXT",
 	})
 	srv, hits := fakeGitHub(t, releasesJSON(ver), rel)
@@ -367,6 +370,7 @@ func TestBluefinVersionCheckInstallsRelease(t *testing.T) {
 		"SHA256SUMS.gpg":                         rel.sig,
 		"zfs_" + ver + ".raw":                    "ZFS-SYSEXT",
 		"kubestellar_" + ver + ".raw":            "KS-SYSEXT",
+		"kubeadm_" + ver + ".raw":                "KUBEADM-SYSEXT",
 		"k0s-1.36.4-k0s.0.raw":                   "K0S-SYSEXT",
 	} {
 		if got := readText(t, filepath.Join(relDir, name)); got != want {
@@ -385,6 +389,7 @@ func TestBluefinVersionCheckInstallsRelease(t *testing.T) {
 	wantSysexts := map[string]BluefinSysext{
 		"zfs":         {File: "zfs_" + ver + ".raw", Sha256: sha("ZFS-SYSEXT")},
 		"kubestellar": {File: "kubestellar_" + ver + ".raw", Sha256: sha("KS-SYSEXT")},
+		"kubeadm":     {File: "kubeadm_" + ver + ".raw", Sha256: sha("KUBEADM-SYSEXT")},
 		"k0s":         {File: "k0s-1.36.4-k0s.0.raw", Sha256: sha("K0S-SYSEXT")},
 	}
 	if !reflect.DeepEqual(m.Sysexts, wantSysexts) {
