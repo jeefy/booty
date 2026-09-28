@@ -496,7 +496,7 @@ With `--profile=kubeadm-worker` and an external kubeadm cluster (`--controlPlane
   `-- bluefin/                          the Bluefin node's containerd root
   ```
 
-* **Not yet: iSCSI.** The sysext carries no iSCSI userspace (`iscsiadm`, `iscsid`), so CSI drivers that attach iSCSI volumes cannot attach them on Bluefin workers; keep such workloads off these nodes (taint or node affinity).
+* **iSCSI.** From projectbluefin/server 2026.09.2 the base image ships open-iscsi with `iscsid.socket` enabled, so iSCSI CSI drivers attach volumes on Bluefin workers without anything in the node config. Earlier releases have no iSCSI userspace; keep iSCSI workloads off Bluefin workers running them.
 
 ### Installing to disk
 
