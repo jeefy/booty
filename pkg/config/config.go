@@ -65,6 +65,8 @@ const (
 	HostnameTemplate    = "hostnameTemplate"
 	BluefinRepo         = "bluefinRepo"
 	BluefinVersion      = "bluefinVersion"
+	BluefinKeyring      = "bluefinKeyring"
+	BluefinOCI          = "bluefinOCI"
 	GithubToken         = "githubToken"
 	InstallMinDuration  = "installMinDuration"
 	ClusterDistribution = "clusterDistribution"
@@ -237,10 +239,10 @@ func WithDefaultPort(endpoint string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(p))
 }
 
-// Bluefin Server defaults: the GitHub repository whose installer-v* releases
-// carry the PXE kernel, initrd and DDI, and how long after serving the
-// install stanza a re-PXE counts as "the install finished" for
-// --doInstallClearOn=next-boot.
+// Bluefin Server defaults: the GitHub repository whose v<version> releases
+// carry the netboot UKI, the OS DDI and the sysexts, and how long after
+// serving an install boot a new netboot UKI fetch counts as "the install
+// finished" for --doInstallClearOn=next-boot.
 const (
 	DefaultBluefinRepo        = "projectbluefin/server"
 	DefaultInstallMinDuration = 3 * time.Minute
@@ -391,6 +393,8 @@ func LoadConfig() {
 	viper.SetDefault(KubeletUnitsURL, DefaultKubeletUnitsURL)
 	viper.SetDefault(BluefinRepo, DefaultBluefinRepo)
 	viper.SetDefault(BluefinVersion, "")
+	viper.SetDefault(BluefinKeyring, "")
+	viper.SetDefault(BluefinOCI, "")
 	viper.SetDefault(GithubToken, "")
 	viper.SetDefault(InstallMinDuration, DefaultInstallMinDuration)
 	viper.SetDefault(ClusterDistribution, DefaultClusterDistribution)
@@ -466,11 +470,14 @@ func FlatcarPinPath() string {
 	return DataPath(FlatcarPinFile)
 }
 
-// Bluefin releases live in DataDir/bluefin/<version>/ with a relative
-// "current" symlink to the served one; manifest.json inside names the files.
+// Bluefin releases live in DataDir/bluefin/<version>/ with relative
+// "current" and "previous" symlinks to the served one and the one it
+// replaced (kept so hosts mid-boot can finish); manifest.json inside names
+// the files.
 const (
 	BluefinDir          = "bluefin"
 	BluefinCurrentLink  = "current"
+	BluefinPreviousLink = "previous"
 	BluefinManifestFile = "manifest.json"
 )
 

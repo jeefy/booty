@@ -1,248 +1,111 @@
 package server
 
 import (
-	"archive/tar"
-	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	v3_6 "github.com/coreos/ignition/v2/config/v3_6"
+	ign36 "github.com/coreos/ignition/v2/config/v3_6/types"
 	"github.com/jeefy/booty/pkg/config"
-	"github.com/jeefy/booty/pkg/creds"
+	"github.com/spf13/viper"
+
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/versions"
-	"github.com/spf13/viper"
 )
 
 const bluefinMAC = "aa:bb:cc:dd:ee:b1"
 
+const bluefinTestVersion = "20260927.123"
+
+// installBluefinFixture lays out a served release the way
+// versions.BluefinVersionCheck leaves it.
 func installBluefinFixture(t *testing.T, dir string) {
 	t.Helper()
-	rel := filepath.Join(dir, "bluefin", "26.08.0")
-	if err := os.MkdirAll(rel, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manifest := `{"version":"26.08.0","vmlinuz":"bluefin-server-pxe-vmlinuz-26.08.0","initrd":"bluefin-server-pxe-initrd-26.08.0.cpio.gz","ddi":"bluefin-server-ddi-4593.2.5.raw.zst","ddiSha256":"3498541fce7e25c1bc8eb73bf6ce624af60e0a99d1f0637068284f6b7c8cd8a3"}`
-	if err := os.WriteFile(filepath.Join(rel, "manifest.json"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("26.08.0", filepath.Join(dir, "bluefin", "current")); err != nil {
-		t.Fatal(err)
-	}
-	state.SetCurrentBluefinVersion("26.08.0")
+	writeBluefinRelease(t, dir, bluefinTestVersion, "current")
+	state.SetCurrentBluefinVersion(bluefinTestVersion)
 	t.Cleanup(func() { state.SetCurrentBluefinVersion("") })
 }
 
-var credsArgRe = regexp.MustCompile(`inst\.creds_url=(\S+) inst\.creds_sha256=([0-9a-f]{64})`)
-
-func TestBluefinIPXEAndCreds(t *testing.T) {
-	srv, dir := newTestServer(t)
-	viper.Set(config.SSHAuthorizedKeys, []string{"ssh-ed25519 AAAA1 a"})
-
-	r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true,"installDisk":"/dev/vda"}`)
-	if r.status != 200 {
-		t.Fatalf("register: %+v", r)
+func writeBluefinRelease(t *testing.T, dir, version, link string) {
+	t.Helper()
+	rel := filepath.Join(dir, "bluefin", version)
+	if err := os.MkdirAll(rel, 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+bluefinMAC, "")
-	if r.status != 200 || !strings.Contains(r.body, "echo Bluefin artifacts not downloaded yet") || strings.Contains(r.body, "kernel ") || strings.Contains(r.body, "[[") {
-		t.Fatalf("without a cached release the pending menu is served: %+v", r)
+	files := map[string]string{
+		"bluefin-server-netboot_" + version + ".efi": "UKI-" + version,
+		"bluefin-server_" + version + ".raw":         "DDI-" + version,
+		"SHA256SUMS":                                 "SUMS-" + version,
+		"SHA256SUMS.gpg":                             "SIG-" + version,
+		"zfs_" + version + ".raw":                    "ZFS-" + version,
+		"kubestellar_" + version + ".raw":            "KS-" + version,
+		"k0s-1.36.4-k0s.0.raw":                       "K0S",
 	}
-	if h, _ := hardware.Get(bluefinMAC); h.InstallServedAt != "" || !h.DoInstall {
-		t.Fatalf("pending menu must not stamp installServedAt: %+v", h)
-	}
-
-	installBluefinFixture(t, dir)
-	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+bluefinMAC, "")
-	if r.status != 200 || strings.Contains(r.body, "[[") {
-		t.Fatalf("bluefin ipxe: %+v", r)
-	}
-	for _, want := range []string{
-		"iseq ${platform} efi || goto not-efi",
-		"set BASEURL http://192.168.1.10:8080/data/bluefin/current",
-		"menu Booty - Bluefin Server 26.08.0 - srv1",
-		"Install Bluefin Server to /dev/vda (wipes it)",
-		"--default install selected",
-		"kernel ${BASEURL}/bluefin-server-pxe-vmlinuz-26.08.0 systemd.unit=system-install.target",
-		"inst.ddi_url=${BASEURL}/bluefin-server-ddi-4593.2.5.raw.zst inst.ddi_sha256=3498541fce7e25c1bc8eb73bf6ce624af60e0a99d1f0637068284f6b7c8cd8a3",
-		"inst.target_disk=/dev/vda",
-		"inst.creds_url=http://192.168.1.10:8080/creds/" + bluefinMAC + ".tar inst.creds_sha256=",
-		"initrd ${BASEURL}/bluefin-server-pxe-initrd-26.08.0.cpio.gz",
-	} {
-		if !strings.Contains(r.body, want) {
-			t.Errorf("script missing %q:\n%s", want, r.body)
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(rel, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	h, _ := hardware.Get(bluefinMAC)
-	if h.InstallServedAt == "" || !h.DoInstall {
-		t.Fatalf("serving the install stanza must stamp installServedAt and keep doInstall: %+v", h)
+	m := versions.BluefinManifest{
+		Version:    version,
+		NetbootUKI: "bluefin-server-netboot_" + version + ".efi",
+		DDI:        "bluefin-server_" + version + ".raw",
+		Sysexts: map[string]versions.BluefinSysext{
+			"zfs":         {File: "zfs_" + version + ".raw", Sha256: sha256Hex("ZFS-" + version)},
+			"kubestellar": {File: "kubestellar_" + version + ".raw", Sha256: sha256Hex("KS-" + version)},
+			"k0s":         {File: "k0s-1.36.4-k0s.0.raw", Sha256: sha256Hex("K0S")},
+		},
+		SHA256Sums: map[string]string{},
 	}
-
-	m := credsArgRe.FindStringSubmatch(r.body)
-	if m == nil {
-		t.Fatalf("no creds args in script:\n%s", r.body)
-	}
-	credsPath := strings.TrimPrefix(m[1], "http://192.168.1.10:8080")
-	scriptSum := m[2]
-
-	resp, err := http.Get(srv.URL + credsPath)
+	data, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if err != nil || resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/x-tar" || resp.ContentLength != int64(len(body)) {
-		t.Fatalf("creds tar: %d %v %v", resp.StatusCode, resp.Header, err)
+	if err := os.WriteFile(filepath.Join(rel, "manifest.json"), data, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	sum := sha256.Sum256(body)
-	if got := hex.EncodeToString(sum[:]); got != scriptSum {
-		t.Fatalf("served tar sha256 %s differs from inst.creds_sha256 %s", got, scriptSum)
-	}
-	r = do(t, http.MethodGet, srv.URL+credsPath+".sha256", "")
-	if r.status != 200 || r.body != scriptSum+"\n" || !strings.HasPrefix(r.contentType, "text/plain") {
-		t.Fatalf("creds sha256 endpoint: %+v want %s", r, scriptSum)
-	}
-
-	names := map[string]string{}
-	tr := tar.NewReader(bytes.NewReader(body))
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		content, _ := io.ReadAll(tr)
-		plain, err := creds.Decrypt(strings.TrimSuffix(hdr.Name, ".cred"), content)
-		if err != nil {
-			t.Fatalf("%s must be a null-key encrypted credential named after the file: %v", hdr.Name, err)
-		}
-		names[hdr.Name] = string(plain)
-	}
-	if names["firstboot.hostname.cred"] != "srv1\n" {
-		t.Fatalf("hostname credential: %q (entries %v)", names["firstboot.hostname.cred"], names)
-	}
-	rules := names["tmpfiles.extra.cred"]
-	for _, want := range []string{
-		"f+ /etc/hostname 0644 root root - srv1\n",
-		"L+ /etc/systemd/system/sysinit.target.wants/booty-hostname.service - - - - /etc/systemd/system/booty-hostname.service\n",
-		"/home/core/.ssh/authorized_keys",
-		"L+ /etc/systemd/system/multi-user.target.wants/booty-booted.service - - - - /etc/systemd/system/booty-booted.service\n",
-		"L+ /etc/systemd/system/timers.target.wants/booty-update.timer - - - - /etc/systemd/system/booty-update.timer\n",
-		"/opt/booty/update-check",
-	} {
-		if !strings.Contains(rules, want) {
-			t.Fatalf("tmpfiles rules missing %q:\n%s", want, rules)
-		}
-	}
-	if len(names) != 2 {
-		t.Fatalf("bundle must hold exactly firstboot.hostname and tmpfiles.extra, got %v", names)
-	}
-
-	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/creds/aa:bb:cc:dd:ee:99.tar", ""), http.StatusNotFound)
-	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/creds/nope.tar", ""), http.StatusBadRequest)
-	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/creds/"+bluefinMAC+".zip", ""), http.StatusNotFound)
-	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/creds/", ""), http.StatusNotFound)
-	assertJSONError(t, do(t, http.MethodPost, srv.URL+credsPath, ""), http.StatusMethodNotAllowed)
-
-	viper.Set(config.Builtin, "none")
-	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+bluefinMAC, "")
-	if strings.Contains(r.body, "inst.creds_") {
-		t.Fatalf("--builtin=none must not advertise a credentials bundle:\n%s", r.body)
-	}
-
-	viper.Set(config.Builtin, config.DefaultBuiltin)
-	r = do(t, http.MethodPost, srv.URL+"/register", `{"mac":"aa:bb:cc:dd:ee:b2","hostname":"srv2","os":"bluefin"}`)
-	if r.status != 200 {
-		t.Fatalf("register: %+v", r)
-	}
-	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:b2", "")
-	if !strings.Contains(r.body, "--default run-from-disk") || strings.Contains(r.body, "inst.target_disk") || !strings.Contains(r.body, "to the first writable disk") {
-		t.Fatalf("host without doInstall/installDisk: %+v", r)
-	}
-	if h, _ := hardware.Get("aa:bb:cc:dd:ee:b2"); h.InstallServedAt != "" {
-		t.Fatalf("run-from-disk default must not stamp installServedAt: %+v", h)
+	linkPath := filepath.Join(dir, "bluefin", link)
+	_ = os.Remove(linkPath)
+	if err := os.Symlink(version, linkPath); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestDoInstallClearOnNextBoot(t *testing.T) {
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestBluefinIPXEMenu(t *testing.T) {
 	srv, dir := newTestServer(t)
 	installBluefinFixture(t, dir)
-	viper.Set(config.DoInstallClearOn, config.ClearOnNextBoot)
-	viper.Set(config.InstallMinDuration, 3*time.Minute)
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true,"installDisk":"/dev/vda"}`)
 
-	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true}`)
-
-	get := func() (string, *hardware.Host) {
-		t.Helper()
-		r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+bluefinMAC, "")
-		if r.status != 200 {
-			t.Fatalf("ipxe: %+v", r)
+	for _, q := range []string{"", "&sb=1"} {
+		r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+bluefinMAC+q, "")
+		if r.status != 200 || !strings.Contains(r.body, "switch to UEFI HTTP Boot - srv1") || !strings.Contains(r.body, "echo   http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-b1/bluefin-server-netboot.efi\n") {
+			t.Fatalf("%q: %+v", q, r)
 		}
-		h, _ := hardware.Get(bluefinMAC)
-		return r.body, h
+		if strings.Contains(r.body, "\nkernel ") || strings.Contains(r.body, "inst.") || strings.Contains(r.body, "[[") {
+			t.Fatalf("%q: iPXE never boots Bluefin: %s", q, r.body)
+		}
 	}
-
-	body, h := get()
-	if !strings.Contains(body, "--default install") || !h.DoInstall || h.InstallServedAt == "" {
-		t.Fatalf("first fetch serves install and stamps installServedAt: %+v", h)
+	if h, _ := hardware.Get(bluefinMAC); !h.DoInstall || h.InstallServedAt != "" {
+		t.Fatalf("the iPXE menu leaves doInstall alone: %+v", h)
 	}
-	first := h.InstallServedAt
-
-	body, h = get()
-	if !strings.Contains(body, "--default install") || !h.DoInstall {
-		t.Fatalf("a re-PXE within installMinDuration keeps install (installer crashed): %+v", h)
-	}
-
-	old := time.Now().Add(-4 * time.Minute).UTC().Format(time.RFC3339)
-	if _, err := hardware.Update(bluefinMAC, func(h *hardware.Host) { h.InstallServedAt = old }); err != nil {
-		t.Fatal(err)
-	}
-	body, h = get()
-	if !strings.Contains(body, "--default run-from-disk") || h.DoInstall || h.InstallServedAt != "" {
-		t.Fatalf("a re-PXE after installMinDuration clears doInstall and serves run-from-disk: %+v\n%s", h, body)
-	}
-
-	body, h = get()
-	if !strings.Contains(body, "--default run-from-disk") || h.DoInstall {
-		t.Fatalf("cleared stays cleared: %+v", h)
-	}
-
-	viper.Set(config.DoInstallClearOn, config.ClearOnBooted)
-	if _, err := hardware.Update(bluefinMAC, func(h *hardware.Host) { h.DoInstall, h.InstallServedAt = true, old }); err != nil {
-		t.Fatal(err)
-	}
-	body, h = get()
-	if !strings.Contains(body, "--default install") || !h.DoInstall || h.InstallServedAt == old || h.InstallServedAt < first {
-		t.Fatalf("other modes never clear on /booty.ipxe but still refresh the stamp: %+v", h)
-	}
-	r := do(t, http.MethodPost, srv.URL+"/booted?mac="+bluefinMAC, "")
-	if r.status != 200 {
-		t.Fatalf("booted: %+v", r)
-	}
-	if h, _ = hardware.Get(bluefinMAC); h.DoInstall || h.InstallServedAt != "" {
-		t.Fatalf("POST /booted clears doInstall and installServedAt: %+v", h)
-	}
-
-	viper.Set(config.DoInstallClearOn, config.ClearOnNextBoot)
-	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:c1","hostname":"fc","os":"flatcar","doInstall":true}`)
-	if _, err := hardware.Update("aa:bb:cc:dd:ee:c1", func(h *hardware.Host) { h.InstallServedAt = old }); err != nil {
-		t.Fatal(err)
-	}
-	do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:c1", "")
-	do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:c1", "")
-	if h, _ := hardware.Get("aa:bb:cc:dd:ee:c1"); !h.DoInstall {
-		t.Fatalf("next-boot only applies to bluefin; flatcar keeps doInstall until /booted: %+v", h)
+	if r := do(t, http.MethodGet, srv.URL+"/creds/"+bluefinMAC+".tar", ""); r.status != http.StatusNotFound {
+		t.Fatalf("the installer credentials bundle is gone: %+v", r)
 	}
 }
 
@@ -293,11 +156,501 @@ func TestUpdateCheckBluefin(t *testing.T) {
 func TestBluefinManifestIsServedFromData(t *testing.T) {
 	srv, dir := newTestServer(t)
 	installBluefinFixture(t, dir)
-	if m, ok := versions.CurrentBluefinManifest(); !ok || m.Version != "26.08.0" {
+	if m, ok := versions.CurrentBluefinManifest(); !ok || m.Version != bluefinTestVersion {
 		t.Fatalf("manifest: %+v %v", m, ok)
 	}
 	r := do(t, http.MethodGet, srv.URL+"/data/bluefin/current/manifest.json", "")
-	if r.status != 200 || !strings.Contains(r.body, `"ddiSha256"`) {
+	if r.status != 200 || !strings.Contains(r.body, `"netbootUKI"`) {
 		t.Fatalf("manifest is public: %+v", r)
+	}
+}
+
+const (
+	bluefinPrevVersion = "20260926.200"
+	bluefinDashMAC     = "aa-bb-cc-dd-ee-b1"
+	bluefinBootPath    = "/bluefin/" + bluefinDashMAC + "/bluefin-server-netboot.efi"
+	bluefinNodePath    = "/bluefin/" + bluefinDashMAC + "/bluefin-node.ign"
+)
+
+func head(t *testing.T, url string) *http.Response {
+	t.Helper()
+	resp, err := http.Head(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp
+}
+
+func TestBluefinHTTPBootDecision(t *testing.T) {
+	newTestServer(t)
+	for _, h := range []string{
+		`{"mac":"aa:bb:cc:dd:ee:01","hostname":"d","os":"bluefin"}`,
+		`{"mac":"aa:bb:cc:dd:ee:02","hostname":"i","os":"bluefin","mode":"installed"}`,
+		`{"mac":"aa:bb:cc:dd:ee:03","hostname":"r","os":"bluefin","mode":"installed","doInstall":true,"installDisk":"/dev/vda"}`,
+		`{"mac":"aa:bb:cc:dd:ee:04","hostname":"f","os":"flatcar"}`,
+	} {
+		var host hardware.Host
+		if err := json.Unmarshal([]byte(h), &host); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hardware.Put(host); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name, mac, autoRegister string
+		url                     string
+		handled                 bool
+	}{
+		{"diskless bluefin", "aa:bb:cc:dd:ee:01", "", "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-01/bluefin-server-netboot.efi", true},
+		{"installed bluefin boots its disk", "aa:bb:cc:dd:ee:02", "", "", true},
+		{"installed bluefin being reinstalled", "aa:bb:cc:dd:ee:03", "", "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/bluefin-server-netboot.efi", true},
+		{"flatcar keeps the default", "aa:bb:cc:dd:ee:04", "", "", false},
+		{"unknown keeps the default", "aa:bb:cc:dd:ee:05", "", "", false},
+		{"unknown under --autoRegister=flatcar", "aa:bb:cc:dd:ee:05", "flatcar", "", false},
+		{"unknown under --autoRegister=bluefin", "aa:bb:cc:dd:ee:05", "bluefin", "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-05/bluefin-server-netboot.efi", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			viper.Set(config.AutoRegister, tc.autoRegister)
+			hw, _ := net.ParseMAC(tc.mac)
+			url, handled := BluefinHTTPBoot(hw)
+			if url != tc.url || handled != tc.handled {
+				t.Fatalf("got (%q, %v), want (%q, %v)", url, handled, tc.url, tc.handled)
+			}
+		})
+	}
+	if _, ok := hardware.Get("aa:bb:cc:dd:ee:05"); ok {
+		t.Fatal("the DHCP decision never registers a host")
+	}
+}
+
+func TestBluefinRoutes(t *testing.T) {
+	srv, dir := newTestServer(t)
+	writeBluefinRelease(t, dir, bluefinPrevVersion, "previous")
+	installBluefinFixture(t, dir)
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:c1","hostname":"fc","os":"flatcar"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:c2","hostname":"inst","os":"bluefin","mode":"installed"}`)
+
+	cases := []struct {
+		name, method, path string
+		status             int
+		body, ctype        string
+	}{
+		{"netboot UKI", http.MethodGet, bluefinBootPath, 200, "UKI-" + bluefinTestVersion, "application/efi"},
+		{"any efi name, colon MAC", http.MethodGet, "/bluefin/" + bluefinMAC + "/BOOTX64.EFI", 200, "UKI-" + bluefinTestVersion, "application/efi"},
+		{"current DDI", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw", 200, "DDI-" + bluefinTestVersion, "application/octet-stream"},
+		{"previous DDI for hosts mid-boot", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinPrevVersion + ".raw", 200, "DDI-" + bluefinPrevVersion, ""},
+		{"unknown DDI version", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/bluefin-server_20250101.1.raw", 404, "", ""},
+		{"SHA256SUMS", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS", 200, "SUMS-" + bluefinTestVersion, ""},
+		{"SHA256SUMS.gpg", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS.gpg", 200, "SIG-" + bluefinTestVersion, ""},
+		{"a sysext is not served here", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/zfs_" + bluefinTestVersion + ".raw", 404, "", ""},
+		{"manifest is not served here", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/manifest.json", 404, "", ""},
+		{"flatcar host", http.MethodGet, "/bluefin/aa-bb-cc-dd-ee-c1/bluefin-server-netboot.efi", 404, "", ""},
+		{"flatcar host DDI", http.MethodGet, "/bluefin/aa-bb-cc-dd-ee-c1/bluefin-server_" + bluefinTestVersion + ".raw", 404, "", ""},
+		{"flatcar host config", http.MethodGet, "/bluefin/aa-bb-cc-dd-ee-c1/bluefin-node.ign", 404, "", ""},
+		{"installed host falls through to disk", http.MethodGet, "/bluefin/aa-bb-cc-dd-ee-c2/bluefin-server-netboot.efi", 404, "", ""},
+		{"unknown host", http.MethodGet, "/bluefin/aa-bb-cc-dd-ee-99/bluefin-server-netboot.efi", 404, "", ""},
+		{"not a MAC", http.MethodGet, "/bluefin/nope/bluefin-server-netboot.efi", 404, "", ""},
+		{"no file", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/", 404, "", ""},
+		{"nested path", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/x/SHA256SUMS", 404, "", ""},
+		{"traversal", http.MethodGet, "/bluefin/" + bluefinDashMAC + "/../../hardware.json", 404, "", ""},
+		{"POST", http.MethodPost, bluefinBootPath, 405, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := do(t, tc.method, srv.URL+tc.path, "")
+			if r.status != tc.status {
+				t.Fatalf("status %d want %d: %s", r.status, tc.status, r.body)
+			}
+			if tc.body != "" && r.body != tc.body {
+				t.Fatalf("body %q want %q", r.body, tc.body)
+			}
+			if tc.ctype != "" && r.contentType != tc.ctype {
+				t.Fatalf("content-type %q want %q", r.contentType, tc.ctype)
+			}
+		})
+	}
+
+	t.Run("HEAD answers like GET", func(t *testing.T) {
+		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw", "/bluefin/" + bluefinDashMAC + "/SHA256SUMS"} {
+			resp := head(t, srv.URL+p)
+			if resp.StatusCode != 200 || resp.ContentLength <= 0 {
+				t.Fatalf("%s: HEAD %d length %d", p, resp.StatusCode, resp.ContentLength)
+			}
+		}
+	})
+
+	t.Run("no release cached", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(dir, "bluefin", "current")); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS", "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw"} {
+			if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
+				t.Fatalf("%s: %+v", p, r)
+			}
+		}
+	})
+}
+
+func TestBluefinUKIFetchRecordsBoot(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
+
+	head(t, srv.URL+bluefinBootPath)
+	do(t, http.MethodGet, srv.URL+bluefinBootPath+"?preview=1", "")
+	if h, _ := hardware.Get(bluefinMAC); h.Booted != "" {
+		t.Fatalf("HEAD and previews record nothing: %+v", h)
+	}
+	do(t, http.MethodGet, srv.URL+bluefinBootPath, "")
+	if h, _ := hardware.Get(bluefinMAC); h.Booted == "" || h.IP != "127.0.0.1" {
+		t.Fatalf("the firmware's GET records boot and IP: %+v", h)
+	}
+
+	const unknown = "aa:bb:cc:dd:ee:77"
+	do(t, http.MethodGet, srv.URL+"/bluefin/aa-bb-cc-dd-ee-77/bluefin-server-netboot.efi", "")
+	if _, ok := hardware.Snapshot().UnknownHosts[unknown]; !ok {
+		t.Fatal("an unknown MAC is recorded for the fleet view")
+	}
+	viper.Set(config.AutoRegister, "flatcar")
+	if r := do(t, http.MethodGet, srv.URL+"/bluefin/aa-bb-cc-dd-ee-77/bluefin-server-netboot.efi", ""); r.status != 404 {
+		t.Fatalf("%+v", r)
+	}
+	if _, ok := hardware.Get(unknown); ok {
+		t.Fatal("--autoRegister=flatcar never registers through /bluefin/")
+	}
+	viper.Set(config.AutoRegister, "bluefin")
+	if r := do(t, http.MethodGet, srv.URL+"/bluefin/aa-bb-cc-dd-ee-77/bluefin-server-netboot.efi", ""); r.status != 200 {
+		t.Fatalf("%+v", r)
+	}
+	if h, ok := hardware.Get(unknown); !ok || h.OS != "bluefin" || h.Booted == "" {
+		t.Fatalf("--autoRegister=bluefin registers on the UKI fetch: %+v", h)
+	}
+}
+
+// bluefinNodeFile is one storage.files entry of a node config, contents
+// decoded when inline.
+type bluefinNodeFile struct {
+	mode              int
+	contents, source  string
+	hash              string
+	overwrite, remote bool
+}
+
+func decodeDataURL(t *testing.T, src string) string {
+	t.Helper()
+	switch {
+	case strings.HasPrefix(src, "data:text/plain;charset=utf-8;base64,"):
+		b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(src, "data:text/plain;charset=utf-8;base64,"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	case strings.HasPrefix(src, "data:,"):
+		s, err := url.PathUnescape(strings.TrimPrefix(src, "data:,"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	t.Fatalf("not a data URL: %q", src)
+	return ""
+}
+
+// bluefinNode fetches mac's node config and checks it is a valid spec 3.6.0
+// config.
+func bluefinNode(t *testing.T, srvURL, mac, query string) (ign36.Config, map[string]bluefinNodeFile, map[string]ign36.Unit) {
+	t.Helper()
+	r := do(t, http.MethodGet, srvURL+"/bluefin/"+strings.ReplaceAll(mac, ":", "-")+"/bluefin-node.ign"+query, "")
+	if r.status != 200 || r.contentType != "application/json" {
+		t.Fatalf("node config: %+v", r)
+	}
+	cfg, rpt, err := v3_6.Parse([]byte(r.body))
+	if err != nil || rpt.IsFatal() {
+		t.Fatalf("Ignition 3.6 rejects the node config: %v %s\n%s", err, rpt.String(), r.body)
+	}
+	if cfg.Ignition.Version != "3.6.0" {
+		t.Fatalf("version %q", cfg.Ignition.Version)
+	}
+	files := map[string]bluefinNodeFile{}
+	for _, f := range cfg.Storage.Files {
+		nf := bluefinNodeFile{overwrite: f.Overwrite != nil && *f.Overwrite}
+		if f.Mode != nil {
+			nf.mode = *f.Mode
+		}
+		if f.Contents.Source != nil {
+			nf.source = *f.Contents.Source
+			if strings.HasPrefix(nf.source, "data:") {
+				nf.contents = decodeDataURL(t, nf.source)
+			} else {
+				nf.remote = true
+			}
+		}
+		if f.Contents.Verification.Hash != nil {
+			nf.hash = *f.Contents.Verification.Hash
+		}
+		files[f.Path] = nf
+	}
+	units := map[string]ign36.Unit{}
+	for _, u := range cfg.Systemd.Units {
+		units[u.Name] = u
+	}
+	return cfg, files, units
+}
+
+func TestBluefinNodeIgnitionBasics(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	viper.Set(config.SSHAuthorizedKeys, []string{"ssh-ed25519 AAAA... dogfood"})
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
+
+	cfg, files, units := bluefinNode(t, srv.URL, bluefinMAC, "")
+	if f := files["/etc/hostname"]; f.contents != "srv1\n" || f.mode != 0o644 || !f.overwrite {
+		t.Fatalf("hostname: %+v", f)
+	}
+	if len(cfg.Passwd.Users) != 1 || cfg.Passwd.Users[0].Name != "root" || len(cfg.Passwd.Users[0].SSHAuthorizedKeys) != 1 || cfg.Passwd.Users[0].SSHAuthorizedKeys[0] != "ssh-ed25519 AAAA... dogfood" {
+		t.Fatalf("root keys: %+v", cfg.Passwd.Users)
+	}
+	if u, ok := units["sshd.service"]; !ok || u.Enabled == nil || !*u.Enabled || u.Contents != nil {
+		t.Fatalf("SSH keys enable the image's sshd.service: %v", units)
+	}
+	if len(cfg.Storage.Disks) != 0 || len(cfg.Storage.Filesystems) != 0 || len(units) != 1 || len(files) != 1 {
+		t.Fatalf("a plain diskless host touches no disk and adds only sshd: %+v %v", cfg.Storage, units)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bluefin", "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := head(t, srv.URL+bluefinNodePath)
+	get := do(t, http.MethodGet, srv.URL+bluefinNodePath, "")
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/json" || resp.ContentLength != int64(len(get.body)) {
+		t.Fatalf("HEAD must answer like GET: %d %q %d vs %d", resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, len(get.body))
+	}
+	if h, _ := hardware.Get(bluefinMAC); h.Booted == "" {
+		t.Fatalf("the config GET records the boot: %+v", h)
+	}
+
+	viper.Set(config.Builtin, "none")
+	if r := do(t, http.MethodGet, srv.URL+bluefinNodePath, ""); r.status != 404 {
+		t.Fatalf("nothing to configure is 404: %+v", r)
+	}
+	if resp := head(t, srv.URL+bluefinNodePath); resp.StatusCode != 404 {
+		t.Fatalf("HEAD too: %d", resp.StatusCode)
+	}
+	viper.Set(config.Builtin, "hostname")
+	if cfg, files, units := bluefinNode(t, srv.URL, bluefinMAC, ""); len(files) != 1 || len(cfg.Passwd.Users) != 0 || len(units) != 0 {
+		t.Fatalf("--builtin=hostname drops the keys and sshd: %v %v", files, units)
+	}
+	for _, p := range []string{"/bluefin/aa-bb-cc-dd-ee-99/bluefin-node.ign", "/bluefin/" + bluefinDashMAC + "/other.ign"} {
+		if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
+			t.Fatalf("%s: %+v", p, r)
+		}
+	}
+}
+
+func TestBluefinNodeIgnitionStateDiskMatchesUpstreamFixture(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	viper.Set(config.Builtin, "sshkeys")
+	viper.Set(config.SSHAuthorizedKeys, []string{"ssh-ed25519 AAAA... dogfood"})
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","stateDisk":"/dev/vdb"}`)
+
+	got, _, _ := bluefinNode(t, srv.URL, bluefinMAC, "")
+	raw, err := os.ReadFile(filepath.Join("testdata", "var-on-disk.ign"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _, err := v3_6.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Storage.Filesystems) != 1 || got.Storage.Filesystems[0].Path == nil || *got.Storage.Filesystems[0].Path != "/var" {
+		t.Fatalf("the state filesystem names path /var so Ignition writes /var files onto it: %+v", got.Storage.Filesystems)
+	}
+	got.Storage.Filesystems[0].Path = nil
+	if len(got.Systemd.Units) == 0 || got.Systemd.Units[0].Name != "sshd.service" {
+		t.Fatalf("SSH keys enable sshd ahead of the fixture's units: %+v", got.Systemd.Units)
+	}
+	got.Systemd.Units = got.Systemd.Units[1:]
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("state disk config differs from projectbluefin/server's var-on-disk.ign:\n got %s\nwant %s", gotJSON, wantJSON)
+	}
+}
+
+func TestBluefinNodeIgnitionExtensions(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","extensions":["zfs","kubestellar","k0s"]}`)
+
+	_, files, units := bluefinNode(t, srv.URL, bluefinMAC, "")
+	base := "http://192.168.1.10:8080/data/bluefin/" + bluefinTestVersion + "/"
+	for p, want := range map[string]bluefinNodeFile{
+		"/etc/extensions/zfs_" + bluefinTestVersion + ".raw":         {mode: 0o644, source: base + "zfs_" + bluefinTestVersion + ".raw", hash: "sha256-" + sha256Hex("ZFS-"+bluefinTestVersion), overwrite: true, remote: true},
+		"/etc/extensions/kubestellar_" + bluefinTestVersion + ".raw": {mode: 0o644, source: base + "kubestellar_" + bluefinTestVersion + ".raw", hash: "sha256-" + sha256Hex("KS-"+bluefinTestVersion), overwrite: true, remote: true},
+		"/var/lib/k0s/k0s.raw": {mode: 0o644, source: base + "k0s-1.36.4-k0s.0.raw", hash: "sha256-" + sha256Hex("K0S"), overwrite: true, remote: true},
+	} {
+		if got := files[p]; got != want {
+			t.Errorf("%s:\n got %+v\nwant %+v", p, got, want)
+		}
+		r := do(t, http.MethodGet, strings.Replace(want.source, "http://192.168.1.10:8080", srv.URL, 1), "")
+		if r.status != 200 || "sha256-"+sha256Hex(r.body) != want.hash {
+			t.Errorf("%s: the source must serve the verified bytes: %+v", p, r)
+		}
+	}
+	fb, ok := units["k0s-first-boot.service"]
+	if !ok || fb.Enabled == nil || !*fb.Enabled || fb.Contents != nil {
+		t.Fatalf("k0s-first-boot.service is only enabled: %+v", fb)
+	}
+
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","extensions":["zfs"]}`)
+	_, files, units = bluefinNode(t, srv.URL, bluefinMAC, "")
+	if _, ok := files["/var/lib/k0s/k0s.raw"]; ok || len(units) != 0 {
+		t.Fatalf("only zfs: %v %v", files, units)
+	}
+
+	if r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"`+bluefinMAC+`","os":"bluefin","extensions":["kubestellar"]}`); r.status != 400 || !strings.Contains(r.body, "kubestellar requires k0s") {
+		t.Fatalf("kubestellar without k0s is refused: %+v", r)
+	}
+	if r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"`+bluefinMAC+`","os":"flatcar","stateDisk":"/dev/sdb"}`); r.status != 400 {
+		t.Fatalf("stateDisk on flatcar is refused: %+v", r)
+	}
+}
+
+func TestBluefinNodeIgnitionInstall(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true,"installDisk":"/dev/nvme0n1"}`)
+
+	_, _, units := bluefinNode(t, srv.URL, bluefinMAC, "?preview=1")
+	u, ok := units["booty-install.service"]
+	if !ok || u.Enabled == nil || !*u.Enabled || u.Contents == nil {
+		t.Fatalf("install unit: %+v", u)
+	}
+	for _, want := range []string{
+		"After=network-online.target run-bluefin-boot.mount\n",
+		"Requires=run-bluefin-boot.mount\n",
+		"Type=oneshot\n",
+		"ExecStart=/usr/bin/systemd-sysinstall --erase=yes --confirm=no --variables=yes --reboot=yes --definitions=/run/bluefin/boot/bluefin/repart.d --kernel=/run/bluefin/boot/EFI/Linux/bluefin-server-" + bluefinTestVersion + ".efi /dev/nvme0n1\n",
+		"WantedBy=multi-user.target\n",
+	} {
+		if !strings.Contains(*u.Contents, want) {
+			t.Errorf("install unit missing %q:\n%s", want, *u.Contents)
+		}
+	}
+	head(t, srv.URL+bluefinNodePath)
+	if h, _ := hardware.Get(bluefinMAC); !h.DoInstall || h.Installed() {
+		t.Fatalf("preview and HEAD keep doInstall: %+v", h)
+	}
+
+	_, _, units = bluefinNode(t, srv.URL, bluefinMAC, "")
+	if _, ok := units["booty-install.service"]; !ok {
+		t.Fatal("the real fetch carries the install unit")
+	}
+	h, _ := hardware.Get(bluefinMAC)
+	if h.DoInstall || !h.Installed() {
+		t.Fatalf("--doInstallClearOn=ignition: the fetch that carries the install marks the host installed: %+v", h)
+	}
+	if _, _, units := bluefinNode(t, srv.URL, bluefinMAC, "?preview=1"); len(units) != 0 {
+		t.Fatalf("installed host without doInstall gets no install unit: %v", units)
+	}
+	if r := do(t, http.MethodGet, srv.URL+bluefinBootPath, ""); r.status != 404 {
+		t.Fatalf("installed host gets no UKI: %+v", r)
+	}
+
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true}`)
+	if _, _, units := bluefinNode(t, srv.URL, bluefinMAC, "?preview=1"); len(units) != 0 {
+		t.Fatalf("doInstall without installDisk never installs: %v", units)
+	}
+}
+
+func TestBluefinInstallClearsOnNextBoot(t *testing.T) {
+	for _, mode := range []string{config.ClearOnNextBoot, config.ClearOnBooted} {
+		t.Run(mode, func(t *testing.T) {
+			srv, dir := newTestServer(t)
+			installBluefinFixture(t, dir)
+			viper.Set(config.DoInstallClearOn, mode)
+			viper.Set(config.InstallMinDuration, 3*time.Minute)
+			register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true,"installDisk":"/dev/vda"}`)
+			hw, _ := net.ParseMAC(bluefinMAC)
+
+			if r := do(t, http.MethodGet, srv.URL+bluefinBootPath, ""); r.status != 200 {
+				t.Fatalf("install boot: %+v", r)
+			}
+			h, _ := hardware.Get(bluefinMAC)
+			if !h.DoInstall || h.InstallServedAt == "" {
+				t.Fatalf("the install boot stamps installServedAt: %+v", h)
+			}
+			if _, _, units := bluefinNode(t, srv.URL, bluefinMAC, ""); units["booty-install.service"].Name == "" {
+				t.Fatal("install unit served")
+			}
+			if h, _ := hardware.Get(bluefinMAC); !h.DoInstall {
+				t.Fatalf("%s: the config fetch does not clear: %+v", mode, h)
+			}
+			if r := do(t, http.MethodGet, srv.URL+bluefinBootPath, ""); r.status != 200 {
+				t.Fatalf("a netboot within installMinDuration (install failed) installs again: %+v", r)
+			}
+
+			old := time.Now().Add(-4 * time.Minute).UTC().Format(time.RFC3339)
+			if _, err := hardware.Update(bluefinMAC, func(h *hardware.Host) { h.InstallServedAt = old }); err != nil {
+				t.Fatal(err)
+			}
+			if url, handled := BluefinHTTPBoot(hw); url == "" || !handled {
+				t.Fatal("DHCP still offers the UKI until the fetch confirms the install")
+			}
+			if r := do(t, http.MethodGet, srv.URL+bluefinBootPath, ""); r.status != 404 {
+				t.Fatalf("the netboot after installMinDuration finds the host installed and sends it to disk: %+v", r)
+			}
+			h, _ = hardware.Get(bluefinMAC)
+			if h.DoInstall || h.InstallServedAt != "" || !h.Installed() {
+				t.Fatalf("installed: %+v", h)
+			}
+			if url, handled := BluefinHTTPBoot(hw); url != "" || !handled {
+				t.Fatal("DHCP now stays silent")
+			}
+		})
+	}
+
+	t.Run("POST /booted", func(t *testing.T) {
+		srv, _ := newTestServer(t)
+		viper.Set(config.DoInstallClearOn, config.ClearOnBooted)
+		register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","doInstall":true,"installDisk":"/dev/vda"}`)
+		if r := do(t, http.MethodPost, srv.URL+"/booted?mac="+bluefinMAC, ""); r.status != 200 {
+			t.Fatalf("%+v", r)
+		}
+		if h, _ := hardware.Get(bluefinMAC); h.DoInstall || !h.Installed() {
+			t.Fatalf("POST /booted marks an installing bluefin host installed: %+v", h)
+		}
+	})
+}
+
+func TestBluefinNodeIgnitionMergesHostTemplate(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	butane := "variant: fcos\nversion: 1.5.0\nstorage:\n  files:\n    - path: /etc/motd\n      mode: 0644\n      overwrite: true\n      contents:\n        inline: \"hello {{ .Hostname }}\\n\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config", "bluefin.yaml"), []byte(butane), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","ignitionFile":"config/bluefin.yaml"}`)
+	_, files, _ := bluefinNode(t, srv.URL, bluefinMAC, "")
+	if files["/etc/motd"].contents != "hello srv1\n" || files["/etc/hostname"].contents != "srv1\n" {
+		t.Fatalf("the host template is merged over the builtin pieces: %+v", files)
+	}
+
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
+	if _, files, _ := bluefinNode(t, srv.URL, bluefinMAC, ""); len(files) != 1 {
+		t.Fatalf("the global Flatcar/CoreOS template is not merged into Bluefin hosts: %+v", files)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "config", "broken.yaml"), []byte("variant: fcos\nversion: 9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","ignitionFile":"config/broken.yaml"}`)
+	if r := do(t, http.MethodGet, srv.URL+bluefinNodePath, ""); r.status != 500 {
+		t.Fatalf("a broken host template is an error, not a silently different config: %+v", r)
 	}
 }

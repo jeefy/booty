@@ -21,8 +21,8 @@ import (
 var ErrNotK0s = errors.New("cluster distribution is not k0s")
 
 // K0sNodeFiles is the single k0s renderer both the Ignition profile
-// (Flatcar/CoreOS) and the Bluefin credentials bundle build on: the files,
-// units and drop-ins host needs for its role, with contents shared between
+// (Flatcar/CoreOS) and the Bluefin node Ignition build on: the files,
+// and units host needs for its role, with contents shared between
 // the two delivery paths. It returns nil, nil when the host gets no k0s
 // pieces at all: a control-plane host under an external control plane, or
 // a worker under an external control plane without a token source. The

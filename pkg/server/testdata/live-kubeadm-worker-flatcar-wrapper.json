@@ -1,0 +1,1 @@
+{"ignition":{"version":"3.4.0","config":{"merge":[{"source":"http://192.168.1.10:8080/ignition/builtin.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01"},{"source":"http://192.168.1.10:8080/ignition/user.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01"}]}}}

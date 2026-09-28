@@ -31,6 +31,7 @@ function mountForm(modelValue: Host) {
 const DISK_FIELD = '[data-testid="install-disk-field"]'
 const ROLE_FIELD = '[data-testid="role-field"]'
 const OS_SELECT = 'select[id^="os-"]'
+const BLUEFIN_FIELDS = '[data-testid="bluefin-fields"]'
 
 describe('HostForm', () => {
   it('offers (default), flatcar, coreos and bluefin as OS choices', () => {
@@ -54,7 +55,8 @@ describe('HostForm', () => {
     const field = wrapper.find(DISK_FIELD)
     expect(field.exists()).toBe(true)
     expect(field.text()).toContain('Install disk')
-    expect(field.text()).toContain('empty = first writable disk')
+    expect(field.text()).toContain('systemd-sysinstall')
+    expect(field.text()).not.toContain('first writable disk')
     expect(field.text()).toContain('Wiped on install')
     expect(field.find('input').attributes('placeholder')).toBe('/dev/sda')
     expect(field.find('input').classes()).toContain('mono')
@@ -64,6 +66,7 @@ describe('HostForm', () => {
 
     await wrapper.find('select').setValue('coreos')
     expect(wrapper.find(DISK_FIELD).exists()).toBe(true)
+    expect(wrapper.find(DISK_FIELD).text()).toContain('empty = first writable disk')
   })
 
   it('writes the install disk into the draft', async () => {
@@ -76,9 +79,7 @@ describe('HostForm', () => {
   it('pre-fills the install disk from the draft and submits it unchanged', async () => {
     const model = draft({ os: 'coreos', installDisk: '/dev/sdb' })
     const wrapper = mountForm(model)
-    expect((wrapper.find(`${DISK_FIELD} input`).element as HTMLInputElement).value).toBe(
-      '/dev/sdb'
-    )
+    expect((wrapper.find(`${DISK_FIELD} input`).element as HTMLInputElement).value).toBe('/dev/sdb')
     await wrapper.find('form').trigger('submit')
     expect(wrapper.emitted('submit')).toHaveLength(1)
     expect(model.installDisk).toBe('/dev/sdb')
@@ -108,9 +109,7 @@ describe('HostForm', () => {
   it('shows Worker for a server-side "" role and keeps "" until the user changes it', () => {
     const model = draft({ role: '' })
     const wrapper = mountForm(model)
-    expect((wrapper.find(`${ROLE_FIELD} select`).element as HTMLSelectElement).value).toBe(
-      'worker'
-    )
+    expect((wrapper.find(`${ROLE_FIELD} select`).element as HTMLSelectElement).value).toBe('worker')
     expect(model.role).toBe('')
   })
 
@@ -131,5 +130,53 @@ describe('HostForm', () => {
     expect((wrapper.find(`${ROLE_FIELD} select`).element as HTMLSelectElement).value).toBe(
       'control-plane'
     )
+  })
+
+  it('shows mode, state disk and extensions for bluefin only', async () => {
+    const model = draft({ os: 'flatcar' })
+    const wrapper = mountForm(model)
+    expect(wrapper.find(BLUEFIN_FIELDS).exists()).toBe(false)
+    await wrapper.find(OS_SELECT).setValue('bluefin')
+    const fields = wrapper.find(BLUEFIN_FIELDS)
+    expect(fields.exists()).toBe(true)
+    expect(fields.findAll('select[id^="mode-"] option').map((o) => o.attributes('value'))).toEqual([
+      'diskless',
+      'installed'
+    ])
+    expect((fields.find('select[id^="mode-"]').element as HTMLSelectElement).value).toBe('diskless')
+    expect(fields.findAll('input[type="checkbox"]').map((o) => o.attributes('id'))).toEqual([
+      'ext-zfs-aa:bb:cc:dd:ee:01',
+      'ext-kubestellar-aa:bb:cc:dd:ee:01',
+      'ext-k0s-aa:bb:cc:dd:ee:01'
+    ])
+    expect(fields.text()).toContain('kubestellar needs k0s')
+  })
+
+  it('leaves the bluefin fields out of an untouched draft', async () => {
+    const model = draft({ os: 'bluefin' })
+    const wrapper = mountForm(model)
+    await wrapper.find('form').trigger('submit')
+    expect(model).not.toHaveProperty('mode')
+    expect(model).not.toHaveProperty('extensions')
+    expect(model).not.toHaveProperty('stateDisk')
+  })
+
+  it('writes mode, state disk and extensions into the draft', async () => {
+    const model = draft({ os: 'bluefin', extensions: ['zfs'] })
+    const wrapper = mountForm(model)
+    const fields = wrapper.find(BLUEFIN_FIELDS)
+    expect(
+      (fields.find('#ext-zfs-aa\\:bb\\:cc\\:dd\\:ee\\:01').element as HTMLInputElement).checked
+    ).toBe(true)
+
+    await fields.find('select[id^="mode-"]').setValue('installed')
+    await fields.find('input[id^="statedisk-"]').setValue('/dev/sdb')
+    await fields.find('#ext-k0s-aa\\:bb\\:cc\\:dd\\:ee\\:01').setValue(true)
+    await fields.find('#ext-kubestellar-aa\\:bb\\:cc\\:dd\\:ee\\:01').setValue(true)
+    await fields.find('#ext-zfs-aa\\:bb\\:cc\\:dd\\:ee\\:01').setValue(false)
+
+    expect(model.mode).toBe('installed')
+    expect(model.stateDisk).toBe('/dev/sdb')
+    expect(model.extensions).toEqual(['k0s', 'kubestellar'])
   })
 })

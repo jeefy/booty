@@ -161,8 +161,10 @@ func TestRenderControllerPXE(t *testing.T) {
 		if got := strings.Join(n.unitNames(), ","); got != ControllerUnit+","+UnitClusterReady+","+cni.UnitName {
 			t.Fatalf("%q units: %s", os, got)
 		}
-		if len(n.DropIns) != 0 {
-			t.Fatalf("PXE hosts get whole units, not drop-ins: %+v", n.DropIns)
+		for _, f := range n.Files {
+			if f.Path == BluefinSysconfig {
+				t.Fatalf("%s: /etc/sysconfig/k0s is Bluefin only", os)
+			}
 		}
 		ctl := n.Units[0]
 		for _, want := range []string{
@@ -194,12 +196,8 @@ func TestRenderControllerBluefin(t *testing.T) {
 	if got := strings.Join(n.unitNames(), ","); got != UnitClusterReady+","+cni.UnitName {
 		t.Fatalf("bluefin controller units: %s", got)
 	}
-	if len(n.DropIns) != 1 || n.DropIns[0].Unit != ControllerUnit || n.DropIns[0].Name != RoleDropIn {
-		t.Fatalf("drop-ins: %+v", n.DropIns)
-	}
-	d := n.DropIns[0].Contents
-	if strings.Count(d, "ExecStart=") != 2 || !strings.HasPrefix(d, "[Service]\nExecStart=\nExecStart=/usr/bin/k0s controller -c /etc/k0s/k0s.yaml --enable-worker --disable-components=helm,autopilot\n") || strings.Contains(d, "--single") {
-		t.Fatalf("drop-in:\n%s", d)
+	if sc := n.file(t, BluefinSysconfig); sc.Mode != 0o644 || sc.Contents != "K0S_CONTROLLER_ARGS=-c /etc/k0s/k0s.yaml --enable-worker --disable-components=helm,autopilot\n" {
+		t.Fatalf("sysconfig: %+v", sc)
 	}
 	if !strings.Contains(n.file(t, ClusterReadyScript).Contents, "/usr/bin/k0s kubectl") || strings.Contains(n.file(t, ClusterReadyScript).Contents, "/opt/bin") {
 		t.Fatal("bluefin uses /usr/bin/k0s")
@@ -252,17 +250,13 @@ func TestRenderWorker(t *testing.T) {
 			}
 		}
 		if os == "bluefin" {
-			if len(n.Units) != 0 || len(n.DropIns) != 1 {
-				t.Fatalf("bluefin worker: units %v dropins %+v", n.unitNames(), n.DropIns)
-			}
-			d := n.DropIns[0]
-			if d.Unit != ControllerUnit || d.Name != RoleDropIn || d.Contents != "[Service]\nExecStart=\nExecStart=/usr/bin/k0s worker --token-file /etc/k0s/token\n" {
-				t.Fatalf("bluefin worker drop-in: %+v", d)
+			if len(n.Units) != 0 {
+				t.Fatalf("bluefin worker runs the sysext's %s off the token alone: units %v", WorkerUnit, n.unitNames())
 			}
 			continue
 		}
-		if len(n.Units) != 1 || n.Units[0].Name != WorkerUnit || len(n.DropIns) != 0 {
-			t.Fatalf("%s worker: units %v dropins %+v", os, n.unitNames(), n.DropIns)
+		if len(n.Units) != 1 || n.Units[0].Name != WorkerUnit {
+			t.Fatalf("%s worker: units %v", os, n.unitNames())
 		}
 		if u := n.Units[0].Contents; !strings.Contains(u, "ExecStart=/opt/bin/k0s worker --token-file /etc/k0s/token\n") || !strings.Contains(u, "Requires="+InstallUnit) || !strings.Contains(u, "RequiresMountsFor=/var/lib/k0s") || !strings.Contains(u, "Restart=always") {
 			t.Fatalf("%s worker unit:\n%s", os, u)

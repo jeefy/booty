@@ -20,7 +20,8 @@ var ErrNoControlPlane = errors.New("no control-plane host registered")
 // ErrNoControlPlaneDisk is the render-time refusal for a managed control
 // plane (kubeadm or k0s) on a PXE-booted OS without --controlPlaneDisk: the
 // root filesystem is RAM, so etcd and the kubelet state would vanish on
-// reboot. Bluefin installs to disk and is exempt.
+// reboot. Bluefin keeps /var on the host's stateDisk or installed disk
+// instead and is only warned about (see Warnings).
 var ErrNoControlPlaneDisk = fmt.Errorf("control-plane host needs --%s on a PXE-booted OS", config.ControlPlaneDisk)
 
 // Manager ties the settings to the cluster CA (nil unless the control
@@ -108,7 +109,7 @@ func (m *Manager) Endpoint(hosts map[string]*hardware.Host) (string, error) {
 
 // NeedsControlPlaneDisk reports whether rendering a control plane for a
 // host running os requires --controlPlaneDisk. Flatcar and Fedora CoreOS
-// run from RAM when PXE-booted; Bluefin installs to disk.
+// run from RAM when PXE-booted; Bluefin uses its own stateDisk.
 func NeedsControlPlaneDisk(os string) bool {
 	switch os {
 	case "", "flatcar", "coreos":
@@ -131,11 +132,12 @@ func (m *Manager) Warnings(hosts map[string]*hardware.Host) []string {
 		case len(cps) > 1 && m.Settings.Endpoint == "":
 			warnings = append(warnings, fmt.Sprintf("%d control-plane hosts registered but --%s is not set", len(cps), config.ControlPlaneEndpt))
 		}
-		if m.Settings.ControlPlaneDisk == "" {
-			for _, cp := range cps {
-				if NeedsControlPlaneDisk(cp.OS) {
-					warnings = append(warnings, fmt.Sprintf("host %s (%s): %s", cp.MAC, cp.OS, ErrNoControlPlaneDisk))
-				}
+		for _, cp := range cps {
+			switch {
+			case m.Settings.ControlPlaneDisk == "" && NeedsControlPlaneDisk(cp.OS):
+				warnings = append(warnings, fmt.Sprintf("host %s (%s): %s", cp.MAC, cp.OS, ErrNoControlPlaneDisk))
+			case m.Settings.Distribution == K0s && cp.OS == "bluefin" && cp.StateDisk == "" && !cp.Installed() && !cp.DoInstall:
+				warnings = append(warnings, fmt.Sprintf("host %s (bluefin): diskless control-plane host without a stateDisk keeps /var/lib/k0s in RAM and loses the cluster state on reboot", cp.MAC))
 			}
 		}
 	}
@@ -146,7 +148,8 @@ func (m *Manager) Warnings(hosts map[string]*hardware.Host) []string {
 	sort.Strings(macs)
 	for _, mac := range macs {
 		h := hosts[mac]
-		if !Supports(h.OS, m.Settings.Distribution) {
+		bluefinWorker := h.OS == "bluefin" && !h.IsControlPlane() && m.Settings.BluefinKubeadmWorkers()
+		if !Supports(h.OS, m.Settings.Distribution) && !bluefinWorker {
 			warnings = append(warnings, fmt.Sprintf("host %s (%s) unsupported under %s", mac, h.OS, m.Settings.Distribution))
 		}
 	}

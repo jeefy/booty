@@ -30,6 +30,15 @@ type Host struct {
 	// Role is the host's place in the cluster: RoleControlPlane or
 	// RoleWorker; empty means worker.
 	Role string `json:"role,omitempty"`
+	// StateDisk, Extensions and Mode are Bluefin Server only (see
+	// bluefin.go): the disk Ignition keeps /var on, the opt-in sysexts and
+	// whether the host boots diskless or from its installed disk.
+	StateDisk  string   `json:"stateDisk,omitempty"`
+	Extensions []string `json:"extensions,omitempty"`
+	Mode       string   `json:"mode,omitempty"`
+	// NetbootPlatform is the firmware the last Bluefin netboot came
+	// through: PlatformEFI (UKI) or PlatformPCBIOS (kernel and initrd).
+	NetbootPlatform string `json:"netbootPlatform,omitempty"`
 	// SecureBoot records that the host's last /booty.ipxe fetch arrived
 	// through the Secure Boot path: the signed iPXE that only UEFI HTTP Boot
 	// hands out (its autoexec adds sb=1). It is not a firmware attestation;
@@ -99,16 +108,20 @@ func ValidOSList() string {
 // without whitespace or ".." segments; it ends up verbatim on a kernel
 // command line.
 func ValidateInstallDisk(disk string) error {
+	return validateDevicePath(ErrInvalidInstall, disk)
+}
+
+func validateDevicePath(kind error, disk string) error {
 	if disk == "" {
 		return nil
 	}
 	switch {
 	case !strings.HasPrefix(disk, "/dev/"), len(disk) == len("/dev/"):
-		return fmt.Errorf("%w %q: must start with /dev/", ErrInvalidInstall, disk)
+		return fmt.Errorf("%w %q: must start with /dev/", kind, disk)
 	case strings.ContainsAny(disk, " \t\r\n\x00"):
-		return fmt.Errorf("%w %q: must not contain whitespace", ErrInvalidInstall, disk)
+		return fmt.Errorf("%w %q: must not contain whitespace", kind, disk)
 	case strings.Contains(disk, ".."):
-		return fmt.Errorf("%w %q: must not contain '..'", ErrInvalidInstall, disk)
+		return fmt.Errorf("%w %q: must not contain '..'", kind, disk)
 	}
 	return nil
 }

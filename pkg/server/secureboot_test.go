@@ -137,14 +137,11 @@ func TestIPXESecureBootPerOS(t *testing.T) {
 			[]string{"shim http://192.168.1.10:8080/boot/secureboot/fedora/shimx64.efi || goto shell\nkernel ${BASEURL}/fedora-coreos"},
 			[]string{"refused"}},
 		{"bluefin untrusted install", "bluefin", "", true,
-			[]string{"Bluefin Server refused", "CA SHA256: " + flatcarCASha, "installed system (systemd-boot and its UKI) is not signed"},
-			[]string{"\nkernel ", "item --key i install", "inst.ddi_url"}},
-		{"bluefin trusted install", "bluefin", "flatcar", true,
-			[]string{"Bluefin Server refused", "installed system (systemd-boot and its UKI) is not signed"},
-			[]string{"\nkernel ", "CA SHA256", "item --key i install"}},
+			[]string{"switch to UEFI HTTP Boot - sb", "/bluefin/aa-bb-cc-dd-ee-53/bluefin-server-netboot.efi"},
+			[]string{"\nkernel ", "refused", "CA SHA256"}},
 		{"bluefin trusted no install", "bluefin", "flatcar", false,
-			[]string{"Bluefin Server refused", ":run-from-disk\nexit\n"},
-			[]string{"\nkernel ", "artifacts not downloaded"}},
+			[]string{"switch to UEFI HTTP Boot - sb", ":run-from-disk\nexit\n"},
+			[]string{"\nkernel ", "refused"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -199,8 +196,8 @@ func TestSecureBootWarnings(t *testing.T) {
 	got := secureBootWarnings(hosts)
 	want := []string{
 		"host aa:bb:cc:dd:ee:01 (flatcar): Secure Boot host; the Flatcar CA is not in --secureBootTrusted, boot refused",
-		"host aa:bb:cc:dd:ee:03 (bluefin): Secure Boot host; the installed Bluefin image is unsigned, install refused",
-		"host aa:bb:cc:dd:ee:04 (bluefin): Secure Boot host; the installed Bluefin image is unsigned and will not boot with Secure Boot enabled",
+		"host aa:bb:cc:dd:ee:03 (bluefin): reached Booty through the signed iPXE; Bluefin boots its signed netboot UKI only through UEFI HTTP Boot (http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/bluefin-server-netboot.efi)",
+		"host aa:bb:cc:dd:ee:04 (bluefin): reached Booty through the signed iPXE; Bluefin boots its signed netboot UKI only through UEFI HTTP Boot (http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-04/bluefin-server-netboot.efi)",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("untrusted warnings:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -227,7 +224,7 @@ func TestInfoAndClusterCarrySecureBootWarnings(t *testing.T) {
 	}
 	want := []string{
 		"host aa:bb:cc:dd:ee:61 (flatcar): Secure Boot host; the Flatcar CA is not in --secureBootTrusted, boot refused",
-		"host aa:bb:cc:dd:ee:62 (bluefin): Secure Boot host; the installed Bluefin image is unsigned, install refused",
+		"host aa:bb:cc:dd:ee:62 (bluefin): reached Booty through the signed iPXE; Bluefin boots its signed netboot UKI only through UEFI HTTP Boot (http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-62/bluefin-server-netboot.efi)",
 	}
 
 	r := do(t, http.MethodGet, srv.URL+"/info", "")

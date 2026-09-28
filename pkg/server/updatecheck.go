@@ -22,9 +22,10 @@ var nowFunc = time.Now
 
 var coreOSVersionRe = regexp.MustCompile(`^\d+\.\d{8}\.\d+\.\d+$`)
 
-// Bluefin Server updates itself with systemd-sysupdate; Booty never asks it
-// to reboot, and a re-PXE would only re-image the disk.
-const bluefinUpdateReason = "bluefin updates itself via systemd-sysupdate; re-PXE only re-images"
+// Booty never asks a Bluefin Server host to reboot: a diskless one boots
+// the newest release on its next reboot anyway, an installed one updates
+// itself with systemd-sysupdate.
+const bluefinUpdateReason = "bluefin: a reboot re-images diskless hosts; installed hosts update themselves via systemd-sysupdate"
 
 type updateCheckResponse struct {
 	RebootRequired bool   `json:"rebootRequired"`

@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -20,15 +22,29 @@ import (
 	"github.com/spf13/viper"
 )
 
+// Release file names, from projectbluefin/server's
+// elements/oci/bluefin-server-image.bst.
 const (
-	bluefinTagPrefix     = "installer-v"
-	bluefinVmlinuzPrefix = "bluefin-server-pxe-vmlinuz-"
-	bluefinInitrdPrefix  = "bluefin-server-pxe-initrd-"
-	bluefinInitrdSuffix  = ".cpio.gz"
-	bluefinDDIPrefix     = "bluefin-server-ddi-"
-	bluefinDDISuffix     = ".raw.zst"
-	bluefinSumsFile      = "SHA256SUMS"
+	bluefinTagPrefix     = "v"
+	bluefinNetbootPrefix = "bluefin-server-netboot_"
+	bluefinNetbootSuffix = ".efi"
+	bluefinDDIPrefix     = "bluefin-server_"
+	bluefinDDISuffix     = ".raw"
+	bluefinZstSuffix     = ".zst"
+	bluefinK0sPrefix     = "k0s-"
 	bluefinReleasePages  = 20
+
+	// BluefinSumsFile and BluefinSigFile are the release's checksum list and
+	// its detached OpenPGP signature; the node's initrd fetches both next to
+	// the netboot UKI and verifies the DDI with them.
+	BluefinSumsFile = "SHA256SUMS"
+	BluefinSigFile  = "SHA256SUMS.gpg"
+
+	// Sysext names as they appear in BluefinManifest.Sysexts.
+	BluefinSysextZFS         = "zfs"
+	BluefinSysextKubeStellar = "kubestellar"
+	BluefinSysextK0s         = "k0s"
+	BluefinSysextKubeadm     = "kubeadm"
 )
 
 // Overridable in tests to point at an httptest server.
@@ -37,19 +53,55 @@ var (
 	githubDownloadBase = "https://github.com"
 )
 
-// BluefinManifest is DataDir/bluefin/<version>/manifest.json: which files of
-// the release Booty serves and the DDI hash the installer must be given.
+// bluefinVersionPattern bounds what a version may look like: it ends up in
+// file names, URLs and the tag (v<version>).
+var bluefinVersionPattern = regexp.MustCompile(`^[0-9][0-9A-Za-z._+~-]{0,63}$`)
+
+// ValidBluefinVersion reports whether v is usable as a Bluefin release
+// version (20260927.123, 2026.09.0, 0.42).
+func ValidBluefinVersion(v string) bool {
+	return bluefinVersionPattern.MatchString(v) && !strings.Contains(v, "..")
+}
+
+// BluefinNetbootUKI, BluefinDDI and the sysext helpers name the release
+// files of version.
+func BluefinNetbootUKI(version string) string {
+	return bluefinNetbootPrefix + version + bluefinNetbootSuffix
+}
+
+func BluefinDDI(version string) string {
+	return bluefinDDIPrefix + version + bluefinDDISuffix
+}
+
+func bluefinVersionedSysext(name, version string) string {
+	return name + "_" + version + bluefinDDISuffix + bluefinZstSuffix
+}
+
+// BluefinSysext is one decompressed sysext image in a release directory;
+// Sha256 is the digest of the decompressed .raw.
+type BluefinSysext struct {
+	File   string `json:"file"`
+	Sha256 string `json:"sha256"`
+}
+
+// BluefinManifest is DataDir/bluefin/<version>/manifest.json: the files of
+// the release Booty serves. SHA256Sums holds the SHA256SUMS entries of every
+// file Booty downloaded (the sysexts under their .raw.zst names).
 type BluefinManifest struct {
-	Version   string `json:"version"`
-	Vmlinuz   string `json:"vmlinuz"`
-	Initrd    string `json:"initrd"`
-	DDI       string `json:"ddi"`
-	DDISha256 string `json:"ddiSha256"`
+	Version    string                   `json:"version"`
+	NetbootUKI string                   `json:"netbootUKI"`
+	DDI        string                   `json:"ddi"`
+	Sysexts    map[string]BluefinSysext `json:"sysexts,omitempty"`
+	SHA256Sums map[string]string        `json:"sha256sums"`
 }
 
 // Files lists the artifacts the manifest references.
 func (m BluefinManifest) Files() []string {
-	return []string{m.Vmlinuz, m.Initrd, m.DDI}
+	files := []string{m.NetbootUKI, m.DDI, BluefinSumsFile, BluefinSigFile}
+	for _, s := range m.Sysexts {
+		files = append(files, s.File)
+	}
+	return files
 }
 
 type bluefinRelease struct {
@@ -60,19 +112,19 @@ type bluefinRelease struct {
 	Assets     []string
 }
 
-func (r bluefinRelease) hasPXEAssets() bool {
-	var vmlinuz, initrd, sums bool
+func (r bluefinRelease) hasRequiredAssets() bool {
+	want := map[string]bool{BluefinNetbootUKI(r.Version): false, BluefinDDI(r.Version): false, BluefinSumsFile: false, BluefinSigFile: false}
 	for _, a := range r.Assets {
-		switch {
-		case strings.HasPrefix(a, bluefinVmlinuzPrefix):
-			vmlinuz = true
-		case strings.HasPrefix(a, bluefinInitrdPrefix):
-			initrd = true
-		case a == bluefinSumsFile:
-			sums = true
+		if _, ok := want[a]; ok {
+			want[a] = true
 		}
 	}
-	return vmlinuz && initrd && sums
+	for _, found := range want {
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // parseBluefinReleases decodes the GitHub releases list into the fields
@@ -101,14 +153,15 @@ func parseBluefinReleases(body []byte) ([]bluefinRelease, error) {
 	return out, nil
 }
 
-// selectBluefinRelease picks the newest (by version) published installer-v*
-// release that carries PXE assets. Other tag families (bluefin-server-v*),
-// drafts and prereleases are ignored.
+// selectBluefinRelease picks the newest (by version) published v<version>
+// release carrying the netboot UKI, the DDI, SHA256SUMS and its signature.
+// Other tag families (installer-v*, bluefin-server-v*), drafts and
+// prereleases are ignored.
 func selectBluefinRelease(releases []bluefinRelease) (bluefinRelease, error) {
 	var best *bluefinRelease
 	for i := range releases {
 		r := &releases[i]
-		if !strings.HasPrefix(r.Tag, bluefinTagPrefix) || r.Draft || r.Prerelease || !r.hasPXEAssets() {
+		if !strings.HasPrefix(r.Tag, bluefinTagPrefix) || !ValidBluefinVersion(r.Version) || r.Draft || r.Prerelease || !r.hasRequiredAssets() {
 			continue
 		}
 		if best == nil || compareVersions(r.Version, best.Version) > 0 {
@@ -116,13 +169,14 @@ func selectBluefinRelease(releases []bluefinRelease) (bluefinRelease, error) {
 		}
 	}
 	if best == nil {
-		return bluefinRelease{}, errors.New("no installer-v* release with PXE kernel, initrd and SHA256SUMS assets")
+		return bluefinRelease{}, errors.New("no v<version> release with the netboot UKI, DDI, SHA256SUMS and SHA256SUMS.gpg assets")
 	}
 	return *best, nil
 }
 
-// compareVersions orders dotted numeric versions (26.08.0 > 25.08.15);
-// non-numeric components fall back to string order.
+// compareVersions orders dotted numeric versions (26.08.0 > 25.08.15,
+// 20260927.123 > 20260926.200); non-numeric components fall back to string
+// order.
 func compareVersions(a, b string) int {
 	as, bs := strings.Split(a, "."), strings.Split(b, ".")
 	for i := 0; i < len(as) || i < len(bs); i++ {
@@ -148,8 +202,7 @@ func compareVersions(a, b string) int {
 	return 0
 }
 
-// sha256Sums is a SHA256SUMS file: hashes by file name plus the file order,
-// which the DDI tie-break relies on.
+// sha256Sums is a SHA256SUMS file: hashes by file name plus the file order.
 type sha256Sums struct {
 	hashes map[string]string
 	order  []string
@@ -184,45 +237,140 @@ func parseSHA256SUMS(r io.Reader) (sha256Sums, error) {
 	return sums, nil
 }
 
-// selectBluefinArtifacts resolves the kernel, initrd and DDI for version
-// from SHA256SUMS. Every file must be listed: the installer refuses a DDI
-// without inst.ddi_sha256, and Booty does not serve unverified images. When
-// several DDIs are listed the one matching version wins, otherwise the last
-// listed (26.08.0 ships a legacy FSDK image outside SHA256SUMS and the
-// Flatcar-LTS one inside it).
-func selectBluefinArtifacts(version string, sums sha256Sums) (BluefinManifest, error) {
+// bluefinSysextSource is an optional sysext as SHA256SUMS lists it.
+type bluefinSysextSource struct {
+	name   string
+	asset  string
+	sha256 string
+}
+
+// raw is the decompressed file name Booty stores and serves.
+func (s bluefinSysextSource) raw() string { return strings.TrimSuffix(s.asset, bluefinZstSuffix) }
+
+// selectBluefinArtifacts resolves the netboot UKI and DDI of version (both
+// must be listed in SHA256SUMS: Booty does not serve unverified images)
+// and the optional sysexts: zfs_<version>.raw.zst,
+// kubestellar_<version>.raw.zst, kubeadm_<version>.raw.zst and the single
+// k0s-*.raw.zst.
+func selectBluefinArtifacts(version string, sums sha256Sums) (BluefinManifest, []bluefinSysextSource, error) {
 	m := BluefinManifest{
-		Version: version,
-		Vmlinuz: bluefinVmlinuzPrefix + version,
-		Initrd:  bluefinInitrdPrefix + version + bluefinInitrdSuffix,
+		Version:    version,
+		NetbootUKI: BluefinNetbootUKI(version),
+		DDI:        BluefinDDI(version),
+		SHA256Sums: map[string]string{},
 	}
-	for _, f := range []string{m.Vmlinuz, m.Initrd} {
-		if _, ok := sums.hashes[f]; !ok {
-			return m, fmt.Errorf("%s not listed in SHA256SUMS", f)
+	for _, f := range []string{m.NetbootUKI, m.DDI} {
+		hash, ok := sums.hashes[f]
+		if !ok {
+			return m, nil, fmt.Errorf("%s not listed in SHA256SUMS", f)
+		}
+		m.SHA256Sums[f] = hash
+	}
+	var sysexts []bluefinSysextSource
+	for _, name := range []string{BluefinSysextKubeadm, BluefinSysextKubeStellar, BluefinSysextZFS} {
+		asset := bluefinVersionedSysext(name, version)
+		if hash, ok := sums.hashes[asset]; ok {
+			sysexts = append(sysexts, bluefinSysextSource{name: name, asset: asset, sha256: hash})
 		}
 	}
-	var ddis []string
+	var k0s []string
 	for _, name := range sums.order {
-		if strings.HasPrefix(name, bluefinDDIPrefix) && strings.HasSuffix(name, bluefinDDISuffix) {
-			ddis = append(ddis, name)
+		if strings.HasPrefix(name, bluefinK0sPrefix) && strings.HasSuffix(name, bluefinDDISuffix+bluefinZstSuffix) {
+			k0s = append(k0s, name)
 		}
 	}
-	if len(ddis) == 0 {
-		return m, errors.New("no bluefin-server-ddi-*.raw.zst listed in SHA256SUMS")
+	switch len(k0s) {
+	case 0:
+	case 1:
+		sysexts = append(sysexts, bluefinSysextSource{name: BluefinSysextK0s, asset: k0s[0], sha256: sums.hashes[k0s[0]]})
+	default:
+		slog.Warn("SHA256SUMS lists several k0s sysexts; skipping k0s", "version", version, "files", k0s)
 	}
-	m.DDI = ddis[len(ddis)-1]
-	for _, d := range ddis {
-		if d == bluefinDDIPrefix+version+bluefinDDISuffix {
-			m.DDI = d
+	return m, sysexts, nil
+}
+
+// errBluefinAssetMissing marks a release file the source does not have, so
+// an optional sysext can be skipped while any other failure aborts.
+var errBluefinAssetMissing = errors.New("not in the release")
+
+// bluefinSource is where a release comes from: GitHub releases or an OCI
+// artifact.
+type bluefinSource interface {
+	// latest is the newest release's version.
+	latest(ctx context.Context) (string, error)
+	// fetch reads a small file (at most limit bytes) of version.
+	fetch(ctx context.Context, version, name string, limit int64) ([]byte, error)
+	// download stores name of version at dest, verified against sha256.
+	download(ctx context.Context, version, name, dest, sha256 string) error
+}
+
+type githubBluefinSource struct{}
+
+func (githubBluefinSource) latest(ctx context.Context) (string, error) {
+	url := bluefinReleasesURL()
+	body, err := githubGet(ctx, url, 8<<20)
+	if err != nil {
+		return "", err
+	}
+	releases, err := parseBluefinReleases(body)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", url, err)
+	}
+	rel, err := selectBluefinRelease(releases)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", url, err)
+	}
+	slog.Debug("Remote Bluefin version found", "version", rel.Version, "tag", rel.Tag)
+	return rel.Version, nil
+}
+
+func (githubBluefinSource) fetch(ctx context.Context, version, name string, limit int64) ([]byte, error) {
+	return githubGet(ctx, bluefinAssetURL(version, name), limit)
+}
+
+func (githubBluefinSource) download(ctx context.Context, version, name, dest, sha256 string) error {
+	err := config.Download(ctx, config.DownloadClient, bluefinAssetURL(version, name), dest, crypto.SHA256, sha256)
+	var status *config.HTTPStatusError
+	if errors.As(err, &status) && status.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%s: %w", name, errBluefinAssetMissing)
+	}
+	return err
+}
+
+// newBluefinSource picks the OCI artifact when --bluefinOCI is set, GitHub
+// releases of --bluefinRepo otherwise.
+func newBluefinSource() (bluefinSource, error) {
+	if ref := strings.TrimSpace(viper.GetString(config.BluefinOCI)); ref != "" {
+		return newOCIBluefinSource(ref)
+	}
+	return githubBluefinSource{}, nil
+}
+
+// ValidateBluefinFlags checks --bluefinVersion, --bluefinKeyring and
+// --bluefinOCI at startup: a pin must be a plain version, the keyring must
+// parse (signature checks fail closed) and the OCI reference must be a
+// repository.
+func ValidateBluefinFlags() error {
+	if pin := strings.TrimSpace(viper.GetString(config.BluefinVersion)); pin != "" && !ValidBluefinVersion(pin) {
+		return fmt.Errorf("--%s %q: not a Bluefin Server version such as 20260927.123", config.BluefinVersion, pin)
+	}
+	if path := strings.TrimSpace(viper.GetString(config.BluefinKeyring)); path != "" {
+		if _, err := loadBluefinKeyring(path); err != nil {
+			return fmt.Errorf("--%s: %w", config.BluefinKeyring, err)
 		}
 	}
-	m.DDISha256 = sums.hashes[m.DDI]
-	return m, nil
+	if ref := strings.TrimSpace(viper.GetString(config.BluefinOCI)); ref != "" {
+		if _, err := newOCIBluefinSource(ref); err != nil {
+			return fmt.Errorf("--%s: %w", config.BluefinOCI, err)
+		}
+	}
+	return nil
 }
 
 // BluefinVersionCheck brings the served Bluefin Server release in line with
-// --bluefinVersion or the newest installer release. Concurrent invocations
-// are skipped and the version only advances once every file is on disk.
+// --bluefinVersion or the newest release. Concurrent invocations are
+// skipped and the version only advances once every file is on disk and
+// verified.
 func BluefinVersionCheck() {
 	if !state.BluefinUpdateMu.TryLock() {
 		slog.Info("Bluefin update already in progress, skipping version check")
@@ -231,6 +379,12 @@ func BluefinVersionCheck() {
 	defer state.BluefinUpdateMu.Unlock()
 	ctx := context.Background()
 	slog.Debug("Checking Bluefin version")
+
+	src, err := newBluefinSource()
+	if err != nil {
+		slog.Error("Bluefin release source unusable, skipping update", "error", err)
+		return
+	}
 
 	current := state.CurrentBluefinVersion()
 	if current == "" {
@@ -246,25 +400,45 @@ func BluefinVersionCheck() {
 	if target != "" {
 		slog.Debug("Bluefin version is pinned", "version", target)
 	} else {
-		remote, err := LoadRemoteBluefinVersion(ctx)
+		remote, err := src.latest(ctx)
 		if err != nil {
 			slog.Error("Could not determine remote Bluefin version, skipping update", "error", err)
 			return
 		}
+		state.SetRemoteBluefinVersion(remote)
 		target = remote
+	}
+	if !ValidBluefinVersion(target) {
+		slog.Error("Bluefin version is not usable, skipping update", "version", target)
+		return
 	}
 
 	if target == current {
 		return
 	}
 	slog.Info("Target Bluefin version differs from local", "target", target, "local", current)
-	manifest, err := installBluefinRelease(ctx, target)
+	manifest, err := installBluefinRelease(ctx, src, target)
 	if err != nil {
 		slog.Error("Bluefin release install failed, not advancing version", "target", target, "error", err)
 		return
 	}
 	state.SetCurrentBluefinVersion(target)
-	slog.Info("Bluefin updated", "version", target, "vmlinuz", manifest.Vmlinuz, "initrd", manifest.Initrd, "ddi", manifest.DDI)
+	slog.Info("Bluefin updated", "version", target, "netbootUKI", manifest.NetbootUKI, "ddi", manifest.DDI, "sysexts", len(manifest.Sysexts))
+}
+
+// LoadRemoteBluefinVersion asks the configured source for the newest
+// release and records it in state.
+func LoadRemoteBluefinVersion(ctx context.Context) (string, error) {
+	src, err := newBluefinSource()
+	if err != nil {
+		return "", err
+	}
+	v, err := src.latest(ctx)
+	if err != nil {
+		return "", err
+	}
+	state.SetRemoteBluefinVersion(v)
+	return v, nil
 }
 
 func bluefinRepo() string {
@@ -303,72 +477,133 @@ func githubGet(ctx context.Context, url string, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-// LoadRemoteBluefinVersion asks the GitHub releases API for the newest
-// installer release and records it in state.
-func LoadRemoteBluefinVersion(ctx context.Context) (string, error) {
-	url := bluefinReleasesURL()
-	body, err := githubGet(ctx, url, 8<<20)
+// installBluefinRelease fetches SHA256SUMS and its signature (checked
+// against --bluefinKeyring when set), downloads the netboot UKI, the DDI
+// and every listed sysext (decompressed) into DataDir/bluefin/<version>/,
+// writes the manifest, repoints bluefin/current (and bluefin/previous to
+// the release it replaces) and prunes every other release directory.
+func installBluefinRelease(ctx context.Context, src bluefinSource, version string) (BluefinManifest, error) {
+	sumsBody, err := src.fetch(ctx, version, BluefinSumsFile, 1<<20)
 	if err != nil {
-		return "", err
+		return BluefinManifest{}, fmt.Errorf("%s: %w", BluefinSumsFile, err)
 	}
-	releases, err := parseBluefinReleases(body)
+	sigBody, err := src.fetch(ctx, version, BluefinSigFile, 1<<20)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", url, err)
+		return BluefinManifest{}, fmt.Errorf("%s: %w", BluefinSigFile, err)
 	}
-	rel, err := selectBluefinRelease(releases)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", url, err)
-	}
-	state.SetRemoteBluefinVersion(rel.Version)
-	slog.Debug("Remote Bluefin version found", "version", rel.Version, "tag", rel.Tag)
-	return rel.Version, nil
-}
-
-// installBluefinRelease downloads SHA256SUMS, the PXE kernel, initrd and the
-// selected DDI for version into DataDir/bluefin/<version>/, writes the
-// manifest, repoints bluefin/current and prunes other release directories.
-func installBluefinRelease(ctx context.Context, version string) (BluefinManifest, error) {
-	sumsBody, err := githubGet(ctx, bluefinAssetURL(version, bluefinSumsFile), 1<<20)
-	if err != nil {
-		return BluefinManifest{}, fmt.Errorf("SHA256SUMS: %w", err)
+	if keyring := strings.TrimSpace(viper.GetString(config.BluefinKeyring)); keyring != "" {
+		signer, err := verifyBluefinSums(keyring, sumsBody, sigBody)
+		if err != nil {
+			return BluefinManifest{}, err
+		}
+		slog.Info("Bluefin SHA256SUMS signature verified", "version", version, "signer", signer)
 	}
 	sums, err := parseSHA256SUMS(strings.NewReader(string(sumsBody)))
 	if err != nil {
 		return BluefinManifest{}, err
 	}
-	manifest, err := selectBluefinArtifacts(version, sums)
+	manifest, sysexts, err := selectBluefinArtifacts(version, sums)
 	if err != nil {
 		return BluefinManifest{}, err
 	}
-	slog.Info("Selected Bluefin artifacts", "version", version, "vmlinuz", manifest.Vmlinuz, "initrd", manifest.Initrd, "ddi", manifest.DDI, "ddiSha256", manifest.DDISha256)
+	slog.Info("Selected Bluefin artifacts", "version", version, "netbootUKI", manifest.NetbootUKI, "ddi", manifest.DDI, "sysexts", len(sysexts))
 
 	dir := config.DataPath(config.BluefinDir, version)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return manifest, err
 	}
-	for _, file := range manifest.Files() {
+	for _, file := range []string{manifest.NetbootUKI, manifest.DDI} {
 		dest := filepath.Join(dir, file)
-		hash := sums.hashes[file]
+		hash := manifest.SHA256Sums[file]
 		if config.FileHashMatches(dest, crypto.SHA256, hash) {
 			slog.Info("Artifact already present and verified", "path", dest)
 			continue
 		}
-		if err := config.Download(ctx, config.DownloadClient, bluefinAssetURL(version, file), dest, crypto.SHA256, hash); err != nil {
+		if err := src.download(ctx, version, file, dest, hash); err != nil {
 			return manifest, fmt.Errorf("%s: %w", file, err)
 		}
 	}
+	previous, _ := LoadBluefinManifest(dir)
+	for _, s := range sysexts {
+		sysext, err := installBluefinSysext(ctx, src, version, dir, s, previous.Sysexts[s.name])
+		if errors.Is(err, errBluefinAssetMissing) {
+			slog.Warn("Bluefin sysext listed in SHA256SUMS but not published; skipping it", "version", version, "sysext", s.name, "file", s.asset)
+			continue
+		}
+		if err != nil {
+			return manifest, fmt.Errorf("%s: %w", s.asset, err)
+		}
+		if manifest.Sysexts == nil {
+			manifest.Sysexts = map[string]BluefinSysext{}
+		}
+		manifest.Sysexts[s.name] = sysext
+		manifest.SHA256Sums[s.asset] = s.sha256
+	}
 
-	if err := config.WriteFileAtomic(filepath.Join(dir, bluefinSumsFile), sumsBody, 0o644); err != nil {
-		return manifest, fmt.Errorf("SHA256SUMS: %w", err)
+	if err := config.WriteFileAtomic(filepath.Join(dir, BluefinSumsFile), sumsBody, 0o644); err != nil {
+		return manifest, fmt.Errorf("%s: %w", BluefinSumsFile, err)
+	}
+	if err := config.WriteFileAtomic(filepath.Join(dir, BluefinSigFile), sigBody, 0o644); err != nil {
+		return manifest, fmt.Errorf("%s: %w", BluefinSigFile, err)
 	}
 	if err := writeBluefinManifest(dir, manifest); err != nil {
 		return manifest, err
 	}
-	if err := config.ReplaceSymlink(version, config.DataPath(config.BluefinDir, config.BluefinCurrentLink)); err != nil {
-		return manifest, fmt.Errorf("linking current: %w", err)
+	keep, err := linkBluefinRelease(version)
+	if err != nil {
+		return manifest, err
 	}
-	pruneBluefinReleases(version)
+	pruneBluefinReleases(keep...)
 	return manifest, nil
+}
+
+// installBluefinSysext downloads s (verified against SHA256SUMS) and
+// decompresses it next to the other release files, since Ignition's files
+// stage cannot decompress zstd. have is what an earlier install of the same
+// version recorded; a .raw still matching it is kept.
+func installBluefinSysext(ctx context.Context, src bluefinSource, version, dir string, s bluefinSysextSource, have BluefinSysext) (BluefinSysext, error) {
+	raw := filepath.Join(dir, s.raw())
+	if have.File == s.raw() && config.FileHashMatches(raw, crypto.SHA256, have.Sha256) {
+		slog.Info("Sysext already present and verified", "path", raw)
+		return have, nil
+	}
+	compressed := filepath.Join(dir, s.asset)
+	if !config.FileHashMatches(compressed, crypto.SHA256, s.sha256) {
+		if err := src.download(ctx, version, s.asset, compressed, s.sha256); err != nil {
+			return BluefinSysext{}, err
+		}
+	}
+	sum, err := decompressZstd(compressed, raw)
+	if err != nil {
+		return BluefinSysext{}, err
+	}
+	if err := os.Remove(compressed); err != nil {
+		slog.Warn("Could not remove compressed sysext", "path", compressed, "error", err)
+	}
+	slog.Info("Sysext decompressed", "path", raw, "sha256", sum)
+	return BluefinSysext{File: s.raw(), Sha256: sum}, nil
+}
+
+// linkBluefinRelease points bluefin/current at version and, when it
+// replaces another release, bluefin/previous at that one. It returns the
+// release directories to keep.
+func linkBluefinRelease(version string) ([]string, error) {
+	currentLink := config.DataPath(config.BluefinDir, config.BluefinCurrentLink)
+	previousLink := config.DataPath(config.BluefinDir, config.BluefinPreviousLink)
+	old, _ := os.Readlink(currentLink)
+	if old != "" && old != version {
+		if err := config.ReplaceSymlink(old, previousLink); err != nil {
+			return nil, fmt.Errorf("linking previous: %w", err)
+		}
+	}
+	if err := config.ReplaceSymlink(version, currentLink); err != nil {
+		return nil, fmt.Errorf("linking current: %w", err)
+	}
+	keep := []string{version}
+	if prev, err := os.Readlink(previousLink); err == nil && prev != version {
+		keep = append(keep, prev)
+	}
+	return keep, nil
 }
 
 func writeBluefinManifest(dir string, m BluefinManifest) error {
@@ -392,26 +627,36 @@ func LoadBluefinManifest(dir string) (BluefinManifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, fmt.Errorf("%s: %w", config.BluefinManifestFile, err)
 	}
-	if m.Version == "" || m.Vmlinuz == "" || m.Initrd == "" || m.DDI == "" || m.DDISha256 == "" {
-		return m, fmt.Errorf("%s: incomplete", config.BluefinManifestFile)
+	if !ValidBluefinVersion(m.Version) || m.NetbootUKI != BluefinNetbootUKI(m.Version) || m.DDI != BluefinDDI(m.Version) {
+		return m, fmt.Errorf("%s: incomplete or not a netboot release manifest", config.BluefinManifestFile)
 	}
 	return m, nil
 }
 
-// CurrentBluefinManifest returns the manifest of the served release, or
-// ok=false when no release has been installed yet.
-func CurrentBluefinManifest() (BluefinManifest, bool) {
-	m, err := LoadBluefinManifest(config.DataPath(config.BluefinDir, config.BluefinCurrentLink))
+func bluefinManifestAt(link string) (BluefinManifest, bool) {
+	m, err := LoadBluefinManifest(config.DataPath(config.BluefinDir, link))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			slog.Warn("Bluefin manifest unreadable", "error", err)
+			slog.Warn("Bluefin manifest unreadable", "link", link, "error", err)
 		}
 		return BluefinManifest{}, false
 	}
 	return m, true
 }
 
-func pruneBluefinReleases(keep string) {
+// CurrentBluefinManifest returns the manifest of the served release, or
+// ok=false when no release has been installed yet.
+func CurrentBluefinManifest() (BluefinManifest, bool) {
+	return bluefinManifestAt(config.BluefinCurrentLink)
+}
+
+// PreviousBluefinManifest returns the manifest of the release the current
+// one replaced, still served to hosts that booted it.
+func PreviousBluefinManifest() (BluefinManifest, bool) {
+	return bluefinManifestAt(config.BluefinPreviousLink)
+}
+
+func pruneBluefinReleases(keep ...string) {
 	root := config.DataPath(config.BluefinDir)
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -419,7 +664,7 @@ func pruneBluefinReleases(keep string) {
 		return
 	}
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == keep {
+		if !e.IsDir() || slices.Contains(keep, e.Name()) {
 			continue
 		}
 		path := filepath.Join(root, e.Name())
@@ -432,12 +677,17 @@ func pruneBluefinReleases(keep string) {
 }
 
 // MissingBluefinArtifacts lists the files named by bluefin/current/manifest.json
-// that are absent from dataDir. It is nil when there is no manifest.
+// that are absent from dataDir. It is nil when there is no manifest, and
+// names the manifest itself when it is unreadable or from the retired
+// installer-v* format, so the next check downloads a release afresh.
 func MissingBluefinArtifacts(dataDir string) []string {
 	dir := filepath.Join(dataDir, config.BluefinDir, config.BluefinCurrentLink)
 	m, err := LoadBluefinManifest(dir)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
+	}
+	if err != nil {
+		return []string{config.BluefinManifestFile}
 	}
 	return missingArtifacts(dir, m.Files())
 }

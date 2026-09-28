@@ -143,7 +143,6 @@ func Unit(name string, enabled bool, contents string) types.Unit {
 
 // BootedUnit calls POST /booted once the installed system is up. systemd
 // expands $VAR in ExecStart itself, hence $$ for everything meant for bash.
-// The Bluefin credentials bundle writes the same text to /etc/systemd/system via tmpfiles.extra.
 func BootedUnit(server string) string {
 	return `[Unit]
 Description=Tell Booty this host finished installing (clears doInstall)
@@ -161,7 +160,7 @@ WantedBy=multi-user.target
 }
 
 // UpdateService runs UpdateCheckScriptPath; UpdateTimer fires it every 10
-// minutes. Both are shared with the Bluefin credentials bundle.
+// minutes.
 const UpdateService = `[Unit]
 Description=Ask Booty whether this host needs a reboot to pick up an update
 After=network-online.target

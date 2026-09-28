@@ -94,7 +94,7 @@ func TestClusterEndpointManaged(t *testing.T) {
 		t.Fatal("/cluster must never carry key material")
 	}
 
-	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:01","hostname":"cp","os":"bluefin","role":"control-plane","ip":"192.168.1.30"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:01","hostname":"cp","os":"bluefin","role":"control-plane","ip":"192.168.1.30","stateDisk":"/dev/sdb"}`)
 	r = do(t, http.MethodGet, srv.URL+"/cluster", "")
 	if err := json.Unmarshal([]byte(r.body), &resp); err != nil {
 		t.Fatal(err)

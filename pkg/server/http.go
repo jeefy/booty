@@ -118,20 +118,24 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/cluster", handleClusterRequest)
 	mux.HandleFunc("/cluster/ready", handleClusterReadyRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
-	mux.HandleFunc(credsPathPrefix, handleCredsRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
 
 	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(versions.RegistryBlobDir())))
 	mux.Handle("/v2/", ociRegistry)
 
-	// /boot/ is routed before the mux: UEFI HTTP Boot firmware and shim
-	// never follow redirects, and http.ServeMux answers unclean paths such
-	// as /boot/sb//ipxe.efi with a 301. bootHandler cleans the path itself.
+	// /boot/ and /bluefin/ are routed before the mux: UEFI HTTP Boot
+	// firmware and shim never follow redirects, and http.ServeMux answers
+	// unclean paths such as /boot/sb//ipxe.efi with a 301. Both handlers
+	// clean the path themselves.
 	boot := bootHandler{files: o.BootFiles, secureBootDir: config.SecureBootPath()}
 	return logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, bootPathPrefix) {
 			boot.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, bluefinPathPrefix) {
+			handleBluefinRequest(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -167,7 +171,7 @@ func Start(o Options, errCh chan<- error) (*http.Server, error) {
 }
 
 func logRequest(handler http.Handler) http.Handler {
-	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/creds/", "/v2/", "/update-check"}
+	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/v2/", "/update-check"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		level := slog.LevelInfo
 		for _, prefix := range quiet {

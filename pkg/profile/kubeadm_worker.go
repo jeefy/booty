@@ -65,8 +65,8 @@ func Validate(name string) error {
 
 // AppliesTo reports whether a profile targets hosts running os. Only the
 // container-Linux flavours (Flatcar, Fedora CoreOS) are kubeadm workers;
-// Bluefin Server ships k0s as a sysext and is provisioned through systemd
-// credentials, not Ignition. An empty os is Booty's default (Flatcar).
+// Bluefin Server ships k0s as a sysext and gets its own node Ignition
+// (pkg/server). An empty os is Booty's default (Flatcar).
 func AppliesTo(os string) bool {
 	switch os {
 	case "", "flatcar", "coreos":
@@ -305,9 +305,9 @@ UNITS="` + o.KubeletUnitsURL + `"
 curl -fsSL "${UNITS}/kubelet/kubelet.service" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service
 mkdir -p /etc/systemd/system/kubelet.service.d
 curl -fsSL "${UNITS}/kubeadm/10-kubeadm.conf" | sed "s:/usr/bin:/opt/bin:g" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --fail-swap-on=false" > /etc/default/kubelet
+echo "KUBELET_EXTRA_ARGS=` + KubeletExtraArgs + `" > /etc/default/kubelet
 mkdir -p /etc/sysconfig
-echo "KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --fail-swap-on=false" > /etc/sysconfig/kubelet
+echo "KUBELET_EXTRA_ARGS=` + KubeletExtraArgs + `" > /etc/sysconfig/kubelet
 systemctl daemon-reload
 systemctl enable kubelet && systemctl start kubelet
 echo "kubelet started"
