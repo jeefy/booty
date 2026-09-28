@@ -1,6 +1,7 @@
 package tftp
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -38,6 +39,7 @@ shell
 `,
 
 	"bluefin.ipxe": `#!ipxe
+iseq ${platform} pcbios && goto bios ||
 iseq ${platform} efi || goto not-efi
 echo
 echo Booty: [[hostname]] is a Bluefin Server host, and Booty cannot chainload it from iPXE:
@@ -64,9 +66,10 @@ reboot
 :not-efi
 echo Bluefin Server needs UEFI (this machine booted iPXE in ${platform} mode); dropping to shell
 shell
-`,
+[[bluefin-bios]]`,
 
 	"bluefin-chain.ipxe": `#!ipxe
+iseq ${platform} pcbios && goto bios ||
 iseq ${platform} efi || goto not-efi
 iseq ${buildarch} x86_64 || goto not-efi
 set menu-timeout 5000
@@ -95,7 +98,7 @@ reboot
 :not-efi
 echo Bluefin Server needs x86-64 UEFI (this machine booted iPXE ${buildarch} in ${platform} mode); dropping to shell
 shell
-`,
+[[bluefin-bios]]`,
 
 	"bluefin-installed.ipxe": `#!ipxe
 echo Booty: [[hostname]] is an installed Bluefin Server host; booting from disk
@@ -180,6 +183,9 @@ type TemplateVars struct {
 	BluefinChainCmdline string
 	// BluefinInstalled makes a Bluefin host boot its disk.
 	BluefinInstalled bool
+	// BluefinBIOS is the legacy BIOS (iPXE pcbios) branch of the Bluefin
+	// menus.
+	BluefinBIOS BluefinBIOS
 }
 
 // secureBootShim is the iPXE line that makes the following kernel command
@@ -222,6 +228,99 @@ func (v TemplateVars) secureBootRefusal() string {
 	return v.flatcarCALines()
 }
 
+// BluefinBIOS boots Bluefin Server diskless on legacy BIOS: iPXE loads the
+// netboot UKI's .linux as a bzImage with Cmdline and the InitrdURLs in
+// order. An empty KernelURL offers only disk/shell/reboot and prints
+// Reason.
+type BluefinBIOS struct {
+	Version    string
+	KernelURL  string
+	InitrdURLs []string
+	Cmdline    string
+	Reason     []string
+	// InstallPending explains that doInstall is ignored here (installing
+	// needs UEFI) for InstallDisk; PreferDisk makes boot-from-disk the
+	// default (an installed host that is to be reinstalled).
+	InstallPending bool
+	InstallDisk    string
+	PreferDisk     bool
+}
+
+// biosFragment is the :bios branch appended to the Bluefin menus. Its
+// labels are prefixed bios- so they never collide with the EFI menu's.
+func (v TemplateVars) biosFragment() string {
+	b := v.BluefinBIOS
+	var sb strings.Builder
+	line := func(format string, args ...any) { fmt.Fprintf(&sb, format+"\n", args...) }
+	line(":bios")
+	if b.KernelURL == "" {
+		reason := b.Reason
+		if len(reason) == 0 {
+			reason = []string{"no Bluefin Server release is cached yet."}
+		}
+		line("echo")
+		line("echo Booty: %s is a Bluefin Server host, and Booty cannot boot it in BIOS mode:", v.Hostname)
+		for _, r := range reason {
+			line("echo %s", r)
+		}
+		line("echo")
+		line("set menu-timeout 30000")
+		line(":bios-start")
+		line("menu Booty - Bluefin Server: cannot boot in BIOS mode - %s", v.Hostname)
+	} else {
+		if b.InstallPending {
+			disk := "its disk"
+			if b.InstallDisk != "" {
+				disk = b.InstallDisk
+			}
+			line("echo")
+			line("echo Booty: an install of Bluefin Server to %s is pending for %s, but installing", disk, v.Hostname)
+			line("echo needs UEFI (systemd-boot); this BIOS boot runs diskless and installs nothing.")
+			line("echo")
+		}
+		line("set menu-timeout 5000")
+		line(":bios-start")
+		line("menu Booty - Bluefin Server %s (diskless, BIOS) - %s", b.Version, v.Hostname)
+		line("item --key n bios-netboot   Boot Bluefin Server %s diskless", b.Version)
+	}
+	line("item --key d bios-disk      Boot from disk")
+	line("item --key s bios-shell     iPXE shell")
+	line("item --key r bios-reboot    Reboot")
+	def := "bios-disk"
+	if b.KernelURL != "" && !b.PreferDisk {
+		def = "bios-netboot"
+	}
+	line("choose --timeout ${menu-timeout} --default %s selected || goto bios-disk", def)
+	line("set menu-timeout 0")
+	line("goto ${selected}")
+	if b.KernelURL != "" {
+		line(":bios-netboot")
+		line("cpuid --ext 29 || goto bios-not64")
+		line("imgfree")
+		line("kernel %s %s || goto bios-failed", b.KernelURL, b.Cmdline)
+		for _, u := range b.InitrdURLs {
+			line("initrd %s || goto bios-failed", u)
+		}
+		line("boot || goto bios-failed")
+		line(":bios-failed")
+		line("echo Booty: booting the Bluefin Server kernel failed")
+		line("prompt --timeout 5000 Press any key for the menu, or wait to boot from disk || goto bios-disk")
+		line("goto bios-start")
+		line(":bios-not64")
+		line("echo Bluefin Server needs a 64-bit (x86-64) CPU; this one has no long mode. Dropping to shell")
+		line("shell")
+		line("goto bios-start")
+	}
+	line(":bios-disk")
+	line("exit")
+	line(":bios-shell")
+	line("shell")
+	line("goto bios-start")
+	line(":bios-reboot")
+	line("reboot")
+	return sb.String()
+}
+
 func (v TemplateVars) bluefinReason() string {
 	var sb strings.Builder
 	for _, line := range v.BluefinReason {
@@ -257,6 +356,7 @@ func Render(template string, v TemplateVars) string {
 		"[[bluefin-version]]", v.BluefinVersion,
 		"[[bluefin-chain-url]]", v.BluefinChainURL,
 		"[[bluefin-chain-cmdline]]", v.BluefinChainCmdline,
+		"[[bluefin-bios]]", v.biosFragment(),
 		"[[secure-boot-shim]]", v.secureBootShim(),
 	).Replace(template)
 }

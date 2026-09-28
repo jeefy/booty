@@ -247,7 +247,7 @@ func TestBluefinScriptRendering(t *testing.T) {
 	for _, sb := range []bool{false, true} {
 		out := IPXEScript("bluefin", TemplateVars{Server: "192.168.1.10:8080", Hostname: "srv1", BluefinBootURL: url, SecureBoot: sb})
 		for _, want := range []string{
-			"#!ipxe\niseq ${platform} efi || goto not-efi\n",
+			"#!ipxe\niseq ${platform} pcbios && goto bios ||\niseq ${platform} efi || goto not-efi\n",
 			"echo Switch this machine's network boot to UEFI HTTP Boot (IPv4)",
 			"echo   " + url + "\n",
 			"menu Booty - Bluefin Server: switch to UEFI HTTP Boot - srv1\n",
@@ -408,4 +408,120 @@ func TestBluefinChainScript(t *testing.T) {
 	if out := IPXEScript("bluefin", installed); out != "#!ipxe\necho Booty: srv1 is an installed Bluefin Server host; booting from disk\nexit\n" {
 		t.Fatalf("installed:\n%s", out)
 	}
+}
+
+func biosVars() TemplateVars {
+	const dir = "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/"
+	return TemplateVars{
+		Server: "192.168.1.10:8080", Hostname: "srv1",
+		BluefinBootURL: dir + "bluefin-server-netboot.efi",
+		BluefinBIOS: BluefinBIOS{
+			Version:    "20260927.123",
+			KernelURL:  dir + "bluefin-server-netboot_20260927.123.linux",
+			InitrdURLs: []string{dir + "bluefin-server-netboot_20260927.123.ucode", dir + "bluefin-server-netboot_20260927.123.initrd"},
+			Cmdline:    "usrhash=abc rd.systemd.pull=raw:rootdisk:" + dir + "bluefin-server_20260927.123.raw",
+		},
+	}
+}
+
+func labels(t *testing.T, script string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, l := range strings.Split(script, "\n") {
+		if strings.HasPrefix(l, ":") {
+			if seen[l] {
+				t.Errorf("label %s defined twice:\n%s", l, script)
+			}
+			seen[l] = true
+		}
+	}
+	for _, l := range strings.Split(script, "\n") {
+		if i := strings.Index(l, "goto "); i >= 0 {
+			target := strings.Fields(l[i+5:])[0]
+			if !strings.HasPrefix(target, "${") && !seen[":"+target] {
+				t.Errorf("goto %s has no label:\n%s", target, script)
+			}
+		}
+	}
+}
+
+func TestBluefinBIOSFragment(t *testing.T) {
+	const dir = "http://192.168.1.10:8080/bluefin/aa-bb-cc-dd-ee-03/"
+	for _, chain := range []bool{false, true} {
+		v := biosVars()
+		if chain {
+			v.BluefinChainURL, v.BluefinChainCmdline, v.BluefinVersion = dir+"bluefin-server-netboot_20260927.123.efi", v.BluefinBIOS.Cmdline, "20260927.123"
+		}
+		out := IPXEScript("bluefin", v)
+		labels(t, out)
+		for _, want := range []string{
+			"#!ipxe\niseq ${platform} pcbios && goto bios ||\n",
+			"\n:bios\nset menu-timeout 5000\n:bios-start\nmenu Booty - Bluefin Server 20260927.123 (diskless, BIOS) - srv1\n",
+			"item --key n bios-netboot   Boot Bluefin Server 20260927.123 diskless\n",
+			"item --key d bios-disk      Boot from disk\n", "item --key s bios-shell     iPXE shell\n", "item --key r bios-reboot    Reboot\n",
+			"choose --timeout ${menu-timeout} --default bios-netboot selected || goto bios-disk\n",
+			":bios-netboot\ncpuid --ext 29 || goto bios-not64\nimgfree\n" +
+				"kernel " + dir + "bluefin-server-netboot_20260927.123.linux usrhash=abc rd.systemd.pull=raw:rootdisk:" + dir + "bluefin-server_20260927.123.raw || goto bios-failed\n" +
+				"initrd " + dir + "bluefin-server-netboot_20260927.123.ucode || goto bios-failed\n" +
+				"initrd " + dir + "bluefin-server-netboot_20260927.123.initrd || goto bios-failed\n" +
+				"boot || goto bios-failed\n",
+			":bios-not64\necho Bluefin Server needs a 64-bit (x86-64) CPU",
+			":bios-disk\nexit\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("chain=%v: missing %q:\n%s", chain, want, out)
+			}
+		}
+		if strings.Contains(out, "initrd=") || strings.Contains(out, "[[") {
+			t.Fatalf("chain=%v:\n%s", chain, out)
+		}
+	}
+
+	t.Run("without microcode", func(t *testing.T) {
+		v := biosVars()
+		v.BluefinBIOS.InitrdURLs = v.BluefinBIOS.InitrdURLs[1:]
+		out := IPXEScript("bluefin", v)
+		if strings.Contains(out, ".ucode") || !strings.Contains(out, "|| goto bios-failed\ninitrd "+dir+"bluefin-server-netboot_20260927.123.initrd || goto bios-failed\nboot") {
+			t.Fatalf("%s", out)
+		}
+	})
+
+	t.Run("Secure Boot does not block BIOS", func(t *testing.T) {
+		v := biosVars()
+		v.SecureBoot = true
+		if out := IPXEScript("bluefin", v); !strings.Contains(out, "\nkernel "+dir) {
+			t.Fatalf("%s", out)
+		}
+	})
+
+	t.Run("pending install is explained and ignored", func(t *testing.T) {
+		v := biosVars()
+		v.BluefinBIOS.InstallPending, v.BluefinBIOS.InstallDisk = true, "/dev/sda"
+		out := IPXEScript("bluefin", v)
+		if !strings.Contains(out, ":bios\necho\necho Booty: an install of Bluefin Server to /dev/sda is pending for srv1, but installing\necho needs UEFI (systemd-boot); this BIOS boot runs diskless and installs nothing.\n") || !strings.Contains(out, "--default bios-netboot") {
+			t.Fatalf("%s", out)
+		}
+		v.BluefinBIOS.PreferDisk = true
+		if out := IPXEScript("bluefin", v); !strings.Contains(out, "--default bios-disk selected") || !strings.Contains(out, "\nkernel ") {
+			t.Fatalf("an installed host defaults to its disk but can still netboot:\n%s", out)
+		}
+	})
+
+	t.Run("cannot boot", func(t *testing.T) {
+		v := biosVars()
+		v.BluefinBIOS = BluefinBIOS{Reason: []string{"the UKI is broken."}}
+		out := IPXEScript("bluefin", v)
+		labels(t, out)
+		if strings.Contains(out, "\nkernel ") || strings.Contains(out, "bios-netboot") || !strings.Contains(out, "echo the UKI is broken.\n") || !strings.Contains(out, "--default bios-disk selected") {
+			t.Fatalf("%s", out)
+		}
+	})
+
+	t.Run("installed boots its disk on any platform", func(t *testing.T) {
+		v := biosVars()
+		v.BluefinInstalled = true
+		if out := IPXEScript("bluefin", v); strings.Contains(out, "bios") {
+			t.Fatalf("%s", out)
+		}
+	})
 }

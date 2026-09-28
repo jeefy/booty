@@ -174,7 +174,7 @@ func TestBluefinIPXEChainload(t *testing.T) {
 		"rd.systemd.pull=raw,machine,verify=signature,blockdev,bootorigin:rootdisk:bluefin-server_"+bluefinTestVersion+".raw",
 		"rd.systemd.pull=raw,machine,verify=signature,blockdev:rootdisk:"+dirURL+"/bluefin-server_"+bluefinTestVersion+".raw", 1)
 	for _, want := range []string{
-		"#!ipxe\niseq ${platform} efi || goto not-efi\niseq ${buildarch} x86_64 || goto not-efi\n",
+		"#!ipxe\niseq ${platform} pcbios && goto bios ||\niseq ${platform} efi || goto not-efi\niseq ${buildarch} x86_64 || goto not-efi\n",
 		"set menu-timeout 5000\n",
 		"menu Booty - Bluefin Server " + bluefinTestVersion + " (diskless) - srv1\n",
 		"choose --timeout ${menu-timeout} --default netboot selected || goto run-from-disk\n",
