@@ -106,6 +106,7 @@ func TestBuildAndWriteRedactsEverything(t *testing.T) {
 		"mac=<mac>&token=<token>",
 		"hostname set to <host> (was <host>.lan)",
 		"Status: **quarantined**",
+		"fail the health gate 2 times (3 attempt(s) including the rollback)",
 	} {
 		if !strings.Contains(mdText, want) {
 			t.Errorf("markdown lacks %q\n%s", want, mdText)

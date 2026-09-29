@@ -223,7 +223,7 @@ func renderMarkdown(d *Document) string {
 	if d.Draft {
 		status = "draft (release in TIMEOUT, retry pending)"
 	}
-	fmt.Fprintf(&b, "Booty's autopilot (`--autopilot=%s`) rolled this release out, watched it fail the health gate %s and rolled the host back. Status: **%s**.\n\n", orUnknown(d.Mode), plural(d.AttemptCount, "times"), status)
+	fmt.Fprintf(&b, "Booty's autopilot (`--autopilot=%s`) rolled this release out, watched it fail the health gate %s (%d attempt(s) including the rollback) and rolled the host back. Status: **%s**.\n\n", orUnknown(d.Mode), plural(failedAttempts(d.Attempts), "times"), d.AttemptCount, status)
 
 	b.WriteString("## Release\n\n")
 	fmt.Fprintf(&b, "| | |\n|---|---|\n| OS | %s |\n| Release | `%s` |\n| lastGood | `%s` |\n| Attempts | %d |\n| Last failure class | `%s` |\n| Rollback | %s |\n\n",
@@ -317,6 +317,16 @@ func orUnknown(s string) string {
 		return "unknown"
 	}
 	return s
+}
+
+func failedAttempts(attempts []Attempt) int {
+	n := 0
+	for _, a := range attempts {
+		if a.Outcome != "healthy" {
+			n++
+		}
+	}
+	return n
 }
 
 func plural(n int, many string) string {
