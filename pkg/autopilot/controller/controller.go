@@ -32,7 +32,7 @@ type Options struct {
 	// no-ignition (default 5 min); PendingGrace how long a pod may stay
 	// Pending before it counts (default 5 min); NodeStable how long the
 	// node must have been Ready without a Ready=False transition (default
-	// 5 min, the plan's "last 5 min of the window"; negative disables).
+	// MaxNodeStable capped at half of HealthWindow; negative disables).
 	IgnitionGrace time.Duration
 	PendingGrace  time.Duration
 	NodeStable    time.Duration
@@ -70,11 +70,23 @@ func (o *Options) defaults() {
 		o.PendingGrace = 5 * time.Minute
 	}
 	if o.NodeStable == 0 {
-		o.NodeStable = 5 * time.Minute
+		o.NodeStable = defaultNodeStable(o.HealthWindow)
 	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
+}
+
+// MaxNodeStable is the stability the L2 gate asks of a node with the
+// default window: Ready with no Ready=False transition for the last 5 min.
+const MaxNodeStable = 5 * time.Minute
+
+// defaultNodeStable is MaxNodeStable capped at half the health window, so
+// a short --autopilotHealthWindow (a lab's 6 m) stays passable: with the
+// full 5 min a node would have to be Ready within a minute of its kernel
+// fetch, and every gate failed node-not-ready (found in the P5 QEMU run).
+func defaultNodeStable(window time.Duration) time.Duration {
+	return min(MaxNodeStable, window/2)
 }
 
 // Controller is the autopilot state machine. All methods are safe for

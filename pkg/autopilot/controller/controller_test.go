@@ -809,3 +809,45 @@ func TestHostBootingSomethingElseGatesWhatItBoots(t *testing.T) {
 		t.Fatalf("episode: %+v", e)
 	}
 }
+
+func TestNodeStableIsCappedAtHalfTheWindow(t *testing.T) {
+	for _, tc := range []struct{ window, want time.Duration }{
+		{15 * time.Minute, 5 * time.Minute},
+		{10 * time.Minute, 5 * time.Minute},
+		{6 * time.Minute, 3 * time.Minute},
+		{2 * time.Minute, time.Minute},
+	} {
+		o := Options{HealthWindow: tc.window}
+		o.defaults()
+		if o.NodeStable != tc.want {
+			t.Errorf("window %s: NodeStable = %s, want %s", tc.window, o.NodeStable, tc.want)
+		}
+	}
+	o := Options{HealthWindow: 6 * time.Minute, NodeStable: 4 * time.Minute}
+	o.defaults()
+	if o.NodeStable != 4*time.Minute {
+		t.Errorf("an explicit NodeStable must be kept, got %s", o.NodeStable)
+	}
+}
+
+// A 6-minute window with a node that needs 90 s to come up must pass the
+// gate: with the uncapped 5-minute stability it never could.
+func TestShortWindowGatePasses(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.opts.HealthWindow = 6 * time.Minute
+	h.start()
+	h.flatcarHost(macA, "ehrlitan")
+	h.healthyNode("ehrlitan", "Flatcar 4757.2.0")
+	h.fetch(macA)
+	h.advance(90 * time.Second)
+	h.up(macA, "4800.0.0")
+	h.node("ehrlitan", true, h.time(), "Flatcar 4800.0.0")
+	h.tick()
+	h.wantState(macA, hardware.AutopilotGating, 1, "")
+	h.advance(3 * time.Minute)
+	h.tick()
+	h.wantState(macA, hardware.AutopilotIdle, 1, "")
+	if got := h.release("flatcar", "4800.0.0").Healthy; len(got) != 1 || got[0] != macA {
+		t.Fatalf("healthy list: %v", got)
+	}
+}
