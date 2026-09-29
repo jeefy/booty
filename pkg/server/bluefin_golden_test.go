@@ -44,7 +44,10 @@ func addKubeadmSysextToFixture(t *testing.T, dir string) {
 // Bluefin hosts that do not join the kubeadm cluster, with the kubeadm
 // sysext in the release: no --profile, and under --profile=kubeadm-worker
 // a control-plane host, a k0s host and an installing host. The fixtures
-// were dumped from c9f5fef, before Bluefin kubeadm workers existed.
+// were dumped from c9f5fef, before Bluefin kubeadm workers existed, and
+// refreshed for autopilot P1, which adds booty-booted.service,
+// booty-update.service/.timer and booty-health.service with their
+// /etc/booty scripts to every node config.
 func TestBluefinNodeWithoutKubeadmJoinIsByteIdentical(t *testing.T) {
 	srv, dir := newTestServer(t)
 	installBluefinFixture(t, dir)
