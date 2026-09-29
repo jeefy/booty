@@ -95,9 +95,39 @@ const guard = {
       lastGood: '4757.2.0',
       draft: true,
       createdAt: '2026-09-28T12:30:00Z',
+      updatedAt: '2026-09-28T13:00:00Z',
       class: 'failed-units',
       attempts: 3,
-      rollbackResult: 'lastGood 4757.2.0 healthy on the same hardware'
+      rollbackResult: 'lastGood 4757.2.0 healthy on the same hardware',
+      path: '/autopilot/reports/flatcar-4800.0.0.md'
+    },
+    {
+      key: 'bluefin-26.09.700',
+      os: 'bluefin',
+      version: '26.09.700',
+      lastGood: '26.09.673',
+      draft: false,
+      createdAt: '2026-09-27T12:30:00Z',
+      updatedAt: '2026-09-27T14:00:00Z',
+      class: 'boot-loop',
+      attempts: 4,
+      rollbackResult: 'retry failed with boot-loop',
+      path: '/autopilot/reports/bluefin-26.09.700.md',
+      postedURL: 'https://github.com/jeefy/booty-autopilot-scratch/issues/12',
+      postedAt: '2026-09-27T14:00:05Z',
+      postAction: 'created'
+    },
+    {
+      key: 'bluefin-26.09.701',
+      os: 'bluefin',
+      version: '26.09.701',
+      lastGood: '26.09.673',
+      draft: false,
+      createdAt: '2026-09-27T15:30:00Z',
+      class: 'no-ignition',
+      attempts: 4,
+      path: '/autopilot/reports/bluefin-26.09.701.md',
+      postError: 'POST /repos/x/y/issues: HTTP 403: rate limit exceeded'
     }
   ],
   held: ['flatcar'],
@@ -105,10 +135,20 @@ const guard = {
   needsHands: 0
 }
 
+const reportMarkdown =
+  '# Flatcar 4800.0.0: failed-units (autopilot report)\n\n<!-- booty-autopilot: flatcar 4800.0.0 abc -->\n\n| Boot path | `uefi-pxe` |\n'
+
 function mountView(status: unknown, onClear?: (url: string, init?: RequestInit) => Response) {
   const spy = mockFetch((url, init) => {
     if (url === '/autopilot') return jsonResponse(status)
     if (url === '/booty.json') return jsonResponse(hosts)
+    if (url === '/autopilot/reports/flatcar-4800.0.0.md') {
+      return new Response(reportMarkdown, {
+        status: 200,
+        headers: { 'Content-Type': 'text/markdown; charset=utf-8' }
+      })
+    }
+    if (url.startsWith('/autopilot/reports/')) return jsonResponse({ error: 'no such report' }, 404)
     if (url.startsWith('/autopilot/') && init?.method === 'POST') {
       return onClear ? onClear(url, init) : jsonResponse({ status: 'ok' })
     }
@@ -203,5 +243,61 @@ describe('AutopilotView', () => {
     await wrapper.find('[data-release="4800.0.0"] [data-action="clear"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="clear-error"]').text()).toContain('nothing to clear')
+  })
+
+  it('lists reports with draft/final badges, the Markdown link, the issue link and post failures', async () => {
+    const { wrapper } = mountView(guard)
+    await flushPromises()
+    const table = wrapper.find('[data-testid="autopilot-reports-table"]')
+    expect(table.findAll('tr[data-report]')).toHaveLength(3)
+
+    const draft = table.find('tr[data-report="flatcar-4800.0.0"]')
+    expect(draft.text()).toContain('draft')
+    expect(draft.find('[data-action="download-report"]').attributes('href')).toBe(
+      '/autopilot/reports/flatcar-4800.0.0.md'
+    )
+    expect(draft.find('[data-action="issue-link"]').exists()).toBe(false)
+
+    const posted = table.find('tr[data-report="bluefin-26.09.700"]')
+    expect(posted.text()).toContain('final')
+    expect(posted.text()).not.toContain('draft')
+    const issue = posted.find('[data-action="issue-link"]')
+    expect(issue.attributes('href')).toBe(
+      'https://github.com/jeefy/booty-autopilot-scratch/issues/12'
+    )
+    expect(issue.attributes('target')).toBe('_blank')
+    expect(issue.text()).toBe('GitHub #12')
+
+    const failed = table.find('tr[data-report="bluefin-26.09.701"]')
+    expect(failed.find('[data-action="issue-link"]').exists()).toBe(false)
+    expect(failed.find('[data-testid="report-post-error"]').attributes('title')).toContain('403')
+  })
+
+  it('fetches and shows the redacted Markdown inline, and hides it again', async () => {
+    const { wrapper, spy } = mountView(guard)
+    await flushPromises()
+    const row = wrapper.find('tr[data-report="flatcar-4800.0.0"]')
+    await row.find('[data-action="view-report"]').trigger('click')
+    await flushPromises()
+    expect(spy.mock.calls.some(([url]) => url === '/autopilot/reports/flatcar-4800.0.0.md')).toBe(
+      true
+    )
+    const body = wrapper.find('tr[data-report-body="flatcar-4800.0.0"]')
+    expect(body.exists()).toBe(true)
+    expect(body.find('[data-testid="report-preview"]').text()).toContain(
+      'booty-autopilot: flatcar 4800.0.0 abc'
+    )
+    expect(row.find('[data-action="view-report"]').text()).toBe('Hide')
+
+    await row.find('[data-action="view-report"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('tr[data-report-body="flatcar-4800.0.0"]').exists()).toBe(false)
+
+    const missing = wrapper.find('tr[data-report="bluefin-26.09.701"]')
+    await missing.find('[data-action="view-report"]').trigger('click')
+    await flushPromises()
+    expect(
+      wrapper.find('tr[data-report-body="bluefin-26.09.701"] [data-testid="report-error"]').text()
+    ).toContain('no such report')
   })
 })

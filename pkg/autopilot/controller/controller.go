@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeefy/booty/pkg/autopilot/report"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 )
@@ -36,7 +37,21 @@ type Options struct {
 	PendingGrace  time.Duration
 	NodeStable    time.Duration
 	Now           func() time.Time
+	// ReportsDir is where the rendered reports go (empty: not written);
+	// Poster files final Bluefin reports as issues (nil: drafts only);
+	// CNI names the network plugin Booty installed, if it did.
+	ReportsDir string
+	Poster     Poster
+	CNI        report.CNI
 }
+
+// Poster is what files a report upstream; *report.Poster implements it.
+type Poster interface {
+	Post(ctx context.Context, in report.Input, rep report.Report) (report.Result, error)
+}
+
+// PostRetryAfter is how long a failed post waits before the next try.
+const PostRetryAfter = time.Hour
 
 func (o *Options) defaults() {
 	if o.Poll <= 0 {
@@ -71,6 +86,7 @@ type Controller struct {
 	state    *State
 	actuator string
 	dirty    bool
+	posting  map[string]bool
 }
 
 // New loads the persisted state (if any) and re-applies the fleet holds
@@ -81,7 +97,7 @@ func New(opts Options) (*Controller, error) {
 		return nil, errors.New("controller: Fleet is required")
 	}
 	opts.defaults()
-	c := &Controller{opts: opts, state: newState(), actuator: ActuatorNone}
+	c := &Controller{opts: opts, state: newState(), actuator: ActuatorNone, posting: map[string]bool{}}
 	if opts.StatePath != "" {
 		if err := c.load(); err != nil {
 			return nil, err
@@ -92,6 +108,7 @@ func New(opts Options) (*Controller, error) {
 			c.opts.Fleet.Hold(osName, st.Held)
 		}
 	}
+	c.regenerateReports()
 	return c, nil
 }
 
@@ -180,6 +197,7 @@ func (c *Controller) Tick(ctx context.Context) {
 	c.advanceLastGood()
 	c.applyHolds()
 	c.syncHostSummaries()
+	c.postPendingReports()
 	c.save()
 }
 

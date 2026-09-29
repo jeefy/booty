@@ -184,9 +184,10 @@ const (
 	EventReport   = "report"
 )
 
-// Report is the draft P4 renders: everything the redacting builder needs,
-// kept as fields (never free text with identifiers). Hardware and node
-// facts are copied from the host's health report and the node sample.
+// Report is the stub P4's builder renders: everything the redacting
+// builder needs, kept as fields (never free text with identifiers).
+// Hardware and node facts are copied from the host's health report and
+// the node sample. Draft is true from the TIMEOUT draft until quarantine.
 type Report struct {
 	OS        string    `json:"os"`
 	Version   string    `json:"version"`
@@ -219,6 +220,21 @@ type Report struct {
 	// DMIHash identifies the machine for the issue dedupe marker without
 	// naming it (sha256 of the product UUID), empty when unknown.
 	DMIHash string `json:"dmiHash,omitempty"`
+	// UpdatedAt is when the stub last changed (and the files were
+	// rewritten); Posted is the GitHub issue the final report went to,
+	// NextPostAt when a failed post is tried again.
+	UpdatedAt  time.Time `json:"updatedAt,omitzero"`
+	Posted     *Posted   `json:"posted,omitempty"`
+	NextPostAt time.Time `json:"nextPostAt,omitzero"`
+	PostError  string    `json:"postError,omitempty"`
+}
+
+// Posted is where a report was filed.
+type Posted struct {
+	URL    string    `json:"url"`
+	Number int       `json:"number,omitempty"`
+	Action string    `json:"action"`
+	At     time.Time `json:"at"`
 }
 
 // State is what data/autopilot/state.json holds.

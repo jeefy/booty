@@ -22,6 +22,7 @@ Flags:
       --autopilotDrainTimeout duration     How long the API actuator keeps retrying evictions refused by a PodDisruptionBudget before it gives up on draining a node (default 10m0s)
       --autopilotHealthWindow duration     Health-gate window: how long a host has, from its observed reboot (first kernel/UKI fetch), to come back Ready with its workloads healthy (default 15m0s)
       --autopilotImage string              Image of the reboot Pods (must be Booty's own, it runs 'booty node-reboot'); defaults to the BOOTY_IMAGE environment variable, and the API actuator refuses to run without one
+      --autopilotIssues string             GitHub owner/repo the autopilot files quarantined Bluefin releases to as issues (redacted report, deduplicated per release by a hidden marker; a second machine comments), with --githubToken (issues:write). Empty keeps the reports on disk only; try a fork or scratch repository before projectbluefin/server
       --autopilotNamespace string          Namespace the autopilot's API actuator creates reboot Pods in; defaults to Booty's own (the POD_NAMESPACE downward-API variable), else kube-system
       --autopilotRetryAfter duration       How long a release that a host rolled back from stays in TIMEOUT before the autopilot retries it once (on the Bluefin canary, or the same Flatcar/CoreOS host) (default 1h0m0s)
       --bluefinKeyring string              OpenPGP public keyring (binary as for gpgv --keyring, or armored) that must have signed a Bluefin release's SHA256SUMS (SHA256SUMS.gpg); the sync fails closed when set. Empty trusts SHA256SUMS from the release as-is
@@ -50,7 +51,7 @@ Flags:
       --flatcarArchitecture string         Architecture to use for the Flatcar downloads (default "amd64")
       --flatcarChannel string              Flatcar channel to look for updates (default "stable")
       --flatcarVersion string              Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel
-      --githubToken string                 GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed
+      --githubToken string                 GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit; no scopes needed) and, with --autopilotIssues, used to file autopilot reports as issues (needs issues:write on that repository)
   -h, --help                               help for booty
       --hostnameTemplate string            Go template for auto-registered hostnames; fields: .MAC, .MACSuffix (last 3 bytes hex), .MACFlat (12 hex), .IP (default "node-{{ .MACSuffix }}")
       --httpPort int                       Port to use for the HTTP server (default 8080)
@@ -394,7 +395,7 @@ Each check is recorded on the host (`running`, `lastCheck`, `rebootPending`, vis
 
 ## Autopilot
 
-Booty is a self-healing upgrade controller: it rolls a release across the fleet, checks that each node comes back healthy, retries, downgrades to the last good release when it does not, and holds the fleet there. The design and the remaining slices (P4 reports, P5 verification) are in [docs/plans/2026-09-28-autopilot.md](docs/plans/2026-09-28-autopilot.md). `--autopilot=off` (the default) starts none of it and changes nothing.
+Booty is a self-healing upgrade controller: it rolls a release across the fleet, checks that each node comes back healthy, retries, downgrades to the last good release when it does not, holds the fleet there and, for Bluefin Server, reports the bad release upstream. The design and the remaining slice (P5 verification) are in [docs/plans/2026-09-28-autopilot.md](docs/plans/2026-09-28-autopilot.md). `--autopilot=off` (the default) starts none of it and changes nothing.
 
 ### Modes
 
@@ -455,15 +456,41 @@ Chosen at each use, in this order: **kured** if a kured DaemonSet exists (Booty 
 
 ### Endpoints and UI
 
-* `GET /autopilot`: `mode`, `actuator`, `cluster` (from P2), `dryRun` (`true` only when off), `healthWindow`, `retryAfter`, per-OS `os.<name>: {fleetTarget, current, lastGood, held, releases:[{version, state, since, attempts, class, report, healthy, failedOn, failing}]}`, per-host `hosts:[{mac, os, healthyOn, pinned, episode}]` with the episode's attempts and relative timeline, `events` (a ring of the last 200; the text never carries hostnames, IPs or MACs, the MAC is a field), `reports` (the stubs), `held`, `quarantined`, `needsHands`.
+* `GET /autopilot`: `mode`, `actuator`, `cluster` (from P2), `dryRun` (`true` only when off), `healthWindow`, `retryAfter`, per-OS `os.<name>: {fleetTarget, current, lastGood, held, releases:[{version, state, since, attempts, class, report, healthy, failedOn, failing}]}`, per-host `hosts:[{mac, os, healthyOn, pinned, episode}]` with the episode's attempts and relative timeline, `events` (a ring of the last 200; the text never carries hostnames, IPs or MACs, the MAC is a field), `reports:[{key, os, version, lastGood, draft, createdAt, updatedAt, class, attempts, rollbackResult, path, postedURL, postedAt, postAction, postError}]` (see [Reports](#reports-p4)), `held`, `quarantined`, `needsHands`.
+* `GET /autopilot/reports/<os>-<version>.md` serves a rendered report as `text/markdown` (`.json` for its JSON twin); anything that is not a well-formed report key is a 404.
 * `POST /autopilot/{os}/release/{version}/clear` un-quarantines (or ends the TIMEOUT of) a release so the fleet tries it again; like `/register` it needs nothing but reach to the port (see [Trust model](#trust-model)). `409` when the release is not in a state to clear.
 * `GET /info` gains `"autopilot":{"mode","actuator","held":[os…],"quarantined":n,"needsHands":n}`.
-* The **Autopilot** page shows mode, actuator, cluster and attention counters, the fleet target/`current`/`lastGood` per OS with the hold, every release with its state and since when, the per-host state table (attempt, class, note), the report stubs and the event timeline, with a *Clear* button on quarantined/TIMEOUT releases. The host form has the *Autopilot canary* checkbox and the Hosts table shows `canary` and the episode state as badges.
+* The **Autopilot** page shows mode, actuator, cluster and attention counters, the fleet target/`current`/`lastGood` per OS with the hold, every release with its state and since when, the per-host state table (attempt, class, note), the reports (draft/final badge, *View* opens the redacted Markdown inline, `.md` opens it raw, and the GitHub issue link once posted) and the event timeline, with a *Clear* button on quarantined/TIMEOUT releases. The host form has the *Autopilot canary* checkbox and the Hosts table shows `canary` and the episode state as badges.
 * `alert` events (NEEDS-HANDS, failed actuator writes) are also logged at error level.
 
-**Reports** in P3 are stubs: for every release the autopilot blames it records in `state.json` what P4's redacting builder needs (attempts with classes and relative timelines, DMI vendor/product/BIOS, firmware, kernel, boot path, kubelet/osImage/runtime, the rollback result, the raw journal excerpt and a hash of the DMI UUID) and emits a `report` event. `GET /autopilot` lists them without the journal excerpt.
-
 **Safety.** Never more than one Bluefin host is rolling under `full`; under `guard` the rollout order is not changed, only held. `lastGood` only advances when every host of the OS that has ever booted is healthy on the release. A host that fails on `lastGood` too is a sick node, not a bad release: it is left alone and flagged, the release is not blamed and the hold released. Nothing in the controller writes to the cluster except through an actuator; the tests assert the fake API server sees GETs only.
+
+### Reports (P4)
+
+For every release the autopilot blames, the controller keeps a **report stub** in `state.json` (attempts with classes and relative timelines, DMI vendor/product/BIOS, firmware, kernel, boot path, kubelet/osImage/runtime from the node, the rollback result, the raw journal excerpt from the failing boot's health report, and a hash of the DMI product UUID) and renders it through `pkg/autopilot/report` to **`data/autopilot/reports/<os>-<version>.md` and `.json`** (atomic writes) every time the stub changes: drafted when the release enters TIMEOUT, final when it is quarantined. Files that go missing are regenerated at start-up from the stub. The Markdown carries the OS and release, `lastGood`, the boot path (`bios-diskless`, `uefi-http`, `uefi-pxe`, `bios-pxe` or `unknown`, derived from how Booty served the host and the firmware its health report named), hardware, kernel, kubelet/Kubernetes version and `osImage`, the CNI name and pin when Booty installed it (`--controlPlane=managed`; omitted otherwise), the failure class of every attempt, the failed unit names, the relative boot timeline (`t+0s kernel fetched`, `t+38s ignition fetched`, …), the attempt count, the rollback result ("lastGood X healthy on the same hardware"), the redacted journal excerpt and the hidden dedupe marker `<!-- booty-autopilot: <os> <version> <dmi-hash> -->` (`dmi-hash` = first 8 bytes of sha256 of the DMI product UUID, so two machines can be told apart without naming either).
+
+**Redaction** (`report.Redact`, unit-tested rule by rule; the fixture report is laced with hostnames, MACs, IPs, UUIDs, a `/bluefin/<mac>/` URL, an SSH key and a token, and the test greps both files for `([0-9a-f]{2}:){5}|[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|<hostnames>|[0-9a-f]{8}-[0-9a-f]{4}-` = 0 matches):
+
+| What | Becomes |
+|---|---|
+| `/bluefin/<mac>/` in URLs (colons, dashes or `%3A`) | `/bluefin/<host>/` |
+| UUIDs (DMI `productUUID`, `bootID`, anything 8-4-4-4-12) | `<uuid>` |
+| MACs (`:`, `-` or `%3A` separated, any case), incl. `mac=<mac>` query values | `<mac>` |
+| IPv4 (with optional `/prefix`), IPv6 (full or `::`-compressed, `%zone`, `[bracketed]`, `::ffff:`-mapped) | `<ip>` |
+| SSH key blobs (`AAAA` + 40 or more base64 chars) | `<key>` |
+| GitHub tokens (`ghp_`, `gho_`, `github_pat_`, …), `Bearer …`, `token=`/`password=`/`secret=` values, `--token <v>`, `--token-file=<v>` | `<token>` |
+| Every whole-word occurrence of a registered host's hostname (the node name), case-insensitive; `n1.lan` → `<host>.lan` | `<host>` |
+
+Times such as `10:00:01` and dotted versions such as `4757.2.0` are left alone; everything not listed is kept verbatim. The hostname field of journal lines is already dropped on the node (`journalctl --no-hostname`). The raw excerpt stays in `state.json` only, never under `reports/`.
+
+**Posting** (Bluefin only): `--autopilotIssues=<owner>/<repo>` with `--githubToken` (a token with `issues:write` on that repository; the same token still raises the releases-API limit) files the final report as a GitHub issue the moment a Bluefin release is **quarantined** — never at the TIMEOUT draft, never for Flatcar or CoreOS (their reports stay on disk). The flow, in `pkg/autopilot/report/github.go`:
+
+1. Search open and closed issues for the release's marker (`GET /search/issues?q=repo:… is:issue "booty-autopilot: bluefin <version>" in:body`); when the search API is rate-limited or refused, list the issues labelled `autopilot` instead and read their bodies.
+2. **None** → `POST /repos/<owner>/<repo>/issues` with the title `Bluefin Server <version>: <class> on <vendor> <product> (autopilot)`, the label `autopilot` (created on a 404; failure to create or apply it is tolerated) and the Markdown as the body.
+3. **One exists, its body or comments carry this machine's marker** (same release, same DMI hash) → nothing: already reported.
+4. **One exists from another machine** → `POST …/issues/<n>/comments`: "Another machine (dmi-hash …) hit this: `<class>`, N attempts …" with this machine's marker, the failed units and the redacted excerpt in a `<details>` block.
+
+Every API call gets three tries with exponential backoff (1 s, 2 s) on network errors, 5xx and rate limits; the search call falls back instead of waiting. Posting runs in a goroutine and never blocks the controller: the outcome is a `report` event, `report-posted <url> (created|commented|already-reported)` or `report-post-failed <status> (…)`, the issue URL lands on the report (`postedURL`, shown as a link on the Autopilot page) and a failed post is retried on the reconcile tick an hour later (`postError` in the meantime). The tests run the poster against an `httptest` GitHub API: create, comment, already-reported, the listing fallback, 5xx retries and a 401/403 that becomes an event without a panic. **Test on a fork or a scratch repository first** (`--autopilotIssues=you/booty-autopilot-scratch`): the report is public the moment it is filed, and while the redactor is thorough it is a regex, not a promise. Move to `projectbluefin/server` once you have read a few of your own reports.
 
 ### Health reports (P1)
 

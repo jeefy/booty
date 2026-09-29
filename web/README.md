@@ -8,7 +8,7 @@ output must exist before starting `booty`).
 
 ```
 src/
-  api.ts          typed fetch helpers (apiGet / apiPost) + ApiError from the JSON error envelope
+  api.ts          typed fetch helpers (apiGet / apiGetText / apiPost / apiPut) + ApiError from the JSON error envelope
   types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, CachedImage) + normalisers
   utils/time.ts   relative / absolute time formatting for RFC3339 timestamps
   utils/fleet.ts  fleet helpers: running-label splitting, host status, pending list, preview URLs
@@ -72,8 +72,13 @@ fleet-target table per OS (fleet target with a **held** badge, `current`,
 class, and a **Clear** button on `quarantined`/`timeout` releases that POSTs
 `/autopilot/{os}/release/{version}/clear` and reloads), the per-host episode
 table (state badge, release → target, attempt, class, since, note; hostnames
-come from `/booty.json`), the report stubs and the event timeline (newest
-first, `alert` events in red). With `mode: off` the page shows the summary and
+come from `/booty.json`), the reports and the event timeline (newest first,
+`alert` events in red). Each report row carries a `draft`/`final` badge, a
+**View** button that fetches `report.path` (`/autopilot/reports/<os>-<version>.md`,
+via `apiGetText`) and shows the redacted Markdown in an inline `<pre>`, a raw
+`.md` link, and, once the controller filed it, a **GitHub #n** link to
+`report.postedURL` (or a `post failed` badge with `postError` as its tooltip).
+With `mode: off` the page shows the summary and
 an empty state. `Host.canary` is a checkbox in `HostForm` (every OS) and a
 `canary` badge in the Hosts table; `Host.autopilot` (server-owned, echoed back
 to `/register` untouched) shows as a state badge with the attempt number when

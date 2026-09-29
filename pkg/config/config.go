@@ -94,6 +94,7 @@ const (
 	AutopilotDrainTO    = "autopilotDrainTimeout"
 	AutopilotHealthWin  = "autopilotHealthWindow"
 	AutopilotRetryAfter = "autopilotRetryAfter"
+	AutopilotIssues     = "autopilotIssues"
 	RebootSSHKey        = "rebootSSHKey"
 )
 
@@ -141,6 +142,9 @@ const AutopilotDir = "autopilot"
 
 // AutopilotStateFile is the controller's persisted state under AutopilotDir.
 const AutopilotStateFile = "state.json"
+
+// AutopilotReportsDir holds the rendered reports under AutopilotDir.
+const AutopilotReportsDir = "reports"
 
 // AutopilotPath joins elem onto DataDir/autopilot.
 func AutopilotPath(elem ...string) string {
@@ -479,6 +483,7 @@ func LoadConfig() {
 	viper.SetDefault(AutopilotDrainTO, DefaultAutopilotDrainTimeout)
 	viper.SetDefault(AutopilotHealthWin, DefaultAutopilotHealthWindow)
 	viper.SetDefault(AutopilotRetryAfter, DefaultAutopilotRetryAfter)
+	viper.SetDefault(AutopilotIssues, "")
 	viper.SetDefault(RebootSSHKey, "")
 }
 

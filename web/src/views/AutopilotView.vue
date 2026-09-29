@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { apiGet, apiPost, errorMessage } from '@/api'
+import { apiGet, apiGetText, apiPost, errorMessage } from '@/api'
 import {
   AUTOPILOT_HOST_LABEL,
   OS_OPTIONS,
@@ -9,6 +9,7 @@ import {
   normalizeBootyData,
   type AutopilotHost,
   type AutopilotRelease,
+  type AutopilotReport,
   type AutopilotStatus,
   type BootyData,
   type HostOS,
@@ -27,6 +28,10 @@ const loading = ref(true)
 const error = ref('')
 const clearing = reactive<Record<string, boolean>>({})
 const clearErrors = reactive<Record<string, string>>({})
+const openReport = ref('')
+const reportText = ref('')
+const reportLoading = ref(false)
+const reportError = ref('')
 
 const off = computed(() => status.value.mode === 'off')
 
@@ -97,6 +102,30 @@ async function clear(r: AutopilotRelease) {
   } finally {
     clearing[key] = false
   }
+}
+
+async function toggleReport(r: AutopilotReport) {
+  if (openReport.value === r.key) {
+    openReport.value = ''
+    reportText.value = ''
+    return
+  }
+  openReport.value = r.key
+  reportText.value = ''
+  reportError.value = ''
+  reportLoading.value = true
+  try {
+    reportText.value = await apiGetText(r.path)
+  } catch (err) {
+    reportError.value = errorMessage(err)
+  } finally {
+    reportLoading.value = false
+  }
+}
+
+function issueLabel(r: AutopilotReport): string {
+  const m = /\/issues\/(\d+)/.exec(r.postedURL)
+  return m ? `#${m[1]}` : 'issue'
 }
 
 onMounted(() => {
@@ -372,25 +401,91 @@ onMounted(() => {
                 <th scope="col">Class</th>
                 <th scope="col">Attempts</th>
                 <th scope="col">Rollback</th>
-                <th scope="col">Drafted</th>
+                <th scope="col">Updated</th>
+                <th scope="col">Report</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in status.reports" :key="r.key" :data-report="r.key">
-                <td class="mono">
-                  {{ r.os }} {{ r.version }}
-                  <span v-if="r.draft" class="badge text-bg-light border ms-1">draft</span>
-                </td>
-                <td class="mono">{{ r.lastGood || '—' }}</td>
-                <td class="mono">{{ r.class || '—' }}</td>
-                <td>{{ r.attempts }}</td>
-                <td class="small">{{ r.rollbackResult || '—' }}</td>
-                <td>
-                  <span :title="formatAbsolute(r.createdAt)">{{
-                    formatRelative(r.createdAt)
-                  }}</span>
-                </td>
-              </tr>
+              <template v-for="r in status.reports" :key="r.key">
+                <tr :data-report="r.key">
+                  <td class="mono">
+                    {{ r.os }} {{ r.version }}
+                    <span v-if="r.draft" class="badge text-bg-light border ms-1">draft</span>
+                    <span
+                      v-else
+                      class="badge text-bg-danger ms-1"
+                      title="The release is quarantined; the report is final"
+                      >final</span
+                    >
+                  </td>
+                  <td class="mono">{{ r.lastGood || '—' }}</td>
+                  <td class="mono">{{ r.class || '—' }}</td>
+                  <td>{{ r.attempts }}</td>
+                  <td class="small">{{ r.rollbackResult || '—' }}</td>
+                  <td>
+                    <span :title="formatAbsolute(r.updatedAt || r.createdAt)">{{
+                      formatRelative(r.updatedAt || r.createdAt)
+                    }}</span>
+                  </td>
+                  <td>
+                    <div class="report-links">
+                      <button
+                        v-if="r.path"
+                        type="button"
+                        class="btn btn-sm btn-outline-secondary"
+                        data-action="view-report"
+                        :aria-expanded="openReport === r.key"
+                        @click="toggleReport(r)"
+                      >
+                        {{ openReport === r.key ? 'Hide' : 'View' }}
+                      </button>
+                      <a
+                        v-if="r.path"
+                        :href="r.path"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="small"
+                        data-action="download-report"
+                        title="Open the redacted Markdown report"
+                        >.md</a
+                      >
+                      <a
+                        v-if="r.postedURL"
+                        :href="r.postedURL"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="badge text-bg-primary text-decoration-none"
+                        data-action="issue-link"
+                        :title="`Filed ${r.postAction || 'as an issue'} ${formatAbsolute(r.postedAt)}`"
+                        >GitHub {{ issueLabel(r) }}</a
+                      >
+                      <span
+                        v-else-if="r.postError"
+                        class="badge text-bg-warning"
+                        data-testid="report-post-error"
+                        :title="r.postError"
+                        >post failed</span
+                      >
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="openReport === r.key" class="report-row" :data-report-body="r.key">
+                  <td colspan="7">
+                    <LoadingState v-if="reportLoading" label="Loading report…" />
+                    <div v-else-if="reportError" class="row-error" data-testid="report-error">
+                      {{ reportError }}
+                    </div>
+                    <pre
+                      v-else
+                      class="report-preview mono"
+                      tabindex="0"
+                      aria-label="Redacted autopilot report"
+                      data-testid="report-preview"
+                      >{{ reportText }}</pre
+                    >
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -434,6 +529,29 @@ onMounted(() => {
 
 .note {
   max-width: 24rem;
+}
+
+.report-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-2);
+}
+
+.report-row td {
+  background: var(--booty-surface-alt);
+}
+
+.report-preview {
+  max-height: 32rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--booty-space-3);
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  background: var(--booty-surface);
+  border: 1px solid var(--booty-border);
+  border-radius: var(--booty-radius);
 }
 
 .timeline {
