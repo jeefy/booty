@@ -120,11 +120,12 @@ func LoadRemoteFlatcarVersion(ctx context.Context) (string, error) {
 }
 
 // installFlatcarRelease downloads the PXE kernel and initrd for version into
-// DataDir/flatcar/<version>/, then atomically repoints the public symlinks,
-// writes version.txt and prunes older release directories.
+// DataDir/flatcar/<version>/, then atomically repoints flatcar/current (and
+// the compatibility symlinks at the top of DataDir), writes version.txt
+// and prunes the release directories nothing refers to any more.
 func installFlatcarRelease(ctx context.Context, version string) error {
 	base := flatcarReleaseURL(version)
-	dir := config.DataPath(flatcarDir, version)
+	dir := ReleaseDir(OSFlatcar, version)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -152,39 +153,44 @@ func installFlatcarRelease(ctx context.Context, version string) error {
 		}
 	}
 
+	if err := config.WriteFileAtomic(filepath.Join(dir, "version.txt"), versionTxt, 0o644); err != nil {
+		return fmt.Errorf("version.txt: %w", err)
+	}
+	if err := linkFlatcarRelease(version); err != nil {
+		return err
+	}
+	if err := config.WriteFileAtomic(config.DataPath("version.txt"), versionTxt, 0o644); err != nil {
+		return fmt.Errorf("version.txt: %w", err)
+	}
+	pruneReleases(OSFlatcar)
+	return nil
+}
+
+// linkFlatcarRelease makes version the current Flatcar release and keeps
+// the pre-release-directory names at the top of DataDir
+// (flatcar_production_pxe.vmlinuz, ...) as symlinks into flatcar/current,
+// so DHCP setups and iPXE scripts that still use them keep working.
+func linkFlatcarRelease(version string) error {
+	if err := linkRelease(OSFlatcar, version); err != nil {
+		return err
+	}
 	for _, artifact := range flatcarArtifacts {
-		target := filepath.Join(flatcarDir, version, artifact)
+		target := filepath.Join(flatcarDir, CurrentLink, artifact)
 		if err := config.ReplaceSymlink(target, config.DataPath(artifact)); err != nil {
 			return fmt.Errorf("linking %s: %w", artifact, err)
 		}
 	}
-
-	if err := config.WriteFileAtomic(config.DataPath("version.txt"), versionTxt, 0o644); err != nil {
-		return fmt.Errorf("version.txt: %w", err)
-	}
-
-	pruneFlatcarReleases(version)
 	return nil
 }
 
-func pruneFlatcarReleases(keep string) {
-	root := config.DataPath(flatcarDir)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		slog.Warn("Could not list Flatcar release directories", "path", root, "error", err)
-		return
+// FlatcarDataDir is the /data/ path prefix ("flatcar/<version>/") of the
+// release a host boots, "" while no release is cached (the compatibility
+// names at the top of DataDir then).
+func FlatcarDataDir(version string) string {
+	if version == "" {
+		return ""
 	}
-	for _, e := range entries {
-		if !e.IsDir() || e.Name() == keep {
-			continue
-		}
-		path := filepath.Join(root, e.Name())
-		if err := os.RemoveAll(path); err != nil {
-			slog.Warn("Could not remove old Flatcar release", "path", path, "error", err)
-			continue
-		}
-		slog.Info("Removed old Flatcar release", "path", path)
-	}
+	return flatcarDir + "/" + version + "/"
 }
 
 // LoadFlatcarDigest fetches <base>/<filename>.DIGESTS and returns the

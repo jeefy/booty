@@ -428,8 +428,12 @@ func TestBluefinVersionCheckInstallsRelease(t *testing.T) {
 	}
 }
 
+// TestBluefinVersionCheckKeepsPreviousRelease: each install repoints
+// current and previous; lastGood is set once (to the first release) and
+// only the controller moves it, so the first release survives until then
+// while a release none of the three links names is pruned.
 func TestBluefinVersionCheckKeepsPreviousRelease(t *testing.T) {
-	versions := []string{"20260925.1", "20260926.2", "20260927.3"}
+	versions := []string{"20260925.1", "20260926.2", "20260927.3", "20260928.4"}
 	var rels []*fakeBluefinRelease
 	for _, v := range versions {
 		rels = append(rels, newFakeRelease(t, v, nil))
@@ -466,6 +470,9 @@ func TestBluefinVersionCheckKeepsPreviousRelease(t *testing.T) {
 		if i > 0 && (!ok || prev.Version != versions[i-1]) {
 			t.Fatalf("step %d: previous %+v ok=%v", i, prev, ok)
 		}
+		if got := LastGood(OSBluefin); got != versions[0] {
+			t.Fatalf("step %d: lastGood %q, want the first release %q until the controller moves it", i, got, versions[0])
+		}
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "bluefin"))
 	if err != nil {
@@ -477,8 +484,9 @@ func TestBluefinVersionCheckKeepsPreviousRelease(t *testing.T) {
 			dirs = append(dirs, e.Name())
 		}
 	}
-	if !reflect.DeepEqual(dirs, versions[1:]) {
-		t.Fatalf("release dirs %v, want current + previous %v", dirs, versions[1:])
+	want := []string{versions[0], versions[2], versions[3]}
+	if !reflect.DeepEqual(dirs, want) {
+		t.Fatalf("release dirs %v, want lastGood + previous + current %v", dirs, want)
 	}
 }
 

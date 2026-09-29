@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/buger/jsonparser"
@@ -65,12 +66,59 @@ func CoreOSVersionCheck() {
 		slog.Error("Error saving CoreOS streams JSON", "error", err)
 	}
 
+	if err := linkCoreOSRelease(remote, current, arch); err != nil {
+		slog.Error("CoreOS release links failed, not advancing version", "target", remote, "error", err)
+		return
+	}
 	state.SetCurrentCoreOSVersion(remote)
 	slog.Info("CoreOS updated", "version", remote)
-	removeOldCoreOSArtifacts(current, arch)
+	pruneReleases(OSCoreOS)
 }
 
+// linkCoreOSRelease makes version the current CoreOS release and swaps the
+// top-level compatibility names (fedora-coreos-<version>-live-*) from the
+// release it replaces to symlinks into coreos/current.
+func linkCoreOSRelease(version, old, arch string) error {
+	if err := linkRelease(OSCoreOS, version); err != nil {
+		return err
+	}
+	if versionIsSet(old) && old != version {
+		removeCoreOSCompatLinks(old, arch)
+	}
+	for _, file := range coreOSArtifactNames(version, arch) {
+		if err := config.ReplaceSymlink(filepath.Join(OSCoreOS, CurrentLink, file), config.DataPath(file)); err != nil {
+			return fmt.Errorf("linking %s: %w", file, err)
+		}
+	}
+	return nil
+}
+
+func removeCoreOSCompatLinks(version, arch string) {
+	for _, file := range coreOSArtifactNames(version, arch) {
+		path := config.DataPath(file)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Could not remove old CoreOS artifact link", "path", path, "error", err)
+		}
+	}
+}
+
+// CoreOSDataDir is the /data/ path prefix ("coreos/<version>") of the
+// release a host boots, "" while no release is cached (the compatibility
+// names at the top of DataDir then).
+func CoreOSDataDir(version string) string {
+	if version == "" {
+		return ""
+	}
+	return OSCoreOS + "/" + version
+}
+
+// loadLocalCoreOSVersion is the release coreos/current names, falling back
+// to the streams JSON of installs that predate the release directories.
 func loadLocalCoreOSVersion(arch string) string {
+	if v := CurrentRelease(OSCoreOS); v != "" {
+		slog.Info("Local CoreOS version found", "version", v)
+		return v
+	}
 	path := coreOSJSONPath()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -108,7 +156,7 @@ func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch str
 		} else {
 			slog.Warn("Could not extract artifact location, falling back to constructed URL", "artifact", artifactType, "error", err)
 		}
-		if err := config.Download(ctx, config.DownloadClient, url, config.DataPath(file), hashAlgo, sha); err != nil {
+		if err := config.Download(ctx, config.DownloadClient, url, filepath.Join(ReleaseDir(OSCoreOS, version), file), hashAlgo, sha); err != nil {
 			removeOldCoreOSArtifacts(version, arch)
 			return fmt.Errorf("%s: %w", file, err)
 		}
@@ -116,15 +164,17 @@ func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch str
 	return nil
 }
 
+// removeOldCoreOSArtifacts deletes an incomplete or retired release: its
+// top-level names (files from before the release directories, or the
+// compatibility symlinks) and its coreos/<version>/ directory.
 func removeOldCoreOSArtifacts(oldVersion, arch string) {
-	if oldVersion == "" || oldVersion == "0.0.0" {
+	if !versionIsSet(oldVersion) {
 		return
 	}
-	for _, file := range coreOSArtifactNames(oldVersion, arch) {
-		path := config.DataPath(file)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			slog.Warn("Could not remove old CoreOS artifact", "path", path, "error", err)
-		}
+	removeCoreOSCompatLinks(oldVersion, arch)
+	dir := ReleaseDir(OSCoreOS, oldVersion)
+	if err := os.RemoveAll(dir); err != nil {
+		slog.Warn("Could not remove old CoreOS release", "path", dir, "error", err)
 	}
 }
 
