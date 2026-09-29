@@ -1,6 +1,7 @@
 // Package ignition generates the Ignition fragment Booty merges into every
-// registered host's config (hostname, update timer, booted callback, SSH
-// keys) so users no longer hand-write that boilerplate in their Butane.
+// registered host's config (hostname, update timer, booted callback, health
+// report, SSH keys) so users no longer hand-write that boilerplate in their
+// Butane.
 package ignition
 
 import (
@@ -21,16 +22,19 @@ const (
 	FeatureUpdate   = "update"
 	FeatureBooted   = "booted"
 	FeatureSSHKeys  = "sshkeys"
+	FeatureHealth   = "health"
 	FeatureNone     = "none"
 
 	BootedUnitName    = "booty-booted.service"
 	UpdateServiceName = "booty-update.service"
 	UpdateTimerName   = "booty-update.timer"
+	HealthUnitName    = "booty-health.service"
 
 	// /usr is a read-only partition on Flatcar (Ignition gets EROFS writing
 	// under it), so everything Booty installs lives under /opt like the
 	// kubeadm profile does. /opt is writable on Flatcar and FCOS alike.
-	UpdateCheckScriptPath = "/opt/booty/update-check"
+	UpdateCheckScriptPath  = "/opt/booty/update-check"
+	HealthReportScriptPath = "/opt/booty/health-report"
 )
 
 var knownFeatures = map[string]bool{
@@ -38,6 +42,7 @@ var knownFeatures = map[string]bool{
 	FeatureUpdate:   true,
 	FeatureBooted:   true,
 	FeatureSSHKeys:  true,
+	FeatureHealth:   true,
 }
 
 // Features is the set of enabled builtin fragments.
@@ -109,6 +114,10 @@ func Fragment(in Input, f Features) types.Config {
 			Unit(UpdateTimerName, true, UpdateTimer),
 		)
 	}
+	if f[FeatureHealth] {
+		cfg.Storage.Files = append(cfg.Storage.Files, InlineFile(HealthReportScriptPath, HealthReportScript(in.Server), 0o755))
+		cfg.Systemd.Units = append(cfg.Systemd.Units, Unit(HealthUnitName, true, HealthUnit(HealthReportScriptPath)))
+	}
 	return cfg
 }
 
@@ -161,15 +170,21 @@ WantedBy=multi-user.target
 
 // UpdateService runs UpdateCheckScriptPath; UpdateTimer fires it every 10
 // minutes.
-const UpdateService = `[Unit]
+var UpdateService = UpdateServiceFor(UpdateCheckScriptPath)
+
+// UpdateServiceFor is booty-update.service running the update-check
+// script at scriptPath (Bluefin keeps it under /etc/booty).
+func UpdateServiceFor(scriptPath string) string {
+	return `[Unit]
 Description=Ask Booty whether this host needs a reboot to pick up an update
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=` + UpdateCheckScriptPath + `
+ExecStart=` + scriptPath + `
 `
+}
 
 const UpdateTimer = `[Unit]
 Description=Run the Booty update check every 10 minutes

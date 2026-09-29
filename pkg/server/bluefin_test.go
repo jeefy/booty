@@ -17,6 +17,7 @@ import (
 	v3_6 "github.com/coreos/ignition/v2/config/v3_6"
 	ign36 "github.com/coreos/ignition/v2/config/v3_6/types"
 	"github.com/jeefy/booty/pkg/config"
+	ign "github.com/jeefy/booty/pkg/ignition"
 	"github.com/spf13/viper"
 
 	"github.com/jeefy/booty/pkg/hardware"
@@ -110,7 +111,7 @@ func TestBluefinIPXEMenu(t *testing.T) {
 }
 
 func TestUpdateCheckBluefin(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, dir := newTestServer(t)
 	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
 	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:c1","hostname":"fc","os":"flatcar"}`)
 	state.SetCurrentFlatcarVersion("2.0.0")
@@ -129,26 +130,40 @@ func TestUpdateCheckBluefin(t *testing.T) {
 		return resp
 	}
 
-	resp := get("mac=" + bluefinMAC + "&os=bluefin&version=26.08.0")
-	if resp.RebootRequired || resp.Reason != bluefinUpdateReason || resp.Running != "26.08.0" || resp.Target != "" {
-		t.Fatalf("bluefin never reboots: %+v", resp)
+	resp := get("mac=" + bluefinMAC + "&os=bluefin-server&version=26.08.0")
+	if resp.RebootRequired || resp.Reason != "server has no bluefin release yet" || resp.Running != "26.08.0" || resp.Target != "" {
+		t.Fatalf("no release cached: never reboot: %+v", resp)
 	}
 	h, _ := hardware.Get(bluefinMAC)
 	if h.Running != "26.08.0" || h.LastCheck == "" || h.RebootPending {
 		t.Fatalf("check must still be recorded: %+v", h)
 	}
 
+	installBluefinFixture(t, dir)
+	resp = get("mac=" + bluefinMAC + "&os=bluefin-server&version=" + bluefinTestVersion)
+	if resp.RebootRequired || resp.Reason != "bluefin up to date" || resp.Target != bluefinTestVersion {
+		t.Fatalf("running the target: %+v", resp)
+	}
+	resp = get("mac=" + bluefinMAC + "&os=bluefin-server&version=26.08.0")
+	if !resp.RebootRequired || resp.Reason != bluefinUpdateReason+bluefinTestVersion || resp.Target != bluefinTestVersion {
+		t.Fatalf("a diskless host behind the target re-images on reboot: %+v", resp)
+	}
+	resp = get("mac=" + bluefinMAC + "&os=bluefin-server")
+	if resp.RebootRequired || resp.Reason != "host reported no version" {
+		t.Fatalf("unknown running version fails closed: %+v", resp)
+	}
+
 	resp = get("mac=" + bluefinMAC + "&os=flatcar&version=1.0.0")
-	if resp.RebootRequired || resp.Reason != bluefinUpdateReason {
+	if !resp.RebootRequired || !strings.HasPrefix(resp.Reason, bluefinUpdateReason) {
 		t.Fatalf("a bluefin host reporting os=flatcar (Flatcar-based os-release) is still bluefin: %+v", resp)
 	}
 
 	resp = get("mac=aa:bb:cc:dd:ee:c1&os=bluefin&version=1.0.0")
-	if resp.RebootRequired || resp.Reason != bluefinUpdateReason {
+	if !resp.RebootRequired || !strings.HasPrefix(resp.Reason, bluefinUpdateReason) {
 		t.Fatalf("os=bluefin from the client wins over the registered os: %+v", resp)
 	}
 	resp = get("mac=aa:bb:cc:dd:ee:c1&os=flatcar&version=1.0.0")
-	if !resp.RebootRequired {
+	if !resp.RebootRequired || resp.Reason != "flatcar 1.0.0 differs from served 2.0.0" {
 		t.Fatalf("flatcar logic untouched: %+v", resp)
 	}
 }
@@ -287,10 +302,20 @@ func TestBluefinRoutes(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, "bluefin", "current")); err != nil {
 			t.Fatal(err)
 		}
-		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS", "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw"} {
+		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS"} {
 			if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
-				t.Fatalf("%s: %+v", p, r)
+				t.Fatalf("%s: without a current release there is no target: %+v", p, r)
 			}
+		}
+		ddi := "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw"
+		if r := do(t, http.MethodGet, srv.URL+ddi, ""); r.status != 200 {
+			t.Fatalf("%s: the versioned DDI of a release still on disk serves hosts mid-boot: %+v", ddi, r)
+		}
+		if err := os.RemoveAll(filepath.Join(dir, "bluefin", bluefinTestVersion)); err != nil {
+			t.Fatal(err)
+		}
+		if r := do(t, http.MethodGet, srv.URL+ddi, ""); r.status != 404 {
+			t.Fatalf("%s: pruned release: %+v", ddi, r)
 		}
 	})
 }
@@ -360,9 +385,30 @@ func decodeDataURL(t *testing.T, src string) string {
 	return ""
 }
 
+// bluefinBootyUnits and bluefinBootyFiles are what every Bluefin node
+// config carries under the default --builtin (see
+// TestBluefinNodeCarriesBootyUnits); bluefinNode leaves them out of its
+// maps so the other tests can count what is specific to the host.
+var (
+	bluefinBootyUnits = []string{ign.BootedUnitName, ign.UpdateServiceName, ign.UpdateTimerName, ign.HealthUnitName}
+	bluefinBootyFiles = []string{bluefinUpdateCheckScript, bluefinHealthReportScript}
+)
+
 // bluefinNode fetches mac's node config and checks it is a valid spec 3.6.0
-// config.
+// config. The Booty units and scripts every node gets are left out.
 func bluefinNode(t *testing.T, srvURL, mac, query string) (ign36.Config, map[string]bluefinNodeFile, map[string]ign36.Unit) {
+	t.Helper()
+	cfg, files, units := bluefinNodeAll(t, srvURL, mac, query)
+	for _, name := range bluefinBootyUnits {
+		delete(units, name)
+	}
+	for _, path := range bluefinBootyFiles {
+		delete(files, path)
+	}
+	return cfg, files, units
+}
+
+func bluefinNodeAll(t *testing.T, srvURL, mac, query string) (ign36.Config, map[string]bluefinNodeFile, map[string]ign36.Unit) {
 	t.Helper()
 	r := do(t, http.MethodGet, srvURL+"/bluefin/"+strings.ReplaceAll(mac, ":", "-")+"/bluefin-node.ign"+query, "")
 	if r.status != 200 || r.contentType != "application/json" {

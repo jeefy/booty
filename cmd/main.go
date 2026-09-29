@@ -64,7 +64,7 @@ func init() {
 	flags.String(config.GithubToken, "", "GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit); no scopes needed")
 	flags.String(config.ServerIP, "", "IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)")
 	flags.Int(config.ServerHttpPort, 0, "HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort")
-	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys), or 'none' to serve the user config as-is")
+	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys, health), or 'none' to serve the user config as-is")
 	flags.String(config.SSHAuthorizedKeysFl, "", "File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin")
 	flags.StringSlice(config.SSHAuthorizedKeys, nil, "SSH public key added to the 'core' user by the sshkeys builtin (repeatable)")
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
@@ -223,6 +223,7 @@ func run(cmd *cobra.Command, argv []string) error {
 			slog.Warn("SSH authorized keys file is not readable; sshkeys builtin will have no file keys", "file", keysFile, "error", err)
 		}
 	}
+	versions.MigrateReleaseLayout()
 	state.Init()
 	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {

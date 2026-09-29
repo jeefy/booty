@@ -47,6 +47,16 @@
       },
       {
         "group": {},
+        "path": "/opt/booty/health-report",
+        "user": {},
+        "contents": {
+          "source": "data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKc2V0IC11CmV4cG9ydCBMQ19BTEw9QwpTWVM9JHtCT09UWV9TWVM6LS9zeXN9ClBST0M9JHtCT09UWV9QUk9DOi0vcHJvY30KLiAiJHtCT09UWV9PU19SRUxFQVNFOi0vZXRjL29zLXJlbGVhc2V9IgppZiBbIC1uICIke0JPT1RZX01BQzotfSIgXTsgdGhlbiBNQUM9JEJPT1RZX01BQzsgZWxzZQogIHNldCAtLSAkKGlwIC1vIHJvdXRlIGdldCAxKTsgd2hpbGUgWyAkIyAtZ3QgMSBdICYmIFsgIiQxIiAhPSBkZXYgXTsgZG8gc2hpZnQ7IGRvbmU7IE1BQz0kKGNhdCAiJFNZUy9jbGFzcy9uZXQvJDIvYWRkcmVzcyIpCmZpCgpqc29uX2VzY2FwZSgpIHsKICBsb2NhbCBzPSQxIG91dD0iIiBpIGMKICBzPSR7cy8vXFwvXFxcXH0KICBzPSR7cy8vXCIvXFxcIn0KICBzPSR7cy8vJCdcbicvXFxufQogIHM9JHtzLy8kJ1xyJy9cXHJ9CiAgcz0ke3MvLyQnXHQnL1xcdH0KICBpZiBbWyAkcyA9PSAqW1s6Y250cmw6XV0qIF1dOyB0aGVuCiAgICBmb3IgKChpID0gMDsgaSA8ICR7I3N9OyBpKyspKTsgZG8KICAgICAgYz0ke3M6aToxfQogICAgICBpZiBbWyAkYyA8ICcgJyBdXTsgdGhlbiBwcmludGYgLXYgYyAnXFx1JTA0eCcgIickYyI7IGZpCiAgICAgIG91dCs9JGMKICAgIGRvbmUKICAgIHM9JG91dAogIGZpCiAgcHJpbnRmICclcycgIiRzIgp9Cmpzb25fc3RyaW5nKCkgeyBwcmludGYgJyIlcyInICIkKGpzb25fZXNjYXBlICIkMSIpIjsgfQpqc29uX2FycmF5KCkgewogIGxvY2FsIHNlcD0iIiBpdGVtCiAgcHJpbnRmICdbJwogIGZvciBpdGVtIGluICIkQCI7IGRvIHByaW50ZiAnJXMlcycgIiRzZXAiICIkKGpzb25fc3RyaW5nICIkaXRlbSIpIjsgc2VwPSw7IGRvbmUKICBwcmludGYgJ10nCn0KcmVhZF9maWxlKCkgeyB0ciAtZCAnXG4nIDwgIiQxIiAyPi9kZXYvbnVsbCB8fCB0cnVlOyB9CgpSVU5OSU5HPSR7T1NUUkVFX1ZFUlNJT046LSR7VkVSU0lPTl9JRDotJHtWRVJTSU9OOi19fX0KRkFJTEVEPSgpCndoaWxlIHJlYWQgLXIgdW5pdCBfOyBkbyBbIC1uICIkdW5pdCIgXSAmJiBGQUlMRUQrPSgiJHVuaXQiKTsgZG9uZSA8IDwoc3lzdGVtY3RsIGxpc3QtdW5pdHMgLS1zdGF0ZT1mYWlsZWQgLS1wbGFpbiAtLW5vLWxlZ2VuZCAyPi9kZXYvbnVsbCkKQUxMPSgpCndoaWxlIElGUz0gcmVhZCAtciBsaW5lOyBkbyBBTEwrPSgiJHtsaW5lOjA6MzAwfSIpOyBkb25lIDwgPChqb3VybmFsY3RsIC1wIGVyciAtYiAtbyBzaG9ydC1pc28gLS1uby1ob3N0bmFtZSAtLW5vLXBhZ2VyIC1uIDUwIDI+L2Rldi9udWxsKQpFUlJPUlM9KCkKdG90YWw9MApmb3IgKChpID0gJHsjQUxMW0BdfSAtIDE7IGkgPj0gMDsgaS0tKSk7IGRvCiAgbGluZT0ke0FMTFtpXX0KICAoKCB0b3RhbCArICR7I2xpbmV9ID4gODE5MiApKSAmJiBicmVhawogIHRvdGFsPSQoKCB0b3RhbCArICR7I2xpbmV9ICkpCiAgRVJST1JTPSgiJGxpbmUiICIke0VSUk9SU1tAXX0iKQpkb25lCkZJUk1XQVJFPWJpb3M7IFsgLWQgIiRTWVMvZmlybXdhcmUvZWZpIiBdICYmIEZJUk1XQVJFPXVlZmkKCkJPRFk9JChwcmludGYgJ3sicnVubmluZyI6JXMsImZhaWxlZFVuaXRzIjolcywiam91cm5hbEVycm9ycyI6JXMsImRtaSI6eyJ2ZW5kb3IiOiVzLCJwcm9kdWN0IjolcywiYmlvc1ZlcnNpb24iOiVzfSwiZmlybXdhcmUiOiVzLCJrZXJuZWwiOiVzLCJib290SUQiOiVzfScgXAogICIkKGpzb25fc3RyaW5nICIkUlVOTklORyIpIiBcCiAgIiQoanNvbl9hcnJheSAiJHtGQUlMRURbQF0rIiR7RkFJTEVEW0BdfSJ9IikiIFwKICAiJChqc29uX2FycmF5ICIke0VSUk9SU1tAXSsiJHtFUlJPUlNbQF19In0iKSIgXAogICIkKGpzb25fc3RyaW5nICIkKHJlYWRfZmlsZSAiJFNZUy9jbGFzcy9kbWkvaWQvc3lzX3ZlbmRvciIpIikiIFwKICAiJChqc29uX3N0cmluZyAiJChyZWFkX2ZpbGUgIiRTWVMvY2xhc3MvZG1pL2lkL3Byb2R1Y3RfbmFtZSIpIikiIFwKICAiJChqc29uX3N0cmluZyAiJChyZWFkX2ZpbGUgIiRTWVMvY2xhc3MvZG1pL2lkL2Jpb3NfdmVyc2lvbiIpIikiIFwKICAiJChqc29uX3N0cmluZyAiJEZJUk1XQVJFIikiIFwKICAiJChqc29uX3N0cmluZyAiJCh1bmFtZSAtcikiKSIgXAogICIkKGpzb25fc3RyaW5nICIkKHJlYWRfZmlsZSAiJFBST0Mvc3lzL2tlcm5lbC9yYW5kb20vYm9vdF9pZCIpIikiKQpwcmludGYgJyVzJyAiJEJPRFkiIHwgY3VybCAtZnNTIC0tbWF4LXRpbWUgMjAgLS1yZXRyeSAyIC0tcmV0cnktY29ubnJlZnVzZWQgLVggUE9TVCAtSCAnQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uJyAtLWRhdGEtYmluYXJ5IEAtICJodHRwOi8vMTkyLjE2OC4xLjEwOjgwODAvaGVhbHRoP21hYz0kTUFDIiA+L2Rldi9udWxsIHx8IHsgZWNobyAiYm9vdHkgdW5yZWFjaGFibGUgb3IgcmVmdXNlZCB0aGUgaGVhbHRoIHJlcG9ydCIgPiYyOyBleGl0IDE7IH0KZWNobyAiaGVhbHRoIHJlcG9ydGVkOiBydW5uaW5nPSRSVU5OSU5HIGZhaWxlZFVuaXRzPSR7I0ZBSUxFRFtAXX0gam91cm5hbEVycm9ycz0keyNFUlJPUlNbQF19Igo=",
+          "verification": {}
+        },
+        "mode": 493
+      },
+      {
+        "group": {},
         "path": "/opt/booty/cni.sh",
         "user": {},
         "contents": {
@@ -143,6 +153,11 @@
         "contents": "[Unit]\nDescription=Run the Booty update check every 10 minutes\n\n[Timer]\nOnCalendar=*:0/10\nRandomizedDelaySec=60\nPersistent=false\n\n[Install]\nWantedBy=timers.target\n",
         "enabled": true,
         "name": "booty-update.timer"
+      },
+      {
+        "contents": "[Unit]\nDescription=Report this host's health (failed units, journal errors, hardware) to Booty\nDefaultDependencies=no\nConflicts=shutdown.target\nBefore=shutdown.target\nAfter=multi-user.target network-online.target booty-booted.service\nWants=network-online.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nRestart=on-failure\nRestartSec=30s\nExecStart=/opt/booty/health-report\n\n[Install]\nWantedBy=multi-user.target\n",
+        "enabled": true,
+        "name": "booty-health.service"
       },
       {
         "contents": "[Unit]\nDescription=Mount the ephemeral containerd disk at /var/lib/containerd\nBefore=local-fs.target\n\n[Mount]\nWhat=/dev/disk/by-label/ssd\nWhere=/var/lib/containerd\nType=ext4\n\n[Install]\nWantedBy=local-fs.target\n",

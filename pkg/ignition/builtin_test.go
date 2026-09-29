@@ -13,7 +13,7 @@ import (
 
 func allFeatures(t *testing.T) Features {
 	t.Helper()
-	f, err := ParseFeatures("hostname,update,booted,sshkeys")
+	f, err := ParseFeatures("hostname,update,booted,sshkeys,health")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +142,12 @@ func TestFragmentToggles(t *testing.T) {
 	cfg = Fragment(in, f)
 	if len(cfg.Storage.Files) != 1 || cfg.Storage.Files[0].Path != UpdateCheckScriptPath || len(cfg.Systemd.Units) != 2 {
 		t.Fatalf("update only: %+v", cfg)
+	}
+
+	f, _ = ParseFeatures("health")
+	cfg = Fragment(in, f)
+	if len(cfg.Storage.Files) != 1 || cfg.Storage.Files[0].Path != HealthReportScriptPath || len(cfg.Systemd.Units) != 1 || cfg.Systemd.Units[0].Name != HealthUnitName || cfg.Systemd.Units[0].Enabled == nil {
+		t.Fatalf("health only: %+v", cfg)
 	}
 
 	f, _ = ParseFeatures("booted")

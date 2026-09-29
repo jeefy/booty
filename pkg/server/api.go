@@ -54,6 +54,10 @@ func validateHost(h *hardware.Host) error {
 	if err := hardware.ValidateBluefinFields(h); err != nil {
 		return err
 	}
+	h.TargetVersion = strings.TrimSpace(h.TargetVersion)
+	if err := versions.ValidateTargetVersion(h); err != nil {
+		return err
+	}
 	if h.IgnitionFile != "" {
 		clean, err := config.CleanRelPath(h.IgnitionFile)
 		if err != nil {
@@ -84,7 +88,7 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save host")
 		return
 	}
-	slog.Info("Host registered", "mac", saved.MAC, "hostname", saved.Hostname, "os", saved.OS, "role", saved.Role)
+	slog.Info("Host registered", "mac", saved.MAC, "hostname", saved.Hostname, "os", saved.OS, "role", saved.Role, "targetVersion", saved.TargetVersion)
 
 	if saved.OSTreeImage != "" {
 		go pullImage(saved.OSTreeImage)

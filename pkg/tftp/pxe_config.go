@@ -15,14 +15,14 @@ const DefaultOS = "flatcar"
 var PXEConfig = map[string]string{
 	"flatcar.ipxe": `#!ipxe
 echo Hello from Booty!
-kernel http://[[server]]/data/flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json?mac=${mac}
-initrd http://[[server]]/data/flatcar_production_pxe_image.cpio.gz
+kernel http://[[server]]/data/[[flatcar-dir]]flatcar_production_pxe.vmlinuz flatcar.first_boot=1 ignition.config.url=http://[[server]]/ignition.json?mac=${mac}
+initrd http://[[server]]/data/[[flatcar-dir]]flatcar_production_pxe_image.cpio.gz
 boot
 `,
 
 	"coreos.ipxe": `#!ipxe
 echo Hello from Booty!
-set BASEURL http://[[server]]/data/
+set BASEURL http://[[server]]/data/[[coreos-dir]]
 set CONFIGURL http://[[server]]/ignition.json?mac=${mac}
 set OSTREE_IMAGE [[ostree-image]]
 set STREAM [[coreos-channel]]
@@ -150,9 +150,14 @@ var secureBootOSLabels = map[string]string{
 }
 
 type TemplateVars struct {
-	Server        string
-	Hostname      string
-	MenuDefault   string
+	Server      string
+	Hostname    string
+	MenuDefault string
+	// FlatcarDir and CoreOSDir are the /data/ path prefixes of the release
+	// the host boots ("flatcar/<version>/", "coreos/<version>"); empty
+	// keeps the pre-release-directory top-level names.
+	FlatcarDir    string
+	CoreOSDir     string
 	CoreOSChannel string
 	CoreOSArch    string
 	CoreOSVersion string
@@ -347,6 +352,8 @@ func Render(template string, v TemplateVars) string {
 		"[[server]]", v.Server,
 		"[[hostname]]", v.Hostname,
 		"[[menu-default]]", v.MenuDefault,
+		"[[flatcar-dir]]", v.FlatcarDir,
+		"[[coreos-dir]]", v.CoreOSDir,
 		"[[coreos-channel]]", v.CoreOSChannel,
 		"[[coreos-arch]]", v.CoreOSArch,
 		"[[coreos-version]]", v.CoreOSVersion,

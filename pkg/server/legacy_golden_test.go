@@ -14,9 +14,11 @@ import (
 // cluster work: a host without a role under --profile=kubeadm-worker with a
 // static join string renders exactly as it did on main before pkg/cluster
 // existed. The fixtures were dumped from main (84b48bb) with the same
-// settings and refreshed once in H2 for the worker join unit's
-// Restart=on-failure and join.sh's already-joined guard; regenerate them
-// (UPDATE_GOLDEN=1) only for an intentional rendering change.
+// settings, refreshed once in H2 for the worker join unit's
+// Restart=on-failure and join.sh's already-joined guard, and once for
+// autopilot P1, which adds exactly booty-health.service and its
+// /opt/booty/health-report script; regenerate them (UPDATE_GOLDEN=1) only
+// for an intentional rendering change.
 func TestLegacyRenderIsByteIdentical(t *testing.T) {
 	srv, _ := newTestServer(t)
 	viper.Set(config.Profile, "kubeadm-worker")

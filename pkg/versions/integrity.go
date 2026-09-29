@@ -37,14 +37,17 @@ func MissingFlatcarArtifacts(dataDir string) []string {
 }
 
 // MissingCoreOSArtifacts lists the Fedora CoreOS live PXE files for
-// version/arch absent from dataDir.
+// version/arch absent from dataDir: neither in coreos/<version>/ nor
+// under their top-level name.
 func MissingCoreOSArtifacts(dataDir, version, arch string) []string {
-	names := coreOSArtifactNames(version, arch)
-	files := make([]string, 0, len(names))
-	for _, f := range names {
-		files = append(files, f)
+	var missing []string
+	for _, f := range coreOSArtifactNames(version, arch) {
+		if !artifactPresent(filepath.Join(dataDir, OSCoreOS, version, f)) && !artifactPresent(filepath.Join(dataDir, f)) {
+			missing = append(missing, f)
+		}
 	}
-	return missingArtifacts(dataDir, files)
+	sort.Strings(missing)
+	return missing
 }
 
 func versionIsSet(v string) bool {

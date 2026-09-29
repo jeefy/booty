@@ -23,9 +23,11 @@ var (
 // SSH keys from a file, the example site template, an external kubeadm
 // cluster Manager) for a real boot: wrapper, builtin and user children,
 // plus the merged preview. The fixtures were dumped from c9f5fef, before
-// Bluefin hosts could join a kubeadm cluster; a Bluefin host registered
-// next to them must not change a byte. Minted tokens and the fake CA's
-// discovery hash are random per run and normalised before comparing.
+// Bluefin hosts could join a kubeadm cluster, and refreshed for autopilot
+// P1, which adds exactly booty-health.service and its script; a Bluefin
+// host registered next to them must not change a byte. Minted tokens and
+// the fake CA's discovery hash are random per run and normalised before
+// comparing.
 func TestLiveKubeadmWorkerFlatcarRenderIsByteIdentical(t *testing.T) {
 	srv, dir := newTestServer(t)
 	_, minter, _ := newFakeMinter(t)

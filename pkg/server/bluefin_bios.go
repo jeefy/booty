@@ -39,17 +39,15 @@ func bluefinSectionURL(mac, version, ext string) string {
 }
 
 // bluefinSectionRelease resolves bluefin-server-netboot_<version>.<ext> to
-// the current or previous release and the section it names.
+// the cached release and the section it names.
 func bluefinSectionRelease(name string) (versions.BluefinManifest, string, bool) {
 	for ext, section := range bluefinSections {
 		base, ok := strings.CutSuffix(name, ext)
 		if !ok {
 			continue
 		}
-		for _, link := range []string{config.BluefinCurrentLink, config.BluefinPreviousLink} {
-			if m, ok := bluefinManifest(link); ok && m.NetbootUKI == base+".efi" {
-				return m, section, true
-			}
+		if m, ok := bluefinManifestWhere(func(m versions.BluefinManifest) bool { return m.NetbootUKI == base+".efi" }); ok {
+			return m, section, true
 		}
 	}
 	return versions.BluefinManifest{}, "", false
@@ -62,7 +60,7 @@ func bluefinSectionRelease(name string) (versions.BluefinManifest, string, bool)
 func serveBluefinUKISection(w http.ResponseWriter, r *http.Request, mac, name string) {
 	m, section, ok := bluefinSectionRelease(name)
 	if !ok {
-		writeError(w, http.StatusNotFound, "not a section of the current or previous Bluefin release")
+		writeError(w, http.StatusNotFound, "not a section of a cached Bluefin release")
 		return
 	}
 	uki, info, err := cachedUKI(m)

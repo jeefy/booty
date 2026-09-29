@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -549,11 +548,10 @@ func installBluefinRelease(ctx context.Context, src bluefinSource, version strin
 	if err := writeBluefinManifest(dir, manifest); err != nil {
 		return manifest, err
 	}
-	keep, err := linkBluefinRelease(version)
-	if err != nil {
+	if err := linkRelease(OSBluefin, version); err != nil {
 		return manifest, err
 	}
-	pruneBluefinReleases(keep...)
+	pruneReleases(OSBluefin)
 	return manifest, nil
 }
 
@@ -582,28 +580,6 @@ func installBluefinSysext(ctx context.Context, src bluefinSource, version, dir s
 	}
 	slog.Info("Sysext decompressed", "path", raw, "sha256", sum)
 	return BluefinSysext{File: s.raw(), Sha256: sum}, nil
-}
-
-// linkBluefinRelease points bluefin/current at version and, when it
-// replaces another release, bluefin/previous at that one. It returns the
-// release directories to keep.
-func linkBluefinRelease(version string) ([]string, error) {
-	currentLink := config.DataPath(config.BluefinDir, config.BluefinCurrentLink)
-	previousLink := config.DataPath(config.BluefinDir, config.BluefinPreviousLink)
-	old, _ := os.Readlink(currentLink)
-	if old != "" && old != version {
-		if err := config.ReplaceSymlink(old, previousLink); err != nil {
-			return nil, fmt.Errorf("linking previous: %w", err)
-		}
-	}
-	if err := config.ReplaceSymlink(version, currentLink); err != nil {
-		return nil, fmt.Errorf("linking current: %w", err)
-	}
-	keep := []string{version}
-	if prev, err := os.Readlink(previousLink); err == nil && prev != version {
-		keep = append(keep, prev)
-	}
-	return keep, nil
 }
 
 func writeBluefinManifest(dir string, m BluefinManifest) error {
@@ -656,24 +632,25 @@ func PreviousBluefinManifest() (BluefinManifest, bool) {
 	return bluefinManifestAt(config.BluefinPreviousLink)
 }
 
-func pruneBluefinReleases(keep ...string) {
-	root := config.DataPath(config.BluefinDir)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		slog.Warn("Could not list Bluefin release directories", "path", root, "error", err)
-		return
+// BluefinManifestFor returns the manifest of a cached release by version,
+// ok=false when it is not on disk.
+func BluefinManifestFor(version string) (BluefinManifest, bool) {
+	if !ReleaseCached(OSBluefin, version) {
+		return BluefinManifest{}, false
 	}
-	for _, e := range entries {
-		if !e.IsDir() || slices.Contains(keep, e.Name()) {
-			continue
+	return bluefinManifestAt(version)
+}
+
+// CachedBluefinManifests lists the manifests of every cached release,
+// newest first.
+func CachedBluefinManifests() []BluefinManifest {
+	var out []BluefinManifest
+	for _, v := range CachedReleases(OSBluefin) {
+		if m, ok := bluefinManifestAt(v); ok {
+			out = append(out, m)
 		}
-		path := filepath.Join(root, e.Name())
-		if err := os.RemoveAll(path); err != nil {
-			slog.Warn("Could not remove old Bluefin release", "path", path, "error", err)
-			continue
-		}
-		slog.Info("Removed old Bluefin release", "path", path)
 	}
+	return out
 }
 
 // MissingBluefinArtifacts lists the files named by bluefin/current/manifest.json
