@@ -47,11 +47,50 @@ type Host struct {
 	// TargetVersion is the cached release of the host's OS Booty serves
 	// this MAC; empty means the fleet target (the OS's current release).
 	TargetVersion string `json:"targetVersion,omitempty"`
-	Running       string `json:"running"`
-	LastCheck     string `json:"lastCheck"`
-	RebootPending bool   `json:"rebootPending"`
+	// Canary marks the host the autopilot rolls a new Bluefin release to
+	// first under --autopilot=full (and retries a TIMEOUT release on).
+	Canary bool `json:"canary,omitempty"`
+	// Autopilot is the controller's read-only summary of the host's
+	// current episode, kept on the record so /hosts and the UI show it.
+	Autopilot     *HostAutopilot `json:"autopilot,omitempty"`
+	Running       string         `json:"running"`
+	LastCheck     string         `json:"lastCheck"`
+	RebootPending bool           `json:"rebootPending"`
 	// Health is the last report from the node's booty-health.service.
 	Health *Health `json:"health,omitempty"`
+}
+
+// HostAutopilot is the autopilot's view of a host: the state of its
+// current episode (AutopilotIdle when none), the attempt it is on, the last
+// failure class, when it entered that state, the release under test and
+// whether the controller set the host's targetVersion (Pinned). The
+// controller owns it; /register echoes it back unchanged.
+type HostAutopilot struct {
+	State   string `json:"state"`
+	Attempt int    `json:"attempt,omitempty"`
+	Class   string `json:"class,omitempty"`
+	Since   string `json:"since,omitempty"`
+	Release string `json:"release,omitempty"`
+	Target  string `json:"target,omitempty"`
+	Pinned  bool   `json:"pinned,omitempty"`
+}
+
+// Per-host autopilot states, as the plan names them.
+const (
+	AutopilotIdle       = "idle"
+	AutopilotRolling    = "rolling"
+	AutopilotGating     = "gating"
+	AutopilotRetrying   = "retrying"
+	AutopilotRolledBack = "rolled-back"
+	AutopilotNeedsHands = "needs-hands"
+)
+
+// Equal reports whether two summaries carry the same values.
+func (a *HostAutopilot) Equal(b *HostAutopilot) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 type UnknownHost struct {
