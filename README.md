@@ -395,7 +395,7 @@ Each check is recorded on the host (`running`, `lastCheck`, `rebootPending`, vis
 
 ## Autopilot
 
-Booty is a self-healing upgrade controller: it rolls a release across the fleet, checks that each node comes back healthy, retries, downgrades to the last good release when it does not, holds the fleet there and, for Bluefin Server, reports the bad release upstream. The design and the remaining slice (P5 verification) are in [docs/plans/2026-09-28-autopilot.md](docs/plans/2026-09-28-autopilot.md). `--autopilot=off` (the default) starts none of it and changes nothing.
+Booty is a self-healing upgrade controller: it rolls a release across the fleet, checks that each node comes back healthy, retries, downgrades to the last good release when it does not, holds the fleet there and, for Bluefin Server, reports the bad release upstream. The design, and the QEMU evidence of a bad Bluefin release being caught, rolled back, retried, quarantined and skipped (P5), are in [docs/plans/2026-09-28-autopilot.md](docs/plans/2026-09-28-autopilot.md). `--autopilot=off` (the default) starts none of it and changes nothing.
 
 ### Modes
 
