@@ -260,11 +260,11 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 	}
 	do(t, http.MethodGet, srv.URL+"/ignition.json?mac="+mac, "")
 	do(t, http.MethodPost, srv.URL+"/booted?mac="+mac, "")
-	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4800.0.0","failedUnits":["kubelet.service"]}`)
+	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4800.0.0","failedUnits":["kubelet.service"],"journalErrors":["n1 kernel: link 40:a8:f0:12:34:56 at 192.168.1.57"]}`)
 	do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+mac, "")
 	do(t, http.MethodGet, srv.URL+"/ignition.json?mac="+mac, "")
 	do(t, http.MethodPost, srv.URL+"/booted?mac="+mac, "")
-	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4757.2.0","failedUnits":[],"firmware":"uefi","dmi":{"vendor":"HP","product":"EliteDesk","productUUID":"4c4c4544-0031-3310-8052-b6c04f4d3732"},"journalErrors":["n1 kernel: link 40:a8:f0:12:34:56 at 192.168.1.57"]}`)
+	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4757.2.0","failedUnits":[],"firmware":"uefi","dmi":{"vendor":"HP","product":"EliteDesk","productUUID":"4c4c4544-0031-3310-8052-b6c04f4d3732"},"journalErrors":["n1 systemd[1]: lastGood boot noise that must stay out of the report"]}`)
 	ctrl.Tick(t.Context())
 	st = getAutopilot(t)
 	if got := st.OS["flatcar"].Releases; len(got) != 2 || got[0].Version != "4800.0.0" || got[0].State != controller.ReleaseTimeout {
@@ -279,6 +279,9 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 	}
 	if strings.Contains(r.body, "n1") || strings.Contains(r.body, "192.168.1.57") || strings.Contains(r.body, "40:a8") || strings.Contains(r.body, "4c4c4544") {
 		t.Fatalf("served report leaks identifiers: %s", r.body)
+	}
+	if strings.Contains(r.body, "lastGood boot noise") {
+		t.Fatalf("the rollback boot's journal must not be attributed to the bad release: %s", r.body)
 	}
 	if r := do(t, http.MethodGet, srv.URL+"/autopilot/reports/flatcar-4800.0.0.json", ""); r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") || !strings.Contains(r.body, `"marker"`) {
 		t.Fatalf("report json: %+v", r)

@@ -108,6 +108,16 @@ type Document struct {
 	JournalErrors  []string  `json:"journalErrors"`
 }
 
+// neverReportedHealth says whether a failure class means the boot ended
+// before booty-health.service could run.
+func neverReportedHealth(class string) bool {
+	switch class {
+	case "boot-loop", "no-ignition", "hung", "timeout":
+		return true
+	}
+	return false
+}
+
 // Report is a rendered report.
 type Report struct {
 	Markdown string
@@ -213,7 +223,7 @@ func renderMarkdown(d *Document) string {
 	if d.Draft {
 		status = "draft (release in TIMEOUT, retry pending)"
 	}
-	fmt.Fprintf(&b, "Booty's autopilot (`--autopilot=%s`) rolled this release out, watched it fail the health gate %s and rolled the host back. Status: **%s**.\n\n", orUnknown(d.Mode), plural(d.AttemptCount, "times"), status)
+	fmt.Fprintf(&b, "Booty's autopilot (`--autopilot=%s`) rolled this release out, watched it fail the health gate %s (%d attempt(s) including the rollback) and rolled the host back. Status: **%s**.\n\n", orUnknown(d.Mode), plural(failedAttempts(d.Attempts), "times"), d.AttemptCount, status)
 
 	b.WriteString("## Release\n\n")
 	fmt.Fprintf(&b, "| | |\n|---|---|\n| OS | %s |\n| Release | `%s` |\n| lastGood | `%s` |\n| Attempts | %d |\n| Last failure class | `%s` |\n| Rollback | %s |\n\n",
@@ -264,9 +274,12 @@ func renderMarkdown(d *Document) string {
 	}
 
 	b.WriteString("## Journal errors (redacted excerpt)\n\n")
-	if len(d.JournalErrors) == 0 {
+	switch {
+	case len(d.JournalErrors) == 0 && neverReportedHealth(d.Class):
+		fmt.Fprintf(&b, "_The failing boot never got as far as a health report (`%s`), so there is no journal excerpt from it._\n\n", d.Class)
+	case len(d.JournalErrors) == 0:
 		b.WriteString("_no error-level journal lines were reported_\n\n")
-	} else {
+	default:
 		b.WriteString("Error-level lines from the failing boot's journal (`journalctl -p err -b --no-hostname`). Hostnames, addresses, MACs, UUIDs and keys are replaced by `<host>`, `<ip>`, `<mac>`, `<uuid>`, `<key>`.\n\n```\n")
 		for _, l := range d.JournalErrors {
 			b.WriteString(l)
@@ -304,6 +317,16 @@ func orUnknown(s string) string {
 		return "unknown"
 	}
 	return s
+}
+
+func failedAttempts(attempts []Attempt) int {
+	n := 0
+	for _, a := range attempts {
+		if a.Outcome != "healthy" {
+			n++
+		}
+	}
+	return n
 }
 
 func plural(n int, many string) string {

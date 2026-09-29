@@ -79,7 +79,7 @@ func serveBluefinUKISection(w http.ResponseWriter, r *http.Request, mac, name st
 		if !ok {
 			return
 		}
-		recordBluefinNetboot(r, mac, host, hardware.PlatformPCBIOS, name, now)
+		recordBluefinNetboot(r, mac, host, hardware.PlatformPCBIOS, m.Version, name, now)
 	} else if host, ok := hardware.Get(mac); !ok || host.OS != "bluefin" {
 		writeError(w, http.StatusNotFound, "host not registered as bluefin")
 		return

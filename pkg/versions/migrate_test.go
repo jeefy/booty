@@ -203,3 +203,40 @@ func TestRetentionKeepsCurrentPreviousLastGoodAndTargets(t *testing.T) {
 		t.Fatalf("a pruned targetVersion falls back to the fleet target, got %q", got)
 	}
 }
+
+func TestSerialRolloutHoldsFleetTargetAtLastGood(t *testing.T) {
+	dir := homelabLayout(t)
+	MigrateReleaseLayout()
+	for _, v := range []string{"27.01.1", "27.02.2"} {
+		writeTestBluefinRelease(t, dir, v)
+		if err := linkRelease(OSBluefin, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SetLastGood(OSBluefin, "27.01.1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { SerialRollout(OSBluefin, false); HoldFleetTarget(OSBluefin, "") })
+	if got := FleetTarget(OSBluefin); got != "27.02.2" {
+		t.Fatalf("without the policy the fleet target is current, got %q", got)
+	}
+	SerialRollout(OSBluefin, true)
+	if got, hold := FleetTarget(OSBluefin), FleetHold(OSBluefin); got != "27.01.1" || hold != "27.01.1" {
+		t.Fatalf("under serial rollout the fleet target follows lastGood while current differs: target %q hold %q", got, hold)
+	}
+	HoldFleetTarget(OSBluefin, "27.02.2")
+	if got := FleetTarget(OSBluefin); got != "27.02.2" {
+		t.Fatalf("an explicit hold wins, got %q", got)
+	}
+	HoldFleetTarget(OSBluefin, "")
+	if err := SetLastGood(OSBluefin, "27.02.2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, hold := FleetTarget(OSBluefin), FleetHold(OSBluefin); got != "27.02.2" || hold != "" {
+		t.Fatalf("once lastGood caught up nothing is held: target %q hold %q", got, hold)
+	}
+	SerialRollout(OSBluefin, false)
+	if got := FleetHold(OSFlatcar); got != "" {
+		t.Fatalf("other OSes are untouched, got %q", got)
+	}
+}

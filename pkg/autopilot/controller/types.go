@@ -128,9 +128,13 @@ type Episode struct {
 	// initiated the reboot); pods already unhealthy in it never fail the
 	// gate.
 	Baseline *k8s.Sample `json:"baseline,omitempty"`
-	Signals  Signals     `json:"signals"`
-	Attempts []Attempt   `json:"attempts,omitempty"`
-	Note     string      `json:"note,omitempty"`
+	// Journal is the error-level journal excerpt of the last health report
+	// from a boot of the blamed release (never of the lastGood rollback),
+	// raw; the report builder redacts it. Kept out of GET /autopilot.
+	Journal  []string  `json:"journal,omitempty"`
+	Signals  Signals   `json:"signals"`
+	Attempts []Attempt `json:"attempts,omitempty"`
+	Note     string    `json:"note,omitempty"`
 }
 
 // Active reports whether the episode still has an attempt in flight.

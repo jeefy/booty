@@ -39,6 +39,10 @@ type Host struct {
 	// NetbootPlatform is the firmware the last Bluefin netboot came
 	// through: PlatformEFI (UKI) or PlatformPCBIOS (kernel and initrd).
 	NetbootPlatform string `json:"netbootPlatform,omitempty"`
+	// NetbootVersion is the release whose netboot UKI or kernel the host
+	// fetched last: what its initrd is booting right now, which may differ
+	// from its target while the autopilot moves it (boot loop, rollback).
+	NetbootVersion string `json:"netbootVersion,omitempty"`
 	// SecureBoot records that the host's last /booty.ipxe fetch arrived
 	// through the Secure Boot path: the signed iPXE that only UEFI HTTP Boot
 	// hands out (its autoexec adds sb=1). It is not a firmware attestation;

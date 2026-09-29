@@ -106,6 +106,7 @@ func TestBuildAndWriteRedactsEverything(t *testing.T) {
 		"mac=<mac>&token=<token>",
 		"hostname set to <host> (was <host>.lan)",
 		"Status: **quarantined**",
+		"fail the health gate 2 times (3 attempt(s) including the rollback)",
 	} {
 		if !strings.Contains(mdText, want) {
 			t.Errorf("markdown lacks %q\n%s", want, mdText)
@@ -131,10 +132,13 @@ func TestBuildAndWriteRedactsEverything(t *testing.T) {
 func TestBuildDraftWithoutOptionalFacts(t *testing.T) {
 	rep := Build(Input{OS: "flatcar", Version: "4800.0.0", Draft: true, Class: "boot-loop"})
 	md := rep.Markdown
-	for _, want := range []string{"# Flatcar 4800.0.0: boot-loop", "draft (release in TIMEOUT", "| Boot path | `unknown` |", "<!-- booty-autopilot: flatcar 4800.0.0 unknown -->", "_none recorded_", "_no error-level journal lines were reported_"} {
+	for _, want := range []string{"# Flatcar 4800.0.0: boot-loop", "draft (release in TIMEOUT", "| Boot path | `unknown` |", "<!-- booty-autopilot: flatcar 4800.0.0 unknown -->", "_none recorded_", "never got as far as a health report (`boot-loop`)"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("draft markdown lacks %q\n%s", want, md)
 		}
+	}
+	if md := Build(Input{OS: "flatcar", Version: "4800.0.0", Draft: true, Class: "failed-units"}).Markdown; !strings.Contains(md, "_no error-level journal lines were reported_") {
+		t.Errorf("a boot that reported health without journal errors says so:\n%s", md)
 	}
 	if strings.Contains(md, "| CNI |") || strings.Contains(md, "| kubelet |") {
 		t.Fatalf("optional rows must be omitted:\n%s", md)

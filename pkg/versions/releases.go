@@ -181,8 +181,9 @@ func pruneReleases(osName string) {
 }
 
 var (
-	holdMu     sync.RWMutex
-	fleetHolds = map[string]string{}
+	holdMu        sync.RWMutex
+	fleetHolds    = map[string]string{}
+	serialRollout = map[string]bool{}
 )
 
 // HoldFleetTarget pins the fleet target of osName at version (a cached
@@ -200,14 +201,36 @@ func HoldFleetTarget(osName, version string) {
 	fleetHolds[osName] = version
 }
 
+// SerialRollout switches osName to the canary-serial policy: FleetTarget
+// answers lastGood whenever current differs from it, from the instant a
+// release lands and not only once the controller's next tick holds the
+// fleet. Without it a host's update timer firing in that gap sees the new
+// current and kured reboots a host the rollout had not picked (seen in
+// the P5 QEMU run). The controller sets it under --autopilot=full.
+func SerialRollout(osName string, on bool) {
+	holdMu.Lock()
+	defer holdMu.Unlock()
+	if on {
+		serialRollout[osName] = true
+		return
+	}
+	delete(serialRollout, osName)
+}
+
 // FleetHold is the version FleetTarget is held at for osName, "" when not
-// held (or the held release is no longer cached).
+// held (or the held release is no longer cached). Under SerialRollout it
+// is lastGood while current differs from it.
 func FleetHold(osName string) string {
 	holdMu.RLock()
-	v := fleetHolds[osName]
+	v, serial := fleetHolds[osName], serialRollout[osName]
 	holdMu.RUnlock()
 	if v != "" && !ReleaseCached(osName, v) {
-		return ""
+		v = ""
+	}
+	if v == "" && serial {
+		if lg := LastGood(osName); lg != "" && lg != CurrentTarget(osName) && ReleaseCached(osName, lg) {
+			return lg
+		}
 	}
 	return v
 }

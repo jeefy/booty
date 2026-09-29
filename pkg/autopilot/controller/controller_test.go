@@ -31,11 +31,12 @@ type fakeFleet struct {
 	lastGood map[string]string
 	cached   map[string][]string
 	holds    map[string]string
+	serial   map[string]bool
 	updates  int
 }
 
 func newFakeFleet() *fakeFleet {
-	return &fakeFleet{hosts: map[string]*hardware.Host{}, current: map[string]string{}, lastGood: map[string]string{}, cached: map[string][]string{}, holds: map[string]string{}}
+	return &fakeFleet{hosts: map[string]*hardware.Host{}, current: map[string]string{}, lastGood: map[string]string{}, cached: map[string][]string{}, holds: map[string]string{}, serial: map[string]bool{}}
 }
 
 func (f *fakeFleet) add(h hardware.Host) {
@@ -101,11 +102,20 @@ func (f *fakeFleet) Hold(osName, version string) {
 	f.holds[osName] = version
 }
 
+func (f *fakeFleet) SerialRollout(osName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serial[osName] = true
+}
+
 func (f *fakeFleet) fleetTarget(osName string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if v := f.holds[osName]; v != "" {
 		return v
+	}
+	if lg := f.lastGood[osName]; f.serial[osName] && lg != "" && lg != f.current[osName] {
+		return lg
 	}
 	return f.current[osName]
 }
@@ -807,5 +817,74 @@ func TestHostBootingSomethingElseGatesWhatItBoots(t *testing.T) {
 	h.fetch(macA)
 	if e := h.episode(macA); e.Target != "4900.0.0" || e.State != hardware.AutopilotGating {
 		t.Fatalf("episode: %+v", e)
+	}
+}
+
+func TestNodeStableIsCappedAtHalfTheWindow(t *testing.T) {
+	for _, tc := range []struct{ window, want time.Duration }{
+		{15 * time.Minute, 5 * time.Minute},
+		{10 * time.Minute, 5 * time.Minute},
+		{6 * time.Minute, 3 * time.Minute},
+		{2 * time.Minute, time.Minute},
+	} {
+		o := Options{HealthWindow: tc.window}
+		o.defaults()
+		if o.NodeStable != tc.want {
+			t.Errorf("window %s: NodeStable = %s, want %s", tc.window, o.NodeStable, tc.want)
+		}
+	}
+	o := Options{HealthWindow: 6 * time.Minute, NodeStable: 4 * time.Minute}
+	o.defaults()
+	if o.NodeStable != 4*time.Minute {
+		t.Errorf("an explicit NodeStable must be kept, got %s", o.NodeStable)
+	}
+}
+
+// A 6-minute window with a node that needs 90 s to come up must pass the
+// gate: with the uncapped 5-minute stability it never could.
+func TestShortWindowGatePasses(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.opts.HealthWindow = 6 * time.Minute
+	h.start()
+	h.flatcarHost(macA, "ehrlitan")
+	h.healthyNode("ehrlitan", "Flatcar 4757.2.0")
+	h.fetch(macA)
+	h.advance(90 * time.Second)
+	h.up(macA, "4800.0.0")
+	h.node("ehrlitan", true, h.time(), "Flatcar 4800.0.0")
+	h.tick()
+	h.wantState(macA, hardware.AutopilotGating, 1, "")
+	h.advance(3 * time.Minute)
+	h.tick()
+	h.wantState(macA, hardware.AutopilotIdle, 1, "")
+	if got := h.release("flatcar", "4800.0.0").Healthy; len(got) != 1 || got[0] != macA {
+		t.Fatalf("healthy list: %v", got)
+	}
+}
+
+// A release landing under full must not move a non-canary Bluefin host's
+// effective target before the controller's next tick: the hold is a
+// policy of the fleet, not a state the tick applies later.
+func TestBluefinFullHoldIsImmediateOnRelease(t *testing.T) {
+	h := newHarness(t, config.AutopilotFull)
+	h.fleet.current["bluefin"], h.fleet.lastGood["bluefin"], h.fleet.cached["bluefin"] = "26.09.673", "26.09.673", []string{"26.09.673"}
+	h.fleet.add(hardware.Host{MAC: macA, Hostname: "a", OS: "bluefin", Booted: "2026-09-28T10:00:00Z", Running: "26.09.673"})
+	h.fleet.add(hardware.Host{MAC: macB, Hostname: "b", OS: "bluefin", Booted: "2026-09-28T10:00:00Z", Running: "26.09.673", Canary: true})
+	h.tick()
+	if got := h.c.Status().OS["bluefin"]; got.Held || got.FleetTarget != "26.09.673" {
+		t.Fatalf("idle fleet: %+v", got)
+	}
+	h.fleet.current["bluefin"], h.fleet.cached["bluefin"] = "26.09.674", []string{"26.09.674", "26.09.673"}
+	hostA, _ := h.fleet.Host(macA)
+	if got := h.fleet.EffectiveTarget(hostA); got != "26.09.673" {
+		t.Fatalf("before the tick a non-canary host must still boot lastGood, got %s", got)
+	}
+	h.tick()
+	h.wantHold("bluefin", "26.09.673")
+	h.wantPin(macB, "26.09.674")
+	h.wantPin(macA, "")
+	hostA, _ = h.fleet.Host(macA)
+	if got := h.fleet.EffectiveTarget(hostA); got != "26.09.673" {
+		t.Fatalf("after the tick: %s", got)
 	}
 }
