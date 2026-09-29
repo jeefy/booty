@@ -31,6 +31,8 @@ WantedBy=multi-user.target
 // with curl, systemctl, journalctl and uname; JSON is assembled by hand,
 // so jsonEscape covers every string. The BOOTY_* variables exist for the
 // test, which runs the script with stubs and a fake os-release.
+// product_uuid is root-only in sysfs; read_file yields "" when it cannot
+// be read and the report stays valid.
 func HealthReportScript(server string) string {
 	return `#!/bin/bash
 set -u
@@ -83,13 +85,14 @@ for ((i = ${#ALL[@]} - 1; i >= 0; i--)); do
 done
 FIRMWARE=bios; [ -d "$SYS/firmware/efi" ] && FIRMWARE=uefi
 
-BODY=$(printf '{"running":%s,"failedUnits":%s,"journalErrors":%s,"dmi":{"vendor":%s,"product":%s,"biosVersion":%s},"firmware":%s,"kernel":%s,"bootID":%s}' \
+BODY=$(printf '{"running":%s,"failedUnits":%s,"journalErrors":%s,"dmi":{"vendor":%s,"product":%s,"biosVersion":%s,"productUUID":%s},"firmware":%s,"kernel":%s,"bootID":%s}' \
   "$(json_string "$RUNNING")" \
   "$(json_array "${FAILED[@]+"${FAILED[@]}"}")" \
   "$(json_array "${ERRORS[@]+"${ERRORS[@]}"}")" \
   "$(json_string "$(read_file "$SYS/class/dmi/id/sys_vendor")")" \
   "$(json_string "$(read_file "$SYS/class/dmi/id/product_name")")" \
   "$(json_string "$(read_file "$SYS/class/dmi/id/bios_version")")" \
+  "$(json_string "$(read_file "$SYS/class/dmi/id/product_uuid")")" \
   "$(json_string "$FIRMWARE")" \
   "$(json_string "$(uname -r)")" \
   "$(json_string "$(read_file "$PROC/sys/kernel/random/boot_id")")")

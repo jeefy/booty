@@ -26,12 +26,17 @@ type Health struct {
 	Kernel   string `json:"kernel"`
 }
 
-// DMI identifies the hardware from /sys/class/dmi/id: no serial numbers,
-// so a report carries no per-machine identifier.
+// DMI identifies the hardware from /sys/class/dmi/id. Vendor, Product and
+// BIOSVersion describe the model and may go into a report. ProductUUID is
+// the machine's identity (/sys/class/dmi/id/product_uuid, root-readable,
+// what the kubelet publishes as nodeInfo.systemUUID): the autopilot uses
+// it to confirm hostname-to-node matches and it must stay out of every
+// report, like the MAC.
 type DMI struct {
 	Vendor      string `json:"vendor"`
 	Product     string `json:"product"`
 	BIOSVersion string `json:"biosVersion"`
+	ProductUUID string `json:"productUUID,omitempty"`
 }
 
 // Firmware values a health report may carry.
@@ -63,6 +68,7 @@ func (h *Health) Normalize() error {
 	h.DMI.Vendor = clip(strings.TrimSpace(h.DMI.Vendor), MaxHealthFieldLen)
 	h.DMI.Product = clip(strings.TrimSpace(h.DMI.Product), MaxHealthFieldLen)
 	h.DMI.BIOSVersion = clip(strings.TrimSpace(h.DMI.BIOSVersion), MaxHealthFieldLen)
+	h.DMI.ProductUUID = strings.ToLower(clip(strings.TrimSpace(h.DMI.ProductUUID), MaxHealthFieldLen))
 	h.Firmware = strings.ToLower(strings.TrimSpace(h.Firmware))
 	switch h.Firmware {
 	case "", FirmwareUEFI, FirmwareBIOS:

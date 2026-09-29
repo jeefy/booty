@@ -41,6 +41,7 @@ type healthBody struct {
 		Vendor      string `json:"vendor"`
 		Product     string `json:"product"`
 		BIOSVersion string `json:"biosVersion"`
+		ProductUUID string `json:"productUUID"`
 	} `json:"dmi"`
 	Firmware string `json:"firmware"`
 	Kernel   string `json:"kernel"`
@@ -104,6 +105,7 @@ printf '%s\n' "booty-k8s-join.service loaded failed failed Join" "var-lib-contai
 	writeFile(t, filepath.Join(sys, "class", "dmi", "id", "sys_vendor"), "HP\n")
 	writeFile(t, filepath.Join(sys, "class", "dmi", "id", "product_name"), "HP EliteDesk 800 G1 \"DM\"\n")
 	writeFile(t, filepath.Join(sys, "class", "dmi", "id", "bios_version"), "L01 v02.78\n")
+	writeFile(t, filepath.Join(sys, "class", "dmi", "id", "product_uuid"), "0CCCFB00-A3F6-11E4-9504-40A8F0AF398D\n")
 	if err := os.MkdirAll(filepath.Join(sys, "firmware", "efi"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +150,7 @@ printf '%s\n' "booty-k8s-join.service loaded failed failed Join" "var-lib-contai
 	if got.Running != "26.09.673" || got.Firmware != "uefi" || got.Kernel != strings.TrimSpace(string(kernel)) || got.BootID != "5b1c6b2e-4a9e-4e7b-9a0e-2d3f4a5b6c7d" {
 		t.Fatalf("scalar fields: %+v", got)
 	}
-	if got.DMI.Vendor != "HP" || got.DMI.Product != `HP EliteDesk 800 G1 "DM"` || got.DMI.BIOSVersion != "L01 v02.78" {
+	if got.DMI.Vendor != "HP" || got.DMI.Product != `HP EliteDesk 800 G1 "DM"` || got.DMI.BIOSVersion != "L01 v02.78" || got.DMI.ProductUUID != "0CCCFB00-A3F6-11E4-9504-40A8F0AF398D" {
 		t.Fatalf("dmi: %+v", got.DMI)
 	}
 	if !reflect.DeepEqual(got.FailedUnits, []string{"booty-k8s-join.service", "var-lib-containerd.mount"}) {
