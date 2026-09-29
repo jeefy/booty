@@ -87,9 +87,12 @@ func BluefinHTTPBoot(hw net.HardwareAddr) (string, bool) {
 // (any cached release), any other *.efi the host's target release's,
 // bluefin-server-netboot_<version>.{linux,initrd,ucode} that UKI's section
 // payload (the BIOS path), bluefin-server_<version>.raw the DDI of any
-// cached release, SHA256SUMS(.gpg) the host's target release's, and
-// bluefin-node.ign the host's Ignition config. The target release is the
-// host's targetVersion, else current. It is routed before the mux
+// cached release, SHA256SUMS(.gpg) and bluefin-node.ign (the host's
+// Ignition config) the release the host netbooted last (its target when it
+// has not netbooted yet, or that release was pruned): the initrd asking for
+// them came from that kernel, and the target may have moved under it since
+// (a boot loop the autopilot rolls back). The target release is the host's
+// targetVersion, else current. It is routed before the mux
 // (firmware never follows the mux's clean-path redirects) and answers HEAD
 // like GET.
 func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +132,7 @@ func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case name == versions.BluefinSumsFile || name == versions.BluefinSigFile:
-		m, ok := bluefinReleaseFor(host)
+		m, ok := bluefinBootedRelease(host)
 		if !ok {
 			writeError(w, http.StatusNotFound, "no Bluefin release cached yet")
 			return
@@ -156,6 +159,18 @@ func bluefinReleaseFor(host *hardware.Host) (versions.BluefinManifest, bool) {
 		}
 	}
 	return versions.CurrentBluefinManifest()
+}
+
+// bluefinBootedRelease is the release the host's running initrd or OS
+// came from (NetbootVersion, while cached), else the release it boots
+// next.
+func bluefinBootedRelease(host *hardware.Host) (versions.BluefinManifest, bool) {
+	if host.NetbootVersion != "" {
+		if m, ok := versions.BluefinManifestFor(host.NetbootVersion); ok {
+			return m, true
+		}
+	}
+	return bluefinReleaseFor(host)
 }
 
 // bluefinManifestWhere finds the cached release (newest first) match
@@ -200,7 +215,7 @@ func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, m.NetbootUKI, now)
+	recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, m.Version, m.NetbootUKI, now)
 	serveBluefinFile(w, r, m.Version, m.NetbootUKI, efiContentType)
 }
 
@@ -228,30 +243,30 @@ func bluefinBootHost(w http.ResponseWriter, r *http.Request, mac, platform strin
 }
 
 // recordBluefinNetboot records a real netboot: a GET stamps booted, the
-// IP and the platform; an EFI boot of a host with doInstall stamps
+// IP, the platform and the release served; an EFI boot of a host with doInstall stamps
 // installServedAt. A BIOS boot never installs, so it stamps nothing that
 // could later count as a finished install.
-func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, platform, file string, now time.Time) {
+func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, platform, version, file string, now time.Time) {
 	if isPreview(r) {
 		return
 	}
 	if r.Method == http.MethodGet {
 		ip, stamp := remoteIP(r), now.UTC().Format(time.RFC3339)
 		if _, err := hardware.Update(mac, func(h *hardware.Host) {
-			h.Booted, h.NetbootPlatform = stamp, platform
+			h.Booted, h.NetbootPlatform, h.NetbootVersion = stamp, platform, version
 			if ip != "" {
 				h.IP = ip
 			}
 		}); err != nil {
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
-		host.NetbootPlatform = platform
+		host.NetbootPlatform, host.NetbootVersion = platform, version
 		autopilotFetch(mac, controller.FetchKernel)
 	}
 	if platform == hardware.PlatformEFI {
 		recordInstallServed(mac, host, now)
 	}
-	slog.Info("Serving Bluefin netboot", "mac", mac, "platform", platform, "file", file, "method", r.Method, "doInstall", host.DoInstall)
+	slog.Info("Serving Bluefin netboot", "mac", mac, "platform", platform, "version", version, "file", file, "method", r.Method, "doInstall", host.DoInstall)
 }
 
 // bluefinInstallDone implements --doInstallClearOn=next-boot for Bluefin:
@@ -396,7 +411,8 @@ func bluefinExtensions(host *hardware.Host) []string {
 // boots with. Diskless nodes run Ignition on every boot on a fresh tmpfs
 // root, so everything is idempotent: files overwrite, the state disk is
 // created once and never wiped. mint says whether a k0s worker token or a
-// kubeadm join token may be minted (false for previews).
+// kubeadm join token may be minted (false for previews); a real fetch also
+// renders for the release the host netbooted, a preview for its target.
 func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, mint bool) (ign36.Config, error) {
 	var cfg ign36.Config
 	cfg.Ignition.Version = ign36.MaxVersion.String()
@@ -425,6 +441,9 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 	}
 
 	release, haveRelease := bluefinReleaseFor(host)
+	if mint {
+		release, haveRelease = bluefinBootedRelease(host)
+	}
 	if exts := bluefinExtensions(host); len(exts) > 0 {
 		if !haveRelease {
 			slog.Warn("No Bluefin release cached; serving the node config without its extensions", "mac", mac, "extensions", exts)

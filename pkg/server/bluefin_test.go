@@ -302,20 +302,23 @@ func TestBluefinRoutes(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, "bluefin", "current")); err != nil {
 			t.Fatal(err)
 		}
-		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS"} {
-			if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
-				t.Fatalf("%s: without a current release there is no target: %+v", p, r)
-			}
+		if r := do(t, http.MethodGet, srv.URL+bluefinBootPath, ""); r.status != 404 {
+			t.Fatalf("%s: without a current release there is no target: %+v", bluefinBootPath, r)
 		}
 		ddi := "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw"
-		if r := do(t, http.MethodGet, srv.URL+ddi, ""); r.status != 200 {
-			t.Fatalf("%s: the versioned DDI of a release still on disk serves hosts mid-boot: %+v", ddi, r)
+		sums := "/bluefin/" + bluefinDashMAC + "/SHA256SUMS"
+		for _, p := range []string{ddi, sums} {
+			if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 200 {
+				t.Fatalf("%s: a release still on disk that the host netbooted serves it mid-boot: %+v", p, r)
+			}
 		}
 		if err := os.RemoveAll(filepath.Join(dir, "bluefin", bluefinTestVersion)); err != nil {
 			t.Fatal(err)
 		}
-		if r := do(t, http.MethodGet, srv.URL+ddi, ""); r.status != 404 {
-			t.Fatalf("%s: pruned release: %+v", ddi, r)
+		for _, p := range []string{ddi, sums} {
+			if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
+				t.Fatalf("%s: pruned release: %+v", p, r)
+			}
 		}
 	})
 }

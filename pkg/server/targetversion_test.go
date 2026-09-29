@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/hardware"
 	ign "github.com/jeefy/booty/pkg/ignition"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/spf13/viper"
@@ -203,5 +204,63 @@ func TestBluefinNodeCarriesBootyUnits(t *testing.T) {
 	viper.Set(config.Builtin, "none")
 	if r := do(t, http.MethodGet, srv.URL+bluefinNodePath+"?preview=1", ""); r.status != 404 {
 		t.Fatalf("--builtin=none with nothing else to configure is 404: %+v", r)
+	}
+}
+
+// The checksum files and the node Ignition follow the release whose kernel
+// the host fetched last, not its target: when the autopilot repoints a
+// looping host mid-boot, the initrd that already runs the old kernel must
+// still find its own SHA256SUMS (found in the P5 QEMU run, where it got the
+// rollback release's and hung on the DDI verification).
+func TestBluefinChecksumsFollowTheNetbootedRelease(t *testing.T) {
+	srv, dir := newTestServer(t)
+	writeBluefinRelease(t, dir, bluefinPrevVersion, "previous")
+	installBluefinFixture(t, dir)
+	writeUKI(t, dir, bluefinTestVersion, biosUKI(true))
+	writeUKI(t, dir, bluefinPrevVersion, prevUKI())
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","extensions":["zfs"]}`)
+	sums := srv.URL + "/bluefin/" + bluefinDashMAC + "/SHA256SUMS"
+
+	if r := do(t, http.MethodGet, sums, ""); r.body != "SUMS-"+bluefinTestVersion {
+		t.Fatalf("before any netboot the target release's: %+v", r)
+	}
+	if r := do(t, http.MethodGet, srv.URL+"/bluefin/"+bluefinDashMAC+"/bluefin-server-netboot_"+bluefinPrevVersion+".linux", ""); r.status != 200 {
+		t.Fatalf("kernel of the previous release: %+v", r)
+	}
+	h, _ := hardware.Get(bluefinMAC)
+	if h.NetbootVersion != bluefinPrevVersion {
+		t.Fatalf("netbootVersion = %q, want %s", h.NetbootVersion, bluefinPrevVersion)
+	}
+	for _, name := range []string{"SHA256SUMS", "SHA256SUMS.gpg"} {
+		want := map[string]string{"SHA256SUMS": "SUMS-", "SHA256SUMS.gpg": "SIG-"}[name] + bluefinPrevVersion
+		if r := do(t, http.MethodGet, srv.URL+"/bluefin/"+bluefinDashMAC+"/"+name, ""); r.body != want {
+			t.Fatalf("%s after netbooting %s while targeting %s: %+v", name, bluefinPrevVersion, bluefinTestVersion, r)
+		}
+	}
+	_, files, _ := bluefinNode(t, srv.URL, bluefinMAC, "")
+	if _, ok := files["/etc/extensions/zfs_"+bluefinPrevVersion+".raw"]; !ok {
+		t.Fatalf("the real node config names the netbooted release's sysext: %v", files)
+	}
+	_, files, _ = bluefinNode(t, srv.URL, bluefinMAC, "?preview=1")
+	if _, ok := files["/etc/extensions/zfs_"+bluefinTestVersion+".raw"]; !ok {
+		t.Fatalf("a preview shows the target release: %v", files)
+	}
+	if r := do(t, http.MethodGet, srv.URL+"/bluefin/"+bluefinDashMAC+"/bluefin-server-netboot_"+bluefinTestVersion+".efi", ""); r.status != 200 {
+		t.Fatalf("UKI of the current release: %d", r.status)
+	}
+	if r := do(t, http.MethodGet, sums, ""); r.body != "SUMS-"+bluefinTestVersion {
+		t.Fatalf("after netbooting the target again: %+v", r)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "bluefin", bluefinTestVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "bluefin", "current")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bluefinPrevVersion, filepath.Join(dir, "bluefin", "current")); err != nil {
+		t.Fatal(err)
+	}
+	if r := do(t, http.MethodGet, sums, ""); r.body != "SUMS-"+bluefinPrevVersion {
+		t.Fatalf("a pruned netbooted release falls back to the target: %+v", r)
 	}
 }
