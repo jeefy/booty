@@ -1,0 +1,4 @@
+{"kind":"DaemonSetList","apiVersion":"apps/v1","items":[
+ {"metadata":{"name":"cilium","namespace":"kube-system","labels":{"k8s-app":"cilium"}}},
+ {"metadata":{"name":"reboot-agent","namespace":"kured","labels":{"app.kubernetes.io/name":"kured"}}}
+]}

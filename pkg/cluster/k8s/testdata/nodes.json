@@ -1,0 +1,19 @@
+{"kind":"NodeList","apiVersion":"v1","items":[
+ {"metadata":{"name":"archives","labels":{"kubernetes.io/hostname":"archives","node-role.kubernetes.io/control-plane":""},
+   "annotations":{"weave.works/kured-most-recent-reboot-needed":"2026-09-19T00:06:34Z","io.cilium.network.ipv4-pod-cidr":"10.0.0.0/24"}},
+  "spec":{},
+  "status":{"conditions":[
+     {"type":"MemoryPressure","status":"False","reason":"KubeletHasSufficientMemory","lastTransitionTime":"2026-09-01T00:00:00Z"},
+     {"type":"Ready","status":"True","reason":"KubeletReady","lastTransitionTime":"2026-09-20T10:00:00Z"}],
+   "nodeInfo":{"systemUUID":"186e93ca-698e-3912-ac80-d8bbc1960f11","kubeletVersion":"v1.34.12","osImage":"Ubuntu 24.04.5 LTS","kernelVersion":"6.8.0-85-generic","containerRuntimeVersion":"containerd://1.7.27"}}},
+ {"metadata":{"name":"aren","labels":{"kubernetes.io/hostname":"aren"},
+   "annotations":{"weave.works/kured-reboot-in-progress":"2026-09-28T01:02:03Z"}},
+  "spec":{"unschedulable":true},
+  "status":{"conditions":[
+     {"type":"Ready","status":"False","reason":"KubeletNotReady","lastTransitionTime":"2026-09-28T01:05:00Z"}],
+   "nodeInfo":{"systemUUID":"0cccfb00-a3f6-11e4-9504-40a8f0af398d","kubeletVersion":"v1.34.3","osImage":"Flatcar Container Linux by Kinvolk 4593.2.1 (Oklo)","kernelVersion":"6.12.53-flatcar","containerRuntimeVersion":"containerd://2.0.6"}}},
+ {"metadata":{"name":"ehrlitan","labels":{"kubernetes.io/hostname":"ehrlitan"}},
+  "spec":{},
+  "status":{"conditions":[{"type":"Ready","status":"True","reason":"KubeletReady","lastTransitionTime":"2026-09-27T12:00:00Z"}],
+   "nodeInfo":{"systemUUID":"5003d280-7617-11e3-afa3-d4c9efdc1072","kubeletVersion":"v1.34.3","osImage":"Flatcar Container Linux by Kinvolk 4593.2.1 (Oklo)","kernelVersion":"6.12.53-flatcar","containerRuntimeVersion":"containerd://2.0.6"}}}
+]}
