@@ -223,6 +223,7 @@ func run(cmd *cobra.Command, argv []string) error {
 			slog.Warn("SSH authorized keys file is not readable; sshkeys builtin will have no file keys", "file", keysFile, "error", err)
 		}
 	}
+	versions.MigrateReleaseLayout()
 	state.Init()
 	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {
