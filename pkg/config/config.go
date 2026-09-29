@@ -92,17 +92,25 @@ const (
 	AutopilotNamespace  = "autopilotNamespace"
 	AutopilotImage      = "autopilotImage"
 	AutopilotDrainTO    = "autopilotDrainTimeout"
+	AutopilotHealthWin  = "autopilotHealthWindow"
+	AutopilotRetryAfter = "autopilotRetryAfter"
 	RebootSSHKey        = "rebootSSHKey"
 )
 
 // Autopilot modes: off (nothing, the default), guard (health gate, retry,
 // downgrade and hold for every OS) and full (guard plus the Bluefin
-// canary-serial rollout). P2 only validates the value, wires the cluster
-// client and actuator detection and reports them; nothing acts yet.
+// canary-serial rollout, timeout/retry, quarantine and skip-to-next).
 const (
 	AutopilotOff   = "off"
 	AutopilotGuard = "guard"
 	AutopilotFull  = "full"
+
+	// DefaultAutopilotHealthWindow is how long a host has, from its observed
+	// reboot (first kernel/UKI fetch), to pass the health gate.
+	DefaultAutopilotHealthWindow = 15 * time.Minute
+	// DefaultAutopilotRetryAfter is how long a release that rolled back
+	// healthy stays in TIMEOUT before its single retry.
+	DefaultAutopilotRetryAfter = time.Hour
 
 	// DefaultAutopilotDrainTimeout bounds how long the API actuator retries
 	// PodDisruptionBudget-refused evictions before giving up on a node.
@@ -127,8 +135,12 @@ func ValidateAutopilot(v string) error {
 }
 
 // AutopilotDir is the directory (relative to DataDir) the autopilot keeps
-// its state in: SSH known_hosts now, episodes and reports later.
+// its state in: the controller's state.json, SSH known_hosts and, from
+// P4, the reports.
 const AutopilotDir = "autopilot"
+
+// AutopilotStateFile is the controller's persisted state under AutopilotDir.
+const AutopilotStateFile = "state.json"
 
 // AutopilotPath joins elem onto DataDir/autopilot.
 func AutopilotPath(elem ...string) string {
@@ -465,6 +477,8 @@ func LoadConfig() {
 	viper.SetDefault(AutopilotNamespace, "")
 	viper.SetDefault(AutopilotImage, "")
 	viper.SetDefault(AutopilotDrainTO, DefaultAutopilotDrainTimeout)
+	viper.SetDefault(AutopilotHealthWin, DefaultAutopilotHealthWindow)
+	viper.SetDefault(AutopilotRetryAfter, DefaultAutopilotRetryAfter)
 	viper.SetDefault(RebootSSHKey, "")
 }
 
