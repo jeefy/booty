@@ -80,7 +80,7 @@ jobs:
       # https://github.com/sigstore/cosign-installer
       - name: Install cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3.9.2
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -173,7 +173,7 @@ jobs:
     # PR builds are never pushed, so there is nothing to verify.
     if: github.event_name != 'pull_request'
     steps:
-      - uses: sigstore/cosign-installer@v3.9.2
+      - uses: sigstore/cosign-installer@v4.1.2
       - env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
