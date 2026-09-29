@@ -167,14 +167,19 @@ onMounted(() => {
         <div class="panel stat">
           <div class="stat-label">Attention</div>
           <div class="stat-value">
-            <span
-              class="badge"
-              :class="
-                status.needsHands || status.quarantined ? 'text-bg-danger' : 'text-bg-success'
-              "
-              data-testid="autopilot-attention"
-            >
-              {{ status.needsHands }} needs hands · {{ status.quarantined }} quarantined
+            <span class="d-inline-flex flex-wrap gap-1" data-testid="autopilot-attention">
+              <span
+                class="badge"
+                :class="status.needsHands ? 'text-bg-danger' : 'text-bg-success'"
+              >
+                {{ status.needsHands }} needs hands
+              </span>
+              <span
+                class="badge"
+                :class="status.quarantined ? 'text-bg-danger' : 'text-bg-success'"
+              >
+                {{ status.quarantined }} quarantined
+              </span>
             </span>
           </div>
           <div class="stat-hint">
@@ -284,7 +289,7 @@ onMounted(() => {
           </table>
         </div>
 
-        <div class="section-title">Hosts</div>
+        <div class="section-title">Episodes</div>
         <div class="panel table-panel fade-in">
           <table
             v-if="hostsWithEpisodes.length"
