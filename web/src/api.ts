@@ -38,6 +38,14 @@ export function apiGet<T>(path: string): Promise<T> {
   return request<T>(path)
 }
 
+export async function apiGetText(path: string): Promise<string> {
+  const response = await fetch(path)
+  if (!response.ok) {
+    throw await errorFromResponse(response)
+  }
+  return response.text()
+}
+
 export function apiPost<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',

@@ -544,9 +544,16 @@ export interface AutopilotReport {
   lastGood: string
   draft: boolean
   createdAt: string
+  updatedAt: string
   class: string
   attempts: number
   rollbackResult: string
+  /** URL of the rendered Markdown (`/autopilot/reports/<os>-<version>.md`); empty when not written. */
+  path: string
+  postedURL: string
+  postedAt: string
+  postAction: string
+  postError: string
 }
 
 /** GET /autopilot: the P2 cluster/actuator view plus the controller's state. */
@@ -681,9 +688,15 @@ export function normalizeAutopilotStatus(
       lastGood: r.lastGood ?? '',
       draft: r.draft ?? true,
       createdAt: r.createdAt ?? '',
+      updatedAt: r.updatedAt ?? '',
       class: r.class ?? '',
       attempts: r.attempts ?? 0,
-      rollbackResult: r.rollbackResult ?? ''
+      rollbackResult: r.rollbackResult ?? '',
+      path: r.path ?? '',
+      postedURL: r.postedURL ?? '',
+      postedAt: r.postedAt ?? '',
+      postAction: r.postAction ?? '',
+      postError: r.postError ?? ''
     })),
     held: (raw?.held ?? []).filter((h): h is string => typeof h === 'string' && h !== ''),
     quarantined: raw?.quarantined ?? 0,
