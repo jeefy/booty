@@ -43,10 +43,15 @@ type Host struct {
 	// through the Secure Boot path: the signed iPXE that only UEFI HTTP Boot
 	// hands out (its autoexec adds sb=1). It is not a firmware attestation;
 	// a plain PXE fetch clears it again.
-	SecureBoot    bool   `json:"secureBoot,omitempty"`
+	SecureBoot bool `json:"secureBoot,omitempty"`
+	// TargetVersion is the cached release of the host's OS Booty serves
+	// this MAC; empty means the fleet target (the OS's current release).
+	TargetVersion string `json:"targetVersion,omitempty"`
 	Running       string `json:"running"`
 	LastCheck     string `json:"lastCheck"`
 	RebootPending bool   `json:"rebootPending"`
+	// Health is the last report from the node's booty-health.service.
+	Health *Health `json:"health,omitempty"`
 }
 
 type UnknownHost struct {
