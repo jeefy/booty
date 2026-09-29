@@ -183,6 +183,9 @@ func (c *Controller) ObserveHealth(mac string, report *hardware.Health) {
 	e.Signals.Health = now
 	e.Signals.Running = report.Running
 	e.Signals.FailedUnits = append([]string(nil), report.FailedUnits...)
+	if e.Target == e.Release {
+		e.Journal = append([]string(nil), report.JournalErrors...)
+	}
 	c.timeline(e, fmt.Sprintf("health reported: %d failed unit(s)", len(report.FailedUnits)))
 	c.dirty = true
 	if len(report.FailedUnits) > 0 {

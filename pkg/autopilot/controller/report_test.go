@@ -293,3 +293,55 @@ func TestBootPath(t *testing.T) {
 		}
 	}
 }
+
+// A boot loop never reaches booty-health.service: the report must not
+// borrow the journal of the healthy lastGood boot that followed (the P5
+// QEMU run's draft did, attributing the good release's preset noise to the
+// bad one).
+func TestReportJournalComesFromTheBlamedReleaseOnly(t *testing.T) {
+	h := newHarness(t, config.AutopilotFull)
+	dir := filepath.Join(t.TempDir(), "reports")
+	h.opts.ReportsDir = dir
+	h.start()
+	h.fleet.add(hardware.Host{MAC: macA, Hostname: "aren", OS: "bluefin", Booted: "2026-09-28T10:00:00Z", Running: "26.09.673", Canary: true, NetbootPlatform: hardware.PlatformPCBIOS})
+	h.healthyNode("aren", "Bluefin Server 26.09.673")
+	h.tick()
+	h.wantState(macA, hardware.AutopilotRolling, 1, "")
+	loop := func() {
+		h.c.ObserveFetch(macA, FetchKernel)
+		h.advance(50 * time.Second)
+		h.c.ObserveFetch(macA, FetchKernel)
+	}
+	loop()
+	h.wantState(macA, hardware.AutopilotRetrying, 2, ClassBootLoop)
+	h.c.ObserveFetch(macA, FetchKernel)
+	h.advance(50 * time.Second)
+	h.c.ObserveFetch(macA, FetchKernel)
+	h.wantState(macA, hardware.AutopilotRolledBack, 3, ClassBootLoop)
+	h.fetch(macA)
+	h.c.ObserveBooted(macA, "")
+	h.c.ObserveHealth(macA, &hardware.Health{Running: "26.09.673", JournalErrors: []string{"2026-09-29T06:27:14+00:00 systemd[1]: Failed to preset all unit: boot.mount is masked"}, DMI: hardware.DMI{Vendor: "QEMU", Product: "Standard PC"}, Firmware: "bios", Kernel: "7.2.2"})
+	if err := h.fleet.Update(macA, func(host *hardware.Host) {
+		host.Health = &hardware.Health{Running: "26.09.673", JournalErrors: []string{"2026-09-29T06:27:14+00:00 systemd[1]: Failed to preset all unit: boot.mount is masked"}, Firmware: "bios"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick()
+	if r := h.release("bluefin", "27.01.100"); r.State != ReleaseTimeout {
+		t.Fatalf("release after rollback: %+v", r)
+	}
+	md, _ := report.Paths(dir, "bluefin-27.01.100")
+	data, err := os.ReadFile(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "Failed to preset") {
+		t.Fatalf("the lastGood boot's journal leaked into the bad release's report:\n%s", data)
+	}
+	if !strings.Contains(string(data), "never got as far as a health report (`boot-loop`)") {
+		t.Fatalf("the report must say why there is no excerpt:\n%s", data)
+	}
+	if e := h.episode(macA); e != nil && e.Journal != nil {
+		t.Fatal("GET /autopilot must not carry the raw journal")
+	}
+}

@@ -108,6 +108,16 @@ type Document struct {
 	JournalErrors  []string  `json:"journalErrors"`
 }
 
+// neverReportedHealth says whether a failure class means the boot ended
+// before booty-health.service could run.
+func neverReportedHealth(class string) bool {
+	switch class {
+	case "boot-loop", "no-ignition", "hung", "timeout":
+		return true
+	}
+	return false
+}
+
 // Report is a rendered report.
 type Report struct {
 	Markdown string
@@ -264,9 +274,12 @@ func renderMarkdown(d *Document) string {
 	}
 
 	b.WriteString("## Journal errors (redacted excerpt)\n\n")
-	if len(d.JournalErrors) == 0 {
+	switch {
+	case len(d.JournalErrors) == 0 && neverReportedHealth(d.Class):
+		fmt.Fprintf(&b, "_The failing boot never got as far as a health report (`%s`), so there is no journal excerpt from it._\n\n", d.Class)
+	case len(d.JournalErrors) == 0:
 		b.WriteString("_no error-level journal lines were reported_\n\n")
-	} else {
+	default:
 		b.WriteString("Error-level lines from the failing boot's journal (`journalctl -p err -b --no-hostname`). Hostnames, addresses, MACs, UUIDs and keys are replaced by `<host>`, `<ip>`, `<mac>`, `<uuid>`, `<key>`.\n\n```\n")
 		for _, l := range d.JournalErrors {
 			b.WriteString(l)

@@ -215,7 +215,6 @@ func (c *Controller) draftReport(r *Release, e *Episode, rollback string, final 
 		if h.Health != nil {
 			rep.Hardware.Vendor, rep.Hardware.Product, rep.Hardware.BIOSVersion = h.Health.DMI.Vendor, h.Health.DMI.Product, h.Health.DMI.BIOSVersion
 			rep.Hardware.Firmware, rep.Hardware.Kernel = h.Health.Firmware, h.Health.Kernel
-			rep.JournalErrors = slices.Clone(h.Health.JournalErrors)
 			firmware = h.Health.Firmware
 			if h.Health.DMI.ProductUUID != "" {
 				sum := sha256.Sum256([]byte(h.Health.DMI.ProductUUID))
@@ -223,6 +222,9 @@ func (c *Controller) draftReport(r *Release, e *Episode, rollback string, final 
 			}
 		}
 		rep.Hardware.BootPath = bootPath(h, firmware)
+	}
+	if len(e.Journal) > 0 {
+		rep.JournalErrors = slices.Clone(e.Journal)
 	}
 	if e.Baseline != nil {
 		ni := e.Baseline.Node.NodeInfo
@@ -350,7 +352,7 @@ func (c *Controller) Status() Status {
 		h := HostStatus{MAC: mac, HealthyOn: hs.HealthyOn, Pinned: hs.Pinned}
 		if hs.Episode != nil {
 			e := *hs.Episode
-			e.Baseline = nil
+			e.Baseline, e.Journal = nil, nil
 			h.Episode = &e
 			h.OS = e.OS
 			if e.State == hardware.AutopilotNeedsHands {
