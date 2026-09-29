@@ -88,7 +88,52 @@ const (
 	FedoraShimVersion   = "fedoraShimVersion"
 	FedoraGrubVersion   = "fedoraGrubVersion"
 	SecureBootTrusted   = "secureBootTrusted"
+	Autopilot           = "autopilot"
+	AutopilotNamespace  = "autopilotNamespace"
+	AutopilotImage      = "autopilotImage"
+	AutopilotDrainTO    = "autopilotDrainTimeout"
+	RebootSSHKey        = "rebootSSHKey"
 )
+
+// Autopilot modes: off (nothing, the default), guard (health gate, retry,
+// downgrade and hold for every OS) and full (guard plus the Bluefin
+// canary-serial rollout). P2 only validates the value, wires the cluster
+// client and actuator detection and reports them; nothing acts yet.
+const (
+	AutopilotOff   = "off"
+	AutopilotGuard = "guard"
+	AutopilotFull  = "full"
+
+	// DefaultAutopilotDrainTimeout bounds how long the API actuator retries
+	// PodDisruptionBudget-refused evictions before giving up on a node.
+	DefaultAutopilotDrainTimeout = 10 * time.Minute
+	// DefaultAutopilotNamespace is where reboot Pods go when Booty cannot
+	// tell its own namespace (POD_NAMESPACE unset).
+	DefaultAutopilotNamespace = "kube-system"
+	// PodNamespaceEnv and BootyImageEnv are the downward-API environment
+	// the Deployment sets so the API actuator can create reboot Pods next
+	// to Booty from Booty's own image.
+	PodNamespaceEnv = "POD_NAMESPACE"
+	BootyImageEnv   = "BOOTY_IMAGE"
+)
+
+// ValidateAutopilot rejects anything but the three modes.
+func ValidateAutopilot(v string) error {
+	switch v {
+	case AutopilotOff, AutopilotGuard, AutopilotFull:
+		return nil
+	}
+	return fmt.Errorf("invalid --%s %q: must be %q, %q or %q", Autopilot, v, AutopilotOff, AutopilotGuard, AutopilotFull)
+}
+
+// AutopilotDir is the directory (relative to DataDir) the autopilot keeps
+// its state in: SSH known_hosts now, episodes and reports later.
+const AutopilotDir = "autopilot"
+
+// AutopilotPath joins elem onto DataDir/autopilot.
+func AutopilotPath(elem ...string) string {
+	return DataPath(append([]string{AutopilotDir}, elem...)...)
+}
 
 // Which x86-64 UEFI iPXE build clients get: ipxe.efi (iPXE's own NIC
 // drivers) or snponly.efi (the firmware's SNP stack). ProxyDHCP hands the
@@ -416,6 +461,11 @@ func LoadConfig() {
 	viper.SetDefault(FedoraShimVersion, DefaultFedoraShimVersion)
 	viper.SetDefault(FedoraGrubVersion, DefaultFedoraGrubVersion)
 	viper.SetDefault(SecureBootTrusted, "")
+	viper.SetDefault(Autopilot, AutopilotOff)
+	viper.SetDefault(AutopilotNamespace, "")
+	viper.SetDefault(AutopilotImage, "")
+	viper.SetDefault(AutopilotDrainTO, DefaultAutopilotDrainTimeout)
+	viper.SetDefault(RebootSSHKey, "")
 }
 
 func bindEnv(key, env string) {
