@@ -288,10 +288,20 @@ func TestBluefinRoutes(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, "bluefin", "current")); err != nil {
 			t.Fatal(err)
 		}
-		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS", "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw"} {
+		for _, p := range []string{bluefinBootPath, "/bluefin/" + bluefinDashMAC + "/SHA256SUMS"} {
 			if r := do(t, http.MethodGet, srv.URL+p, ""); r.status != 404 {
-				t.Fatalf("%s: %+v", p, r)
+				t.Fatalf("%s: without a current release there is no target: %+v", p, r)
 			}
+		}
+		ddi := "/bluefin/" + bluefinDashMAC + "/bluefin-server_" + bluefinTestVersion + ".raw"
+		if r := do(t, http.MethodGet, srv.URL+ddi, ""); r.status != 200 {
+			t.Fatalf("%s: the versioned DDI of a release still on disk serves hosts mid-boot: %+v", ddi, r)
+		}
+		if err := os.RemoveAll(filepath.Join(dir, "bluefin", bluefinTestVersion)); err != nil {
+			t.Fatal(err)
+		}
+		if r := do(t, http.MethodGet, srv.URL+ddi, ""); r.status != 404 {
+			t.Fatalf("%s: pruned release: %+v", ddi, r)
 		}
 	})
 }

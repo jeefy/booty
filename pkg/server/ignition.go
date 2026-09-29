@@ -161,6 +161,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if host != nil {
 		vars.Hostname = host.Hostname
+		setReleaseVars(host, &vars)
 	}
 	if ca, ok := versions.CurrentFlatcarCA(); ok {
 		vars.FlatcarCASha256 = ca.Sha256
@@ -174,6 +175,26 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
+}
+
+// setReleaseVars points the Flatcar and CoreOS boot scripts at the release
+// the host boots (its targetVersion, else the fleet target), in its
+// data/<os>/<version>/ directory.
+func setReleaseVars(host *hardware.Host, vars *tftp.TemplateVars) {
+	target := versions.EffectiveTarget(host)
+	switch tftp.OSForHost(host) {
+	case versions.OSFlatcar:
+		if versions.ReleaseCached(versions.OSFlatcar, target) {
+			vars.FlatcarDir = versions.FlatcarDataDir(target)
+		}
+	case versions.OSCoreOS:
+		if target != "" {
+			vars.CoreOSVersion = target
+		}
+		if versions.ReleaseCached(versions.OSCoreOS, target) {
+			vars.CoreOSDir = versions.CoreOSDataDir(target)
+		}
+	}
 }
 
 func readIgnitionTemplate(name string) (string, error) {

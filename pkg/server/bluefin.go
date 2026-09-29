@@ -83,13 +83,14 @@ func BluefinHTTPBoot(hw net.HardwareAddr) (string, bool) {
 
 // handleBluefinRequest serves /bluefin/<mac>/<name> to registered Bluefin
 // hosts: bluefin-server-netboot_<version>.efi is that release's netboot UKI
-// (current or previous), any other *.efi the current one,
+// (any cached release), any other *.efi the host's target release's,
 // bluefin-server-netboot_<version>.{linux,initrd,ucode} that UKI's section
-// payload (the BIOS path), bluefin-server_<version>.raw
-// the DDI of the current or previous release, SHA256SUMS(.gpg) the current
-// release's, and bluefin-node.ign the host's Ignition config. It is routed
-// before the mux (firmware never follows the mux's clean-path redirects)
-// and answers HEAD like GET.
+// payload (the BIOS path), bluefin-server_<version>.raw the DDI of any
+// cached release, SHA256SUMS(.gpg) the host's target release's, and
+// bluefin-node.ign the host's Ignition config. The target release is the
+// host's targetVersion, else current. It is routed before the mux
+// (firmware never follows the mux's clean-path redirects) and answers HEAD
+// like GET.
 func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -120,35 +121,52 @@ func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 		serveBluefinNodeConfig(w, r, mac)
 		return
 	}
-	if host, ok := hardware.Get(mac); !ok || host.OS != "bluefin" {
+	host, ok := hardware.Get(mac)
+	if !ok || host.OS != "bluefin" {
 		writeError(w, http.StatusNotFound, "host not registered as bluefin")
 		return
 	}
 	switch {
 	case name == versions.BluefinSumsFile || name == versions.BluefinSigFile:
-		if _, ok := versions.CurrentBluefinManifest(); !ok {
+		m, ok := bluefinReleaseFor(host)
+		if !ok {
 			writeError(w, http.StatusNotFound, "no Bluefin release cached yet")
 			return
 		}
-		serveBluefinFile(w, r, config.BluefinCurrentLink, name, "application/octet-stream")
+		serveBluefinFile(w, r, m.Version, name, "application/octet-stream")
 	case strings.HasPrefix(name, "bluefin-server_") && strings.HasSuffix(name, ".raw"):
-		for _, link := range []string{config.BluefinCurrentLink, config.BluefinPreviousLink} {
-			if m, ok := bluefinManifest(link); ok && m.DDI == name {
-				serveBluefinFile(w, r, link, name, "application/octet-stream")
-				return
-			}
+		m, ok := bluefinManifestWhere(func(m versions.BluefinManifest) bool { return m.DDI == name })
+		if !ok {
+			writeError(w, http.StatusNotFound, "not a cached Bluefin release")
+			return
 		}
-		writeError(w, http.StatusNotFound, "not the current or previous Bluefin release")
+		serveBluefinFile(w, r, m.Version, name, "application/octet-stream")
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
 }
 
-func bluefinManifest(link string) (versions.BluefinManifest, bool) {
-	if link == config.BluefinPreviousLink {
-		return versions.PreviousBluefinManifest()
+// bluefinReleaseFor is the release host boots: its targetVersion when
+// cached, else the current release.
+func bluefinReleaseFor(host *hardware.Host) (versions.BluefinManifest, bool) {
+	if target := versions.EffectiveTarget(host); target != "" {
+		if m, ok := versions.BluefinManifestFor(target); ok {
+			return m, true
+		}
 	}
 	return versions.CurrentBluefinManifest()
+}
+
+// bluefinManifestWhere finds the cached release (newest first) match
+// accepts; versioned file names resolve through it, so a host mid-boot on
+// any retained release finishes.
+func bluefinManifestWhere(match func(versions.BluefinManifest) bool) (versions.BluefinManifest, bool) {
+	for _, m := range versions.CachedBluefinManifests() {
+		if match(m) {
+			return m, true
+		}
+	}
+	return versions.BluefinManifest{}, false
 }
 
 // bluefinHost resolves a boot request to a registered Bluefin host. A real
@@ -176,13 +194,13 @@ func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
 	if !ok {
 		return
 	}
-	link, file, err := bluefinUKIFor(name)
+	m, err := bluefinUKIFor(host, name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, file, now)
-	serveBluefinFile(w, r, link, file, efiContentType)
+	recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, m.NetbootUKI, now)
+	serveBluefinFile(w, r, m.Version, m.NetbootUKI, efiContentType)
 }
 
 // bluefinBootHost is the shared start of every netboot fetch (the EFI UKI,
@@ -341,8 +359,8 @@ func serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) 
 	}
 }
 
-func serveBluefinFile(w http.ResponseWriter, r *http.Request, link, name, contentType string) {
-	p := config.DataPath(config.BluefinDir, link, name)
+func serveBluefinFile(w http.ResponseWriter, r *http.Request, version, name, contentType string) {
+	p := config.DataPath(config.BluefinDir, version, name)
 	f, err := os.Open(p)
 	if err != nil {
 		slog.Error("Bluefin release file missing", "path", p, "error", err)
@@ -403,7 +421,7 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 		addBluefinStateDisk(&cfg, host.StateDisk)
 	}
 
-	release, haveRelease := versions.CurrentBluefinManifest()
+	release, haveRelease := bluefinReleaseFor(host)
 	if exts := bluefinExtensions(host); len(exts) > 0 {
 		if !haveRelease {
 			slog.Warn("No Bluefin release cached; serving the node config without its extensions", "mac", mac, "extensions", exts)

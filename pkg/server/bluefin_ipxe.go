@@ -281,7 +281,7 @@ func bluefinIPXEVars(mac string, host *hardware.Host, secureBoot bool, vars *tft
 		vars.BluefinInstalled = true
 		return
 	}
-	m, haveRelease := versions.CurrentBluefinManifest()
+	m, haveRelease := bluefinReleaseFor(host)
 	var cmdline string
 	var cmdlineErr error
 	if haveRelease {
@@ -341,24 +341,23 @@ func bluefinBIOSVars(mac string, host *hardware.Host, m versions.BluefinManifest
 	return b
 }
 
-var errNoUKI = errors.New("not a netboot UKI of the current or previous release")
+var errNoUKI = errors.New("not a netboot UKI of a cached release")
 
-// bluefinUKIFor resolves the requested *.efi name: the versioned name of
-// the current or previous release's netboot UKI selects that release, any
-// other bluefin-server-netboot_*.efi is refused, and every other name is
-// the current UKI (the UEFI HTTP Boot path).
-func bluefinUKIFor(name string) (link, file string, err error) {
+// bluefinUKIFor resolves the requested *.efi name: the versioned name of a
+// cached release's netboot UKI selects that release, any other
+// bluefin-server-netboot_*.efi is refused, and every other name is the
+// host's target release's UKI (the UEFI HTTP Boot path).
+func bluefinUKIFor(host *hardware.Host, name string) (versions.BluefinManifest, error) {
 	if !strings.HasPrefix(name, "bluefin-server-netboot_") {
-		m, ok := versions.CurrentBluefinManifest()
+		m, ok := bluefinReleaseFor(host)
 		if !ok {
-			return "", "", errNoUKI
+			return versions.BluefinManifest{}, errNoUKI
 		}
-		return config.BluefinCurrentLink, m.NetbootUKI, nil
+		return m, nil
 	}
-	for _, link := range []string{config.BluefinCurrentLink, config.BluefinPreviousLink} {
-		if m, ok := bluefinManifest(link); ok && m.NetbootUKI == name {
-			return link, name, nil
-		}
+	m, ok := bluefinManifestWhere(func(m versions.BluefinManifest) bool { return m.NetbootUKI == name })
+	if !ok {
+		return versions.BluefinManifest{}, errNoUKI
 	}
-	return "", "", errNoUKI
+	return m, nil
 }
