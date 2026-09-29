@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { apiGet, apiPost, errorMessage } from '@/api'
 import {
+  AUTOPILOT_HOST_LABEL,
+  autopilotHostState,
   normalizeBootyData,
   normalizeHost,
   registerPayload,
@@ -250,6 +252,27 @@ onMounted(() => {
                       data-testid="host-role"
                     >
                       control-plane
+                    </span>
+                    <span
+                      v-if="host.canary"
+                      class="badge text-bg-light border"
+                      title="Autopilot canary: gets a new Bluefin release first under --autopilot=full"
+                      data-testid="host-canary"
+                    >
+                      canary
+                    </span>
+                    <span
+                      v-if="host.autopilot && autopilotHostState(host.autopilot) !== 'idle'"
+                      class="badge"
+                      :class="AUTOPILOT_HOST_LABEL[autopilotHostState(host.autopilot)].badge"
+                      :title="`Autopilot: ${host.autopilot.state}${host.autopilot.attempt ? `, attempt ${host.autopilot.attempt}` : ''}${host.autopilot.class ? ` (${host.autopilot.class})` : ''}${host.autopilot.target ? ` into ${host.autopilot.target}` : ''}`"
+                      :data-state="autopilotHostState(host.autopilot)"
+                      data-testid="host-autopilot"
+                    >
+                      {{ AUTOPILOT_HOST_LABEL[autopilotHostState(host.autopilot)].text
+                      }}<template v-if="host.autopilot.attempt">
+                        #{{ host.autopilot.attempt }}</template
+                      >
                     </span>
                   </div>
                 </td>

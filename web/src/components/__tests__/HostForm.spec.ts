@@ -152,6 +152,31 @@ describe('HostForm', () => {
     expect(fields.text()).toContain('kubestellar needs k0s')
   })
 
+  it('offers the autopilot canary checkbox for every OS and writes it into the draft', async () => {
+    const model = draft({ os: 'flatcar' })
+    const wrapper = mountForm(model)
+    const field = wrapper.find('[data-testid="canary-field"]')
+    expect(field.exists()).toBe(true)
+    expect(field.text()).toContain('Autopilot canary')
+    expect(field.text()).toContain('--autopilot=full')
+    expect((field.find('input').element as HTMLInputElement).checked).toBe(false)
+    await field.find('input').setValue(true)
+    expect(model.canary).toBe(true)
+    await field.find('input').setValue(false)
+    expect(model.canary).toBe(false)
+  })
+
+  it('pre-checks canary from the draft and leaves it out of an untouched one', async () => {
+    const model = draft({ os: 'bluefin', canary: true })
+    const wrapper = mountForm(model)
+    expect(
+      (wrapper.find('[data-testid="canary-field"] input').element as HTMLInputElement).checked
+    ).toBe(true)
+    const untouched = draft()
+    mountForm(untouched)
+    expect(untouched).not.toHaveProperty('canary')
+  })
+
   it('leaves the bluefin fields out of an untouched draft', async () => {
     const model = draft({ os: 'bluefin' })
     const wrapper = mountForm(model)

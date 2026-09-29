@@ -275,6 +275,41 @@ describe('HostsView', () => {
     ).toBe(false)
   })
 
+  it('shows canary and autopilot state badges in the Host cell, idle hosts get none', async () => {
+    const { wrapper } = mountWithData({
+      hosts: {
+        [hostA.mac]: {
+          ...hostA,
+          canary: true,
+          autopilot: { state: 'retrying', attempt: 2, class: 'failed-units', target: '4800.0.0' }
+        },
+        [hostB.mac]: { ...hostB, autopilot: { state: 'idle' } },
+        [hostC.mac]: hostC
+      },
+      unknownHosts: {}
+    })
+    await flushPromises()
+
+    const rowA = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"]')
+    expect(rowA.find('[data-testid="host-canary"]').text()).toBe('canary')
+    const state = rowA.find('[data-testid="host-autopilot"]')
+    expect(state.exists()).toBe(true)
+    expect(state.text()).toBe('Retrying #2')
+    expect(state.attributes('data-state')).toBe('retrying')
+    expect(state.classes()).toContain('text-bg-warning')
+    expect(state.attributes('title')).toContain('failed-units')
+    expect(state.attributes('title')).toContain('4800.0.0')
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-autopilot"]').exists()
+    ).toBe(false)
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-canary"]').exists()
+    ).toBe(false)
+    expect(
+      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:03"] [data-testid="host-autopilot"]').exists()
+    ).toBe(false)
+  })
+
   it('keeps secureBoot in the /register payload when editing a flagged host', async () => {
     const { wrapper, handlers, calls } = mountWithData({
       hosts: { [hostA.mac]: { ...hostA, secureBoot: true } },
@@ -310,9 +345,9 @@ describe('HostsView', () => {
       mac: 'aa:bb:cc:dd:ee:01',
       role: 'control-plane'
     })
-    expect(
-      wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-role"]').text()
-    ).toBe('control-plane')
+    expect(wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-testid="host-role"]').text()).toBe(
+      'control-plane'
+    )
   })
 
   it('omits role from /register when the role select is left alone', async () => {
