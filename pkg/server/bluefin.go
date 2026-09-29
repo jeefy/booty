@@ -45,6 +45,11 @@ const (
 	// running DDI, the installer's source.
 	bluefinESP      = "/run/bluefin/boot"
 	bluefinESPMount = "run-bluefin-boot.mount"
+
+	// Booty's scripts live next to kubeadm-join.sh on Bluefin: /etc is
+	// writable on a diskless node, /opt is not guaranteed to be.
+	bluefinUpdateCheckScript  = "/etc/booty/update-check"
+	bluefinHealthReportScript = "/etc/booty/health-report"
 )
 
 // bluefinBootURL is the UEFI HTTP Boot URL of mac's netboot UKI. The MAC is
@@ -393,6 +398,7 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 			cfg.Systemd.Units = append(cfg.Systemd.Units, ign36.Unit{Name: "sshd.service", Enabled: boolPtr(true)})
 		}
 	}
+	addBluefinBootyUnits(&cfg, features)
 	if host.StateDisk != "" {
 		addBluefinStateDisk(&cfg, host.StateDisk)
 	}
@@ -441,6 +447,28 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 		return cfg, err
 	}
 	return v3_6.Merge(cfg, child), nil
+}
+
+// addBluefinBootyUnits gives a Bluefin node the booted callback, the
+// update-check timer and the health report the Flatcar/CoreOS builtin
+// fragment carries, honouring the same --builtin toggles; the scripts are
+// inline files under /etc/booty.
+func addBluefinBootyUnits(cfg *ign36.Config, features ign.Features) {
+	server := config.ServerHostPort()
+	if features[ign.FeatureBooted] {
+		cfg.Systemd.Units = append(cfg.Systemd.Units, bluefinUnit(ign.BootedUnitName, ign.BootedUnit(server)))
+	}
+	if features[ign.FeatureUpdate] {
+		cfg.Storage.Files = append(cfg.Storage.Files, bluefinInlineFile(bluefinUpdateCheckScript, ign.UpdateCheckScript(server), 0o755))
+		cfg.Systemd.Units = append(cfg.Systemd.Units,
+			ign36.Unit{Name: ign.UpdateServiceName, Contents: strPtr(ign.UpdateServiceFor(bluefinUpdateCheckScript))},
+			bluefinUnit(ign.UpdateTimerName, ign.UpdateTimer),
+		)
+	}
+	if features[ign.FeatureHealth] {
+		cfg.Storage.Files = append(cfg.Storage.Files, bluefinInlineFile(bluefinHealthReportScript, ign.HealthReportScript(server), 0o755))
+		cfg.Systemd.Units = append(cfg.Systemd.Units, bluefinUnit(ign.HealthUnitName, ign.HealthUnit(bluefinHealthReportScript)))
+	}
 }
 
 func bluefinNodeEmpty(cfg ign36.Config) bool {

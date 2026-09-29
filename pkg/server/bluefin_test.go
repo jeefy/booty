@@ -17,6 +17,7 @@ import (
 	v3_6 "github.com/coreos/ignition/v2/config/v3_6"
 	ign36 "github.com/coreos/ignition/v2/config/v3_6/types"
 	"github.com/jeefy/booty/pkg/config"
+	ign "github.com/jeefy/booty/pkg/ignition"
 	"github.com/spf13/viper"
 
 	"github.com/jeefy/booty/pkg/hardware"
@@ -360,9 +361,30 @@ func decodeDataURL(t *testing.T, src string) string {
 	return ""
 }
 
+// bluefinBootyUnits and bluefinBootyFiles are what every Bluefin node
+// config carries under the default --builtin (see
+// TestBluefinNodeCarriesBootyUnits); bluefinNode leaves them out of its
+// maps so the other tests can count what is specific to the host.
+var (
+	bluefinBootyUnits = []string{ign.BootedUnitName, ign.UpdateServiceName, ign.UpdateTimerName, ign.HealthUnitName}
+	bluefinBootyFiles = []string{bluefinUpdateCheckScript, bluefinHealthReportScript}
+)
+
 // bluefinNode fetches mac's node config and checks it is a valid spec 3.6.0
-// config.
+// config. The Booty units and scripts every node gets are left out.
 func bluefinNode(t *testing.T, srvURL, mac, query string) (ign36.Config, map[string]bluefinNodeFile, map[string]ign36.Unit) {
+	t.Helper()
+	cfg, files, units := bluefinNodeAll(t, srvURL, mac, query)
+	for _, name := range bluefinBootyUnits {
+		delete(units, name)
+	}
+	for _, path := range bluefinBootyFiles {
+		delete(files, path)
+	}
+	return cfg, files, units
+}
+
+func bluefinNodeAll(t *testing.T, srvURL, mac, query string) (ign36.Config, map[string]bluefinNodeFile, map[string]ign36.Unit) {
 	t.Helper()
 	r := do(t, http.MethodGet, srvURL+"/bluefin/"+strings.ReplaceAll(mac, ":", "-")+"/bluefin-node.ign"+query, "")
 	if r.status != 200 || r.contentType != "application/json" {

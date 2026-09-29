@@ -97,7 +97,7 @@ func TestK0sManagedWorkers(t *testing.T) {
 			t.Fatalf("%s: %+v", mac, r)
 		}
 		names := strings.Join(ignitionUnitNames(t, r.body), ",")
-		if names != "booty-booted.service,booty-update.service,booty-update.timer,"+profile.K0sDataMountUnit+","+k0s.InstallUnit+","+k0s.WorkerUnit {
+		if names != "booty-booted.service,booty-update.service,booty-update.timer,booty-health.service,"+profile.K0sDataMountUnit+","+k0s.InstallUnit+","+k0s.WorkerUnit {
 			t.Fatalf("%s: worker units: %s", mac, names)
 		}
 		if strings.Contains(r.body, "JOIN_STRING") || strings.Contains(r.body, "kubeadm") || strings.Contains(r.body, "PRIVATE KEY") || strings.Contains(r.body, "booty-cp") {
