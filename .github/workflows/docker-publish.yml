@@ -179,6 +179,14 @@ jobs:
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_NAME: ${{ needs.build.outputs.image }}
           IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        # slsa-github-generator v2.1.0 attaches the provenance as a legacy
+        # OCI .att tag, while cosign v3's `cosign sign` stores its signature
+        # as a Sigstore bundle. cosign v3 auto-detects bundles and then only
+        # looks at bundles, so it finds the sign/v1 statement and not the
+        # provenance. --new-bundle-format=false (deprecated, still honoured)
+        # makes it read the legacy attestation until the generator emits
+        # bundles (slsa-framework/slsa-github-generator has no release doing
+        # so yet).
         run: |
-          COSIGN_EXPERIMENTAL=1 cosign verify-attestation --certificate-identity-regexp=".*" --certificate-oidc-issuer-regexp=".*" --type slsaprovenance "${IMAGE_NAME}@${IMAGE_DIGEST}"
+          COSIGN_EXPERIMENTAL=1 cosign verify-attestation --new-bundle-format=false --certificate-identity-regexp=".*" --certificate-oidc-issuer-regexp=".*" --type slsaprovenance "${IMAGE_NAME}@${IMAGE_DIGEST}"
       # TODO(github.com/slsa-framework/slsa-verifier/issues/92): Add step to verify using slsa-verifier
