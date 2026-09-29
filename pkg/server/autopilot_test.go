@@ -51,7 +51,15 @@ type autopilotStatus struct {
 		} `json:"episode"`
 	} `json:"hosts"`
 	Events  []struct{ Text string } `json:"events"`
-	Reports []struct{ Key string }  `json:"reports"`
+	Reports []struct {
+		Key       string `json:"key"`
+		Draft     bool   `json:"draft"`
+		Path      string `json:"path"`
+		UpdatedAt string `json:"updatedAt"`
+		PostedURL string `json:"postedURL"`
+		Class     string `json:"class"`
+		Attempts  int    `json:"attempts"`
+	} `json:"reports"`
 }
 
 func getAutopilot(t *testing.T) autopilotStatus {
@@ -151,7 +159,7 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 	}
 	state.SetCurrentFlatcarVersion("4800.0.0")
 
-	ctrl, err := controller.New(controller.Options{Mode: config.AutopilotGuard, Fleet: controller.LiveFleet{}, StatePath: filepath.Join(dir, "autopilot", "state.json"), HealthWindow: 15 * time.Minute, RetryAfter: time.Hour})
+	ctrl, err := controller.New(controller.Options{Mode: config.AutopilotGuard, Fleet: controller.LiveFleet{}, StatePath: filepath.Join(dir, "autopilot", "state.json"), ReportsDir: filepath.Join(dir, "autopilot", "reports"), HealthWindow: 15 * time.Minute, RetryAfter: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +264,41 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 	do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+mac, "")
 	do(t, http.MethodGet, srv.URL+"/ignition.json?mac="+mac, "")
 	do(t, http.MethodPost, srv.URL+"/booted?mac="+mac, "")
-	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4757.2.0","failedUnits":[]}`)
+	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4757.2.0","failedUnits":[],"firmware":"uefi","dmi":{"vendor":"HP","product":"EliteDesk","productUUID":"4c4c4544-0031-3310-8052-b6c04f4d3732"},"journalErrors":["n1 kernel: link 40:a8:f0:12:34:56 at 192.168.1.57"]}`)
 	ctrl.Tick(t.Context())
 	st = getAutopilot(t)
 	if got := st.OS["flatcar"].Releases; len(got) != 2 || got[0].Version != "4800.0.0" || got[0].State != controller.ReleaseTimeout {
 		t.Fatalf("release after rollback: %+v", got)
 	}
-	if len(st.Reports) != 1 || st.Reports[0].Key != "flatcar-4800.0.0" {
-		t.Fatalf("report stub: %+v", st.Reports)
+	if len(st.Reports) != 1 || st.Reports[0].Key != "flatcar-4800.0.0" || !st.Reports[0].Draft || st.Reports[0].Path != "/autopilot/reports/flatcar-4800.0.0.md" || st.Reports[0].UpdatedAt == "" || st.Reports[0].PostedURL != "" || st.Reports[0].Class != controller.ClassFailedUnits || st.Reports[0].Attempts != 3 {
+		t.Fatalf("report summary: %+v", st.Reports)
+	}
+	r = do(t, http.MethodGet, srv.URL+st.Reports[0].Path, "")
+	if r.status != 200 || !strings.HasPrefix(r.contentType, "text/markdown") || !strings.Contains(r.body, "<!-- booty-autopilot: flatcar 4800.0.0 ") || !strings.Contains(r.body, "<host> kernel: link <mac> at <ip>") {
+		t.Fatalf("report markdown: %+v", r)
+	}
+	if strings.Contains(r.body, "n1") || strings.Contains(r.body, "192.168.1.57") || strings.Contains(r.body, "40:a8") || strings.Contains(r.body, "4c4c4544") {
+		t.Fatalf("served report leaks identifiers: %s", r.body)
+	}
+	if r := do(t, http.MethodGet, srv.URL+"/autopilot/reports/flatcar-4800.0.0.json", ""); r.status != 200 || !strings.HasPrefix(r.contentType, "application/json") || !strings.Contains(r.body, `"marker"`) {
+		t.Fatalf("report json: %+v", r)
+	}
+	for path, want := range map[string]int{
+		"/autopilot/reports/flatcar-4800.0.0":          http.StatusNotFound,
+		"/autopilot/reports/flatcar-4800.0.0.txt":      http.StatusNotFound,
+		"/autopilot/reports/..%2F..%2Fstate.json":      http.StatusNotFound,
+		"/autopilot/reports/../state.json":             http.StatusNotFound,
+		"/autopilot/reports/flatcar-9999.0.0.md":       http.StatusNotFound,
+		"/autopilot/reports/Flatcar-4800.0.0.md":       http.StatusNotFound,
+		"/autopilot/reports/flatcar-4800.0.0.md/x":     http.StatusNotFound,
+		"/autopilot/reports/coreos-44.20260913.2.1.md": http.StatusNotFound,
+	} {
+		if r := do(t, http.MethodGet, srv.URL+path, ""); r.status != want {
+			t.Fatalf("GET %s: %d, want %d", path, r.status, want)
+		}
+	}
+	if r := do(t, http.MethodPost, srv.URL+"/autopilot/reports/flatcar-4800.0.0.md", ""); r.status != http.StatusMethodNotAllowed {
+		t.Fatalf("POST report: %d", r.status)
 	}
 	if r := do(t, http.MethodPost, srv.URL+"/autopilot/flatcar/release/4800.0.0/clear", ""); r.status != 200 {
 		t.Fatalf("clear: %+v", r)
