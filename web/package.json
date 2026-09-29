@@ -18,7 +18,7 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.3",
     "@vitejs/plugin-vue": "^6.0.9",
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.9.0",
@@ -30,7 +30,7 @@
     "prettier": "^3.9.9",
     "typescript": "~5.9.3",
     "vite": "^7.3.6",
-    "vitest": "^5.0.1",
+    "vitest": "^5.0.2",
     "vue-tsc": "^2.2.12"
   }
 }
