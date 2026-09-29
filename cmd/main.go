@@ -13,6 +13,7 @@ import (
 	"time"
 
 	booty "github.com/jeefy/booty"
+	"github.com/jeefy/booty/pkg/autopilot"
 	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/cluster/k0s"
 	"github.com/jeefy/booty/pkg/config"
@@ -95,7 +96,7 @@ func init() {
 	flags.String(config.PodCIDR, config.DefaultPodCIDR, "Pod network CIDR of the cluster")
 	flags.String(config.ServiceCIDR, config.DefaultServiceCIDR, "Service network CIDR of the cluster")
 	flags.String(config.K0sTokenFile, "", "File holding a pre-made k0s worker join token for an external k0s control plane; the fallback when --kubeconfig is not set or minting fails")
-	flags.String(config.Kubeconfig, "", "Kubeconfig for minting join tokens against an external control plane from outside the cluster: kubeadm with --kubeadmJoin=auto, k0s worker tokens always")
+	flags.String(config.Kubeconfig, "", "Kubeconfig for talking to an external control plane from outside the cluster: minting join tokens (kubeadm with --kubeadmJoin=auto, k0s worker tokens always) and the autopilot's cluster client")
 	flags.String(config.ControlPlaneDisk, "", "Block device the managed control plane formats once (ext4, label booty-cp, never wiped) and keeps its state on (kubeadm: /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet; k0s: /var/lib/k0s), e.g. /dev/vda; required for a role: control-plane host on PXE-booted Flatcar/CoreOS (Bluefin installs to disk) and must differ from --containerdDisk")
 	flags.String(config.K0sVersion, config.DefaultK0sVersion, "k0s release Flatcar/CoreOS hosts download to /opt/bin/k0s under --clusterDistribution=k0s (sha256-verified; the default is pinned in code and matches Bluefin Server's /usr/bin/k0s, other versions are checked against the release's sha256sums.txt)")
 	flags.String(config.EFIBootloader, config.EFIBootloaderIPXE, "iPXE build ProxyDHCP hands x86-64 UEFI clients: 'ipxe' (ipxe.efi, iPXE's own NIC drivers) or 'snponly' (snponly.efi, the firmware's network stack); HTTP Boot clients get the matching signed shim (ipxe-shimx64.efi / snponly-shimx64.efi)")
@@ -105,6 +106,11 @@ func init() {
 	flags.String(config.FedoraShimVersion, config.DefaultFedoraShimVersion, "Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default")
 	flags.String(config.FedoraGrubVersion, config.DefaultFedoraGrubVersion, "Fedora grub2-efi-x64 package version (e.g. 2.12-64.fc44) whose grubx64.efi is served next to the Fedora shim; sha256 pinned in code for the default")
 	flags.String(config.SecureBootTrusted, "", "Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar kernels may be booted under Secure Boot")
+	flags.String(config.Autopilot, config.AutopilotOff, "Self-healing upgrades: 'off', 'guard' (health gate, retry, downgrade and fleet hold for every OS) or 'full' (guard plus the Bluefin canary-serial rollout). P2: anything but off is a dry run that connects to the cluster (in-cluster or --kubeconfig), detects kured and reports the actuator it would use in GET /autopilot; nothing reboots")
+	flags.String(config.AutopilotNamespace, "", "Namespace the autopilot's API actuator creates reboot Pods in; defaults to Booty's own (the POD_NAMESPACE downward-API variable), else kube-system")
+	flags.String(config.AutopilotImage, "", "Image of the reboot Pods (must be Booty's own, it runs 'booty node-reboot'); defaults to the BOOTY_IMAGE environment variable, and the API actuator refuses to run without one")
+	flags.Duration(config.AutopilotDrainTO, config.DefaultAutopilotDrainTimeout, "How long the API actuator keeps retrying evictions refused by a PodDisruptionBudget before it gives up on draining a node")
+	flags.String(config.RebootSSHKey, "", "Private key for the SSH actuator (root on Bluefin, core with sudo on Flatcar/CoreOS; host keys pinned on first use in --dataDir/autopilot/known_hosts); empty disables it")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
@@ -112,6 +118,7 @@ func init() {
 	}
 	config.FlagChanged = flags.Changed
 	Cmd.AddCommand(initCmd)
+	Cmd.AddCommand(nodeRebootCmd)
 
 	viper.SetDefault(config.Version, "dev")
 	if version != "" {
@@ -170,6 +177,10 @@ func run(cmd *cobra.Command, argv []string) error {
 		return err
 	}
 	if err := versions.ValidateBluefinFlags(); err != nil {
+		return err
+	}
+	autopilotSettings := autopilot.FromConfig()
+	if err := autopilotSettings.Validate(); err != nil {
 		return err
 	}
 	if err := config.ResolveServerAddress(); err != nil {
@@ -250,6 +261,10 @@ func run(cmd *cobra.Command, argv []string) error {
 			}
 		}
 	}
+	pilot, err := newAutopilot(autopilotSettings, minter)
+	if err != nil {
+		return err
+	}
 	if server.DefaultTemplateInUse() {
 		slog.Info("No Butane template found; serving the embedded default", "path", config.DataPath(config.DefaultIgnitionFile))
 	}
@@ -278,7 +293,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("embedded web ui: %w", err)
 	}
-	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles, Minter: minter, Cluster: clusterManager}, errCh)
+	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles, Minter: minter, Cluster: clusterManager, Autopilot: pilot}, errCh)
 	if err != nil {
 		tftpServer.Shutdown(5 * time.Second)
 		return err
@@ -298,6 +313,8 @@ func run(cmd *cobra.Command, argv []string) error {
 		}
 	}
 	close(ready)
+
+	go pilot.LogStatus(ctx)
 
 	go func() {
 		versions.FlatcarVersionCheck()
@@ -456,6 +473,21 @@ func newK0sMinter(m *cluster.Manager, ttl time.Duration) (*kubeadm.Minter, error
 		return minter, nil
 	}
 	return nil, nil
+}
+
+// newAutopilot builds the dry-run autopilot. With the mode off it still
+// exists (GET /autopilot answers {mode:off}) but never touches a cluster;
+// otherwise the cluster client shares the minter's transport when there
+// is one, else comes from --kubeconfig or the in-cluster environment.
+func newAutopilot(s autopilot.Settings, minter *kubeadm.Minter) (*autopilot.Autopilot, error) {
+	if !s.Enabled() {
+		return &autopilot.Autopilot{Settings: s}, nil
+	}
+	var shared *kubeadm.Client
+	if minter != nil {
+		shared = minter.Client()
+	}
+	return autopilot.Setup(s, shared)
 }
 
 func cleanupJoinTokens(ctx context.Context, minter *kubeadm.Minter) {
