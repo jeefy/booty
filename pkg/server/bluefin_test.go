@@ -111,7 +111,7 @@ func TestBluefinIPXEMenu(t *testing.T) {
 }
 
 func TestUpdateCheckBluefin(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, dir := newTestServer(t)
 	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
 	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:c1","hostname":"fc","os":"flatcar"}`)
 	state.SetCurrentFlatcarVersion("2.0.0")
@@ -130,26 +130,40 @@ func TestUpdateCheckBluefin(t *testing.T) {
 		return resp
 	}
 
-	resp := get("mac=" + bluefinMAC + "&os=bluefin&version=26.08.0")
-	if resp.RebootRequired || resp.Reason != bluefinUpdateReason || resp.Running != "26.08.0" || resp.Target != "" {
-		t.Fatalf("bluefin never reboots: %+v", resp)
+	resp := get("mac=" + bluefinMAC + "&os=bluefin-server&version=26.08.0")
+	if resp.RebootRequired || resp.Reason != "server has no bluefin release yet" || resp.Running != "26.08.0" || resp.Target != "" {
+		t.Fatalf("no release cached: never reboot: %+v", resp)
 	}
 	h, _ := hardware.Get(bluefinMAC)
 	if h.Running != "26.08.0" || h.LastCheck == "" || h.RebootPending {
 		t.Fatalf("check must still be recorded: %+v", h)
 	}
 
+	installBluefinFixture(t, dir)
+	resp = get("mac=" + bluefinMAC + "&os=bluefin-server&version=" + bluefinTestVersion)
+	if resp.RebootRequired || resp.Reason != "bluefin up to date" || resp.Target != bluefinTestVersion {
+		t.Fatalf("running the target: %+v", resp)
+	}
+	resp = get("mac=" + bluefinMAC + "&os=bluefin-server&version=26.08.0")
+	if !resp.RebootRequired || resp.Reason != bluefinUpdateReason+bluefinTestVersion || resp.Target != bluefinTestVersion {
+		t.Fatalf("a diskless host behind the target re-images on reboot: %+v", resp)
+	}
+	resp = get("mac=" + bluefinMAC + "&os=bluefin-server")
+	if resp.RebootRequired || resp.Reason != "host reported no version" {
+		t.Fatalf("unknown running version fails closed: %+v", resp)
+	}
+
 	resp = get("mac=" + bluefinMAC + "&os=flatcar&version=1.0.0")
-	if resp.RebootRequired || resp.Reason != bluefinUpdateReason {
+	if !resp.RebootRequired || !strings.HasPrefix(resp.Reason, bluefinUpdateReason) {
 		t.Fatalf("a bluefin host reporting os=flatcar (Flatcar-based os-release) is still bluefin: %+v", resp)
 	}
 
 	resp = get("mac=aa:bb:cc:dd:ee:c1&os=bluefin&version=1.0.0")
-	if resp.RebootRequired || resp.Reason != bluefinUpdateReason {
+	if !resp.RebootRequired || !strings.HasPrefix(resp.Reason, bluefinUpdateReason) {
 		t.Fatalf("os=bluefin from the client wins over the registered os: %+v", resp)
 	}
 	resp = get("mac=aa:bb:cc:dd:ee:c1&os=flatcar&version=1.0.0")
-	if !resp.RebootRequired {
+	if !resp.RebootRequired || resp.Reason != "flatcar 1.0.0 differs from served 2.0.0" {
 		t.Fatalf("flatcar logic untouched: %+v", resp)
 	}
 }

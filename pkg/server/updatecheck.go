@@ -10,7 +10,6 @@ import (
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
-	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/versions"
 )
 
@@ -22,10 +21,10 @@ var nowFunc = time.Now
 
 var coreOSVersionRe = regexp.MustCompile(`^\d+\.\d{8}\.\d+\.\d+$`)
 
-// Booty never asks a Bluefin Server host to reboot: a diskless one boots
-// the newest release on its next reboot anyway, an installed one updates
-// itself with systemd-sysupdate.
-const bluefinUpdateReason = "bluefin: a reboot re-images diskless hosts; installed hosts update themselves via systemd-sysupdate"
+// bluefinUpdateReason is the reboot reason for a diskless Bluefin host: a
+// reboot re-images it from Booty into its target release, which is the
+// whole upgrade (and rollback) mechanism.
+const bluefinUpdateReason = "bluefin: re-image on reboot into "
 
 type updateCheckResponse struct {
 	RebootRequired bool   `json:"rebootRequired"`
@@ -86,28 +85,53 @@ func handleUpdateCheckRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// evaluateUpdate answers rebootRequired = effectiveTarget(host) != running
+// for every OS: the target is the host's targetVersion when set, else the
+// fleet target (the OS's current release); false when no release is
+// cached or the host's running version is unknown. Without a
+// targetVersion the Flatcar and CoreOS answers are what they were before
+// targetVersion existed.
 func evaluateUpdate(host *hardware.Host, rep updateReport) updateCheckResponse {
 	resp := updateCheckResponse{Running: rep.running()}
 	osName := rep.OS
+	if osName == "bluefin-server" {
+		osName = versions.OSBluefin
+	}
 	if osName == "" {
 		osName = host.OS
 	}
 	switch {
-	case osName == "bluefin" || host.OS == "bluefin":
-		resp.Reason = bluefinUpdateReason
-		return resp
-	case osName == "flatcar":
-		return evaluateFlatcar(rep, resp)
-	case osName == "coreos" || host.OSTreeImage != "":
+	case osName == versions.OSBluefin || host.OS == versions.OSBluefin:
+		return evaluateBluefin(host, rep, resp)
+	case osName == versions.OSFlatcar:
+		return evaluateFlatcar(host, rep, resp)
+	case osName == versions.OSCoreOS || host.OSTreeImage != "":
 		return evaluateOSTree(host, rep, resp)
 	}
 	resp.Reason = "unknown os; cannot determine target"
 	return resp
 }
 
-func evaluateFlatcar(rep updateReport, resp updateCheckResponse) updateCheckResponse {
-	target := state.CurrentFlatcarVersion()
-	if target == "" || target == "0.0.0" {
+// hostTarget is the release host should run: its targetVersion when set
+// and cached, else the fleet target of osName (which may not be the OS the
+// host is registered as, when the node reports another os= than expected).
+func hostTarget(host *hardware.Host, osName string) string {
+	if host.TargetVersion != "" && versions.ReleaseCached(osName, host.TargetVersion) {
+		return host.TargetVersion
+	}
+	return versions.FleetTarget(osName)
+}
+
+func pinnedSuffix(host *hardware.Host, target string) string {
+	if host.TargetVersion != "" && host.TargetVersion == target {
+		return " (host targetVersion)"
+	}
+	return ""
+}
+
+func evaluateFlatcar(host *hardware.Host, rep updateReport, resp updateCheckResponse) updateCheckResponse {
+	target := hostTarget(host, versions.OSFlatcar)
+	if target == "" {
 		resp.Reason = "server has no flatcar version yet"
 		return resp
 	}
@@ -121,7 +145,27 @@ func evaluateFlatcar(rep updateReport, resp updateCheckResponse) updateCheckResp
 		return resp
 	}
 	resp.RebootRequired = true
-	resp.Reason = "flatcar " + rep.Version + " differs from served " + target
+	resp.Reason = "flatcar " + rep.Version + " differs from served " + target + pinnedSuffix(host, target)
+	return resp
+}
+
+func evaluateBluefin(host *hardware.Host, rep updateReport, resp updateCheckResponse) updateCheckResponse {
+	target := hostTarget(host, versions.OSBluefin)
+	if target == "" {
+		resp.Reason = "server has no bluefin release yet"
+		return resp
+	}
+	resp.Target = target
+	if rep.Version == "" {
+		resp.Reason = "host reported no version"
+		return resp
+	}
+	if rep.Version == target {
+		resp.Reason = "bluefin up to date"
+		return resp
+	}
+	resp.RebootRequired = true
+	resp.Reason = bluefinUpdateReason + target + pinnedSuffix(host, target)
 	return resp
 }
 
@@ -150,12 +194,12 @@ func evaluateOSTree(host *hardware.Host, rep updateReport, resp updateCheckRespo
 			return resp
 		}
 	}
-	return evaluateCoreOSVersion(rep, resp)
+	return evaluateCoreOSVersion(host, rep, resp)
 }
 
-func evaluateCoreOSVersion(rep updateReport, resp updateCheckResponse) updateCheckResponse {
-	target := state.CurrentCoreOSVersion()
-	if target == "" || target == "0.0.0" {
+func evaluateCoreOSVersion(host *hardware.Host, rep updateReport, resp updateCheckResponse) updateCheckResponse {
+	target := hostTarget(host, versions.OSCoreOS)
+	if target == "" {
 		resp.Reason = "server has no coreos version yet"
 		return resp
 	}
@@ -169,7 +213,7 @@ func evaluateCoreOSVersion(rep updateReport, resp updateCheckResponse) updateChe
 		return resp
 	}
 	resp.RebootRequired = true
-	resp.Reason = "coreos " + rep.Version + " differs from served " + target
+	resp.Reason = "coreos " + rep.Version + " differs from served " + target + pinnedSuffix(host, target)
 	return resp
 }
 
