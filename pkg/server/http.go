@@ -123,6 +123,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/cluster", handleClusterRequest)
 	mux.HandleFunc("/cluster/ready", handleClusterReadyRequest)
 	mux.HandleFunc("/autopilot", handleAutopilotRequest)
+	mux.HandleFunc("/autopilot/", handleAutopilotRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))

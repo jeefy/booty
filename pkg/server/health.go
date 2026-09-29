@@ -68,6 +68,7 @@ func handleHealthRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update host")
 		return
 	}
+	autopilotHealth(mac, &report)
 	level := slog.LevelInfo
 	if sameBoot {
 		level = slog.LevelDebug

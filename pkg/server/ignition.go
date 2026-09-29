@@ -24,6 +24,7 @@ import (
 	coreOSType "github.com/coreos/ignition/v2/config/v3_5/types"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/j-keck/arping"
+	"github.com/jeefy/booty/pkg/autopilot/controller"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	ign "github.com/jeefy/booty/pkg/ignition"
@@ -172,6 +173,9 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("Secure Boot host cannot boot its OS; serving the refusal menu", "mac", mac, "os", os, "trustedFlatcar", vars.SecureBootTrustedFlatcar, "doInstall", host.DoInstall)
 	case os == "bluefin":
 		bluefinIPXEVars(mac, host, secureBoot || host.SecureBoot, &vars)
+	}
+	if host != nil && os != "bluefin" && !isPreview(r) {
+		autopilotFetch(mac, controller.FetchKernel)
 	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
@@ -610,6 +614,7 @@ func recordBoot(mac, ip string, host *hardware.Host) {
 	if err := hardware.MarkBooted(mac, ip, time.Now()); err != nil {
 		slog.Error("Could not record boot", "mac", mac, "error", err)
 	}
+	autopilotFetch(mac, controller.FetchIgnition)
 	if !host.DoInstall {
 		return
 	}

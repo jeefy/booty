@@ -17,6 +17,7 @@ import (
 
 	v3_6 "github.com/coreos/ignition/v2/config/v3_6"
 	ign36 "github.com/coreos/ignition/v2/config/v3_6/types"
+	"github.com/jeefy/booty/pkg/autopilot/controller"
 	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/cluster/k0s"
 	"github.com/jeefy/booty/pkg/config"
@@ -245,6 +246,7 @@ func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, plat
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
 		host.NetbootPlatform = platform
+		autopilotFetch(mac, controller.FetchKernel)
 	}
 	if platform == hardware.PlatformEFI {
 		recordInstallServed(mac, host, now)
@@ -342,6 +344,7 @@ func serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) 
 		if err := hardware.MarkBooted(mac, remoteIP(r), time.Now()); err != nil {
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
+		autopilotFetch(mac, controller.FetchIgnition)
 		if bluefinInstallsNow(host) && viper.GetString(config.DoInstallClearOn) == config.ClearOnIgnition {
 			_, _ = markBluefinInstalled(mac, "ignition fetch")
 		}
