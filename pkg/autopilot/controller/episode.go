@@ -455,7 +455,7 @@ func (c *Controller) quarantine(r *Release, e *Episode) {
 	c.setReleaseState(r, ReleaseQuarantined)
 	r.Failing = false
 	c.event(EventRelease, r.OS, r.Version, "", "release quarantined: the retry failed too; the fleet stays on lastGood")
-	c.draftReport(r, e, "retry failed with "+e.Class)
+	c.draftReport(r, e, "retry failed with "+e.Class, true)
 	if e.Release != c.opts.Fleet.LastGood(e.OS) && c.opts.Fleet.LastGood(e.OS) != "" {
 		e.RollingBack = true
 		e.Target = c.opts.Fleet.LastGood(e.OS)
@@ -570,7 +570,7 @@ func (c *Controller) healthy(e *Episode) {
 			r.FailedOn = e.MAC
 			r.Failing = false
 			c.event(EventRelease, e.OS, e.Release, "", fmt.Sprintf("release enters TIMEOUT for %s; fleet target held at lastGood %s", c.opts.RetryAfter, e.Target))
-			c.draftReport(r, e, "lastGood "+e.Target+" healthy on the same hardware")
+			c.draftReport(r, e, "lastGood "+e.Target+" healthy on the same hardware", false)
 		}
 		return
 	}

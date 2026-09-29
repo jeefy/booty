@@ -10,11 +10,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jeefy/booty/pkg/autopilot/actuator"
 	"github.com/jeefy/booty/pkg/autopilot/controller"
+	"github.com/jeefy/booty/pkg/autopilot/report"
+	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/cluster/k8s"
+	"github.com/jeefy/booty/pkg/cni"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/kubeadm"
 	"github.com/spf13/viper"
@@ -33,6 +37,14 @@ type Settings struct {
 	// release sits in before its single retry.
 	HealthWindow time.Duration
 	RetryAfter   time.Duration
+	// Issues is the owner/repo quarantined Bluefin reports are filed to
+	// with GitHubToken; empty keeps them on disk. CNI/CNIRelease name the
+	// network plugin for the report when Booty installs it (ManagedCNI).
+	Issues      string
+	GitHubToken string
+	CNI         string
+	CNIRelease  string
+	ManagedCNI  bool
 }
 
 // FromConfig reads the flags. Namespace falls back to POD_NAMESPACE, then
@@ -48,6 +60,11 @@ func FromConfig() Settings {
 		SSHKey:       viper.GetString(config.RebootSSHKey),
 		HealthWindow: viper.GetDuration(config.AutopilotHealthWin),
 		RetryAfter:   viper.GetDuration(config.AutopilotRetryAfter),
+		Issues:       strings.Trim(strings.TrimSpace(viper.GetString(config.AutopilotIssues)), "/"),
+		GitHubToken:  strings.TrimSpace(viper.GetString(config.GithubToken)),
+		CNI:          viper.GetString(config.CNI),
+		CNIRelease:   viper.GetString(config.CNIRelease),
+		ManagedCNI:   cluster.Mode(viper.GetString(config.ControlPlane)) == cluster.Managed,
 	}
 	if s.Namespace == "" {
 		s.Namespace = os.Getenv(config.PodNamespaceEnv)
@@ -83,7 +100,37 @@ func (s Settings) Validate() error {
 			return fmt.Errorf("--%s: %w", config.RebootSSHKey, err)
 		}
 	}
+	if s.Issues != "" {
+		if err := report.ValidateRepo(s.Issues); err != nil {
+			return fmt.Errorf("--%s: %w", config.AutopilotIssues, err)
+		}
+		if s.GitHubToken == "" {
+			return fmt.Errorf("--%s needs --%s (a token with issues:write on %s)", config.AutopilotIssues, config.GithubToken, s.Issues)
+		}
+	}
 	return nil
+}
+
+// ReportCNI names the network plugin for the reports: only when Booty
+// installs it (--controlPlane=managed) is --cni a fact rather than a
+// default, and none is omitted.
+func (s Settings) ReportCNI() report.CNI {
+	if !s.ManagedCNI || s.CNI == "" || s.CNI == cni.None {
+		return report.CNI{}
+	}
+	version := s.CNIRelease
+	if version == "" {
+		version = cni.Pin(s.CNI)
+	}
+	return report.CNI{Name: s.CNI, Version: version}
+}
+
+// Poster is the GitHub poster for --autopilotIssues, nil when off.
+func (s Settings) Poster() controller.Poster {
+	if s.Issues == "" {
+		return nil
+	}
+	return report.NewPoster(s.Issues, s.GitHubToken)
 }
 
 // Autopilot is the running instance: the settings, the cluster client (nil
@@ -116,6 +163,9 @@ func Setup(s Settings, shared *kubeadm.Client) (*Autopilot, error) {
 		Cluster:      cluster,
 		Actuators:    a.Chooser,
 		StatePath:    config.AutopilotPath(config.AutopilotStateFile),
+		ReportsDir:   config.AutopilotPath(config.AutopilotReportsDir),
+		Poster:       s.Poster(),
+		CNI:          s.ReportCNI(),
 		HealthWindow: s.HealthWindow,
 		RetryAfter:   s.RetryAfter,
 	})
@@ -226,6 +276,11 @@ func (a *Autopilot) LogStatus(ctx context.Context) {
 		attrs = append(attrs, "error", st.Cluster.Error)
 	}
 	slog.Info("Autopilot on: health gate, retry, rollback to lastGood and fleet hold for every OS"+map[bool]string{true: "; Bluefin canary-serial rollout, TIMEOUT/retry, quarantine and skip-to-next", false: ""}[st.Mode == config.AutopilotFull], attrs...)
+	if a.Settings.Issues != "" {
+		slog.Info("Autopilot files quarantined Bluefin releases as GitHub issues", "repo", a.Settings.Issues, "reports", config.AutopilotPath(config.AutopilotReportsDir))
+	} else {
+		slog.Info("Autopilot reports stay on disk (set --autopilotIssues=owner/repo to file Bluefin ones as issues)", "reports", config.AutopilotPath(config.AutopilotReportsDir))
+	}
 	switch st.Actuator {
 	case actuator.NameSSH:
 		slog.Info("Autopilot reboots over SSH", "users", st.SSHUsers, "key", a.Settings.SSHKey, "drain", a.Client.Configured() && st.Cluster.Reachable)

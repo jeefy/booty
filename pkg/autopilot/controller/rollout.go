@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jeefy/booty/pkg/autopilot/report"
 	"github.com/jeefy/booty/pkg/hardware"
 )
 
@@ -186,10 +187,12 @@ func (c *Controller) fleetHealthyOn(osName, version string) bool {
 	return any
 }
 
-// draftReport records everything P4's redacting builder needs about a
-// release the autopilot blamed, and emits the event that says so.
-func (c *Controller) draftReport(r *Release, e *Episode, rollback string) {
-	key := r.OS + "-" + r.Version
+// draftReport records everything the redacting builder needs about a
+// release the autopilot blamed, renders it to disk, and emits the event
+// that says so. final marks the quarantine: the draft badge drops and,
+// for Bluefin with a poster, the report is filed upstream.
+func (c *Controller) draftReport(r *Release, e *Episode, rollback string, final bool) {
+	key := report.Key(r.OS, r.Version)
 	rep := c.state.Reports[key]
 	if rep == nil {
 		rep = &Report{OS: r.OS, Version: r.Version, Draft: true, CreatedAt: c.now(), Mode: c.opts.Mode}
@@ -198,22 +201,28 @@ func (c *Controller) draftReport(r *Release, e *Episode, rollback string) {
 	rep.LastGood = c.opts.Fleet.LastGood(r.OS)
 	rep.Class = r.Class
 	rep.RollbackResult = rollback
+	rep.UpdatedAt = c.now()
+	if final {
+		rep.Draft = false
+	}
 	for _, a := range e.Attempts {
 		if !slices.ContainsFunc(rep.Attempts, func(b Attempt) bool { return b.Ended.Equal(a.Ended) && b.Attempt == a.Attempt && b.Target == a.Target }) {
 			rep.Attempts = append(rep.Attempts, a)
 		}
 	}
 	if h, ok := c.opts.Fleet.Host(e.MAC); ok {
+		firmware := ""
 		if h.Health != nil {
 			rep.Hardware.Vendor, rep.Hardware.Product, rep.Hardware.BIOSVersion = h.Health.DMI.Vendor, h.Health.DMI.Product, h.Health.DMI.BIOSVersion
 			rep.Hardware.Firmware, rep.Hardware.Kernel = h.Health.Firmware, h.Health.Kernel
 			rep.JournalErrors = slices.Clone(h.Health.JournalErrors)
+			firmware = h.Health.Firmware
 			if h.Health.DMI.ProductUUID != "" {
 				sum := sha256.Sum256([]byte(h.Health.DMI.ProductUUID))
 				rep.DMIHash = hex.EncodeToString(sum[:8])
 			}
 		}
-		rep.Hardware.BootPath = bootPath(h)
+		rep.Hardware.BootPath = bootPath(h, firmware)
 	}
 	if e.Baseline != nil {
 		ni := e.Baseline.Node.NodeInfo
@@ -221,21 +230,41 @@ func (c *Controller) draftReport(r *Release, e *Episode, rollback string) {
 	}
 	r.Report = key
 	c.dirty = true
-	c.event(EventReport, r.OS, r.Version, "", fmt.Sprintf("report drafted (%d attempt(s), last class %s); P4 renders and posts it", len(rep.Attempts), r.Class))
+	c.writeReport(key, rep)
+	state := "drafted"
+	if final {
+		state = "final"
+	}
+	c.event(EventReport, r.OS, r.Version, "", fmt.Sprintf("report %s (%d attempt(s), last class %s)", state, len(rep.Attempts), r.Class))
+	if final {
+		c.maybePost(key, rep)
+	}
 }
 
-func bootPath(h *hardware.Host) string {
-	switch {
-	case h.OS == "bluefin" && h.NetbootsBIOS():
-		return "bios-diskless"
-	case h.OS == "bluefin" && h.SecureBoot:
-		return "uefi-pxe"
-	case h.OS == "bluefin":
-		return "uefi-http"
-	case h.SecureBoot:
-		return "uefi-http"
+// bootPath derives how the host was served from what Booty recorded and
+// the firmware its health report named.
+func bootPath(h *hardware.Host, firmware string) string {
+	if h.OS == "bluefin" {
+		switch {
+		case h.NetbootsBIOS(), firmware == hardware.FirmwareBIOS:
+			return report.BootPathBIOSDiskless
+		case h.SecureBoot:
+			return report.BootPathUEFIPXE
+		case h.NetbootPlatform == hardware.PlatformEFI, firmware == hardware.FirmwareUEFI:
+			return report.BootPathUEFIHTTP
+		}
+		return report.BootPathUnknown
 	}
-	return "pxe"
+	switch firmware {
+	case hardware.FirmwareUEFI:
+		return report.BootPathUEFIPXE
+	case hardware.FirmwareBIOS:
+		return report.BootPathBIOSPXE
+	}
+	if h.SecureBoot {
+		return report.BootPathUEFIPXE
+	}
+	return report.BootPathUnknown
 }
 
 // OSStatus is the per-OS block of GET /autopilot.
@@ -256,8 +285,8 @@ type HostStatus struct {
 	Episode   *Episode `json:"episode,omitempty"`
 }
 
-// ReportSummary is a report stub as GET /autopilot lists it: the journal
-// excerpt stays on disk for P4.
+// ReportSummary is a report as GET /autopilot lists it: the journal
+// excerpt stays on disk; Path is where the rendered Markdown is served.
 type ReportSummary struct {
 	Key            string    `json:"key"`
 	OS             string    `json:"os"`
@@ -265,10 +294,19 @@ type ReportSummary struct {
 	LastGood       string    `json:"lastGood"`
 	Draft          bool      `json:"draft"`
 	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt,omitzero"`
 	Class          string    `json:"class,omitempty"`
 	Attempts       int       `json:"attempts"`
 	RollbackResult string    `json:"rollbackResult,omitempty"`
+	Path           string    `json:"path,omitempty"`
+	PostedURL      string    `json:"postedURL,omitempty"`
+	PostedAt       time.Time `json:"postedAt,omitzero"`
+	PostAction     string    `json:"postAction,omitempty"`
+	PostError      string    `json:"postError,omitempty"`
 }
+
+// ReportsPath is the URL prefix the server serves rendered reports under.
+const ReportsPath = "/autopilot/reports/"
 
 // Status is the controller's part of GET /autopilot.
 type Status struct {
@@ -328,7 +366,14 @@ func (c *Controller) Status() Status {
 	}
 	for _, key := range slices.Sorted(maps.Keys(c.state.Reports)) {
 		r := c.state.Reports[key]
-		st.Reports = append(st.Reports, ReportSummary{Key: key, OS: r.OS, Version: r.Version, LastGood: r.LastGood, Draft: r.Draft, CreatedAt: r.CreatedAt, Class: r.Class, Attempts: len(r.Attempts), RollbackResult: r.RollbackResult})
+		s := ReportSummary{Key: key, OS: r.OS, Version: r.Version, LastGood: r.LastGood, Draft: r.Draft, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Class: r.Class, Attempts: len(r.Attempts), RollbackResult: r.RollbackResult, PostError: r.PostError}
+		if c.opts.ReportsDir != "" {
+			s.Path = ReportsPath + key + ".md"
+		}
+		if r.Posted != nil {
+			s.PostedURL, s.PostedAt, s.PostAction = r.Posted.URL, r.Posted.At, r.Posted.Action
+		}
+		st.Reports = append(st.Reports, s)
 	}
 	return st
 }
