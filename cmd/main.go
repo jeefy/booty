@@ -106,7 +106,9 @@ func init() {
 	flags.String(config.FedoraShimVersion, config.DefaultFedoraShimVersion, "Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default")
 	flags.String(config.FedoraGrubVersion, config.DefaultFedoraGrubVersion, "Fedora grub2-efi-x64 package version (e.g. 2.12-64.fc44) whose grubx64.efi is served next to the Fedora shim; sha256 pinned in code for the default")
 	flags.String(config.SecureBootTrusted, "", "Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar kernels may be booted under Secure Boot")
-	flags.String(config.Autopilot, config.AutopilotOff, "Self-healing upgrades: 'off', 'guard' (health gate, retry, downgrade and fleet hold for every OS) or 'full' (guard plus the Bluefin canary-serial rollout). P2: anything but off is a dry run that connects to the cluster (in-cluster or --kubeconfig), detects kured and reports the actuator it would use in GET /autopilot; nothing reboots")
+	flags.String(config.Autopilot, config.AutopilotOff, "Self-healing upgrades: 'off', 'guard' (health gate, retry, downgrade to lastGood and fleet hold for every OS; rollout order unchanged) or 'full' (guard plus the Bluefin canary-serial rollout, timeout/retry, quarantine and skip-to-next). Reboots go through kured when it runs in the cluster, else the Kubernetes API, else --rebootSSHKey")
+	flags.Duration(config.AutopilotHealthWin, config.DefaultAutopilotHealthWindow, "Health-gate window: how long a host has, from its observed reboot (first kernel/UKI fetch), to come back Ready with its workloads healthy")
+	flags.Duration(config.AutopilotRetryAfter, config.DefaultAutopilotRetryAfter, "How long a release that a host rolled back from stays in TIMEOUT before the autopilot retries it once (on the Bluefin canary, or the same Flatcar/CoreOS host)")
 	flags.String(config.AutopilotNamespace, "", "Namespace the autopilot's API actuator creates reboot Pods in; defaults to Booty's own (the POD_NAMESPACE downward-API variable), else kube-system")
 	flags.String(config.AutopilotImage, "", "Image of the reboot Pods (must be Booty's own, it runs 'booty node-reboot'); defaults to the BOOTY_IMAGE environment variable, and the API actuator refuses to run without one")
 	flags.Duration(config.AutopilotDrainTO, config.DefaultAutopilotDrainTimeout, "How long the API actuator keeps retrying evictions refused by a PodDisruptionBudget before it gives up on draining a node")
@@ -315,6 +317,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	close(ready)
 
 	go pilot.LogStatus(ctx)
+	if pilot.Controller != nil {
+		go pilot.Controller.Run(ctx)
+	}
 
 	go func() {
 		versions.FlatcarVersionCheck()
@@ -475,10 +480,12 @@ func newK0sMinter(m *cluster.Manager, ttl time.Duration) (*kubeadm.Minter, error
 	return nil, nil
 }
 
-// newAutopilot builds the dry-run autopilot. With the mode off it still
-// exists (GET /autopilot answers {mode:off}) but never touches a cluster;
-// otherwise the cluster client shares the minter's transport when there
-// is one, else comes from --kubeconfig or the in-cluster environment.
+// newAutopilot builds the autopilot. With the mode off it still exists
+// (GET /autopilot answers {mode:off}) but has no controller and never
+// touches a cluster; otherwise the cluster client shares the minter's
+// transport when there is one, else comes from --kubeconfig or the
+// in-cluster environment, and the controller is started once the HTTP
+// server is up.
 func newAutopilot(s autopilot.Settings, minter *kubeadm.Minter) (*autopilot.Autopilot, error) {
 	if !s.Enabled() {
 		return &autopilot.Autopilot{Settings: s}, nil

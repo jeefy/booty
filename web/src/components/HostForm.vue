@@ -226,6 +226,22 @@ function toggleExtension(name: BluefinExtension, on: boolean) {
             Install on next boot
           </label>
         </div>
+        <div class="form-check mb-1" data-testid="canary-field">
+          <input
+            :id="`canary-${draft.mac}`"
+            v-model="draft.canary"
+            class="form-check-input"
+            type="checkbox"
+            :disabled="busy"
+            :aria-describedby="`canary-help-${draft.mac}`"
+          />
+          <label class="form-check-label small" :for="`canary-${draft.mac}`">
+            Autopilot canary
+          </label>
+          <div :id="`canary-help-${draft.mac}`" class="form-text field-help">
+            Gets a new Bluefin release first under --autopilot=full.
+          </div>
+        </div>
       </div>
       <div class="col-6 col-md-3 d-flex justify-content-end gap-2">
         <button

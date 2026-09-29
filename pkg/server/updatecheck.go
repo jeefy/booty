@@ -81,6 +81,9 @@ func handleUpdateCheckRequest(w http.ResponseWriter, r *http.Request) {
 		Digest:  strings.TrimSpace(q.Get("digest")),
 	}
 	resp := evaluateUpdate(host, rep)
+	if want, reason := autopilotRebootWanted(mac); want && !resp.RebootRequired && resp.Target != "" {
+		resp.RebootRequired, resp.Reason = true, reason
+	}
 	recordUpdateCheck(mac, host, resp)
 	writeJSON(w, http.StatusOK, resp)
 }

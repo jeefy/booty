@@ -13,8 +13,8 @@ src/
   utils/time.ts   relative / absolute time formatting for RFC3339 timestamps
   utils/fleet.ts  fleet helpers: running-label splitting, host status, pending list, preview URLs
   components/     ErrorAlert, LoadingState, EmptyState, HostForm
-  views/          HomeView (status + Flatcar pin), HostsView, CacheView, AboutView
-  router/         hash-based routes (/, /hosts, /cache, /about)
+  views/          HomeView (status + Flatcar pin), HostsView, CacheView, AutopilotView, ConfigView, AboutView
+  router/         hash-based routes (/, /hosts, /cache, /autopilot, /config, /about)
   assets/main.css design tokens (CSS variables) layered on top of Bootstrap 5
 ```
 
@@ -63,6 +63,22 @@ bundle version, boot URL, trusted CAs, the Flatcar CA fingerprint with copy and
 through Secure Boot. The card is always rendered so the feature is
 discoverable; with `enabled: false` it collapses to the one-line off state.
 
+## Autopilot
+
+`AutopilotView` renders `GET /autopilot` (`normalizeAutopilotStatus` in
+`types.ts`): mode, actuator, cluster and attention counters as stat cards, a
+fleet-target table per OS (fleet target with a **held** badge, `current`,
+`lastGood`, every release with its state badge, since when, attempts and last
+class, and a **Clear** button on `quarantined`/`timeout` releases that POSTs
+`/autopilot/{os}/release/{version}/clear` and reloads), the per-host episode
+table (state badge, release → target, attempt, class, since, note; hostnames
+come from `/booty.json`), the report stubs and the event timeline (newest
+first, `alert` events in red). With `mode: off` the page shows the summary and
+an empty state. `Host.canary` is a checkbox in `HostForm` (every OS) and a
+`canary` badge in the Hosts table; `Host.autopilot` (server-owned, echoed back
+to `/register` untouched) shows as a state badge with the attempt number when
+the host is not idle.
+
 ## Development
 
 ```sh
@@ -72,7 +88,8 @@ npm run dev          # http://localhost:5173/ui/
 
 The dev server proxies every backend route (`/booty.json`, `/info`,
 `/flatcar/*`, `/registry`, `/register`, `/unregister`, `/hosts`,
-`/ignition.json`, `/healthz`, `/version.json`, `/data`) to a running Go
+`/ignition.json`, `/cluster`, `/autopilot`, `/config`, `/healthz`,
+`/version.json`, `/data`) to a running Go
 server. It defaults to `http://localhost:8080`; override with
 `VITE_API_TARGET=http://host:port npm run dev`.
 

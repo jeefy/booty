@@ -8,6 +8,11 @@ const router = createRouter({
     { path: '/hosts', name: 'hosts', component: () => import('../views/HostsView.vue') },
     { path: '/cache', name: 'cache', component: () => import('../views/CacheView.vue') },
     { path: '/config', name: 'config', component: () => import('../views/ConfigView.vue') },
+    {
+      path: '/autopilot',
+      name: 'autopilot',
+      component: () => import('../views/AutopilotView.vue')
+    },
     { path: '/about', name: 'about', component: () => import('../views/AboutView.vue') }
   ]
 })

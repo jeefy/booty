@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
@@ -46,6 +47,10 @@ func ReleaseCached(osName, version string) bool {
 	info, err := os.Stat(ReleaseDir(osName, version))
 	return err == nil && info.IsDir()
 }
+
+// CompareVersions orders two release versions as dotted numbers (newer is
+// greater), the way CachedReleases sorts them.
+func CompareVersions(a, b string) int { return compareVersions(a, b) }
 
 // CachedReleases lists the release directories of osName, newest first.
 func CachedReleases(osName string) []string {
@@ -175,11 +180,52 @@ func pruneReleases(osName string) {
 	}
 }
 
+var (
+	holdMu     sync.RWMutex
+	fleetHolds = map[string]string{}
+)
+
+// HoldFleetTarget pins the fleet target of osName at version (a cached
+// release, typically lastGood) instead of current; "" releases the hold.
+// The autopilot controller is the only caller: it holds after a failed
+// rollout and while a Bluefin release is rolled canary-serially. The hold
+// is not persisted here; the controller re-applies it from its own state.
+func HoldFleetTarget(osName, version string) {
+	holdMu.Lock()
+	defer holdMu.Unlock()
+	if version == "" {
+		delete(fleetHolds, osName)
+		return
+	}
+	fleetHolds[osName] = version
+}
+
+// FleetHold is the version FleetTarget is held at for osName, "" when not
+// held (or the held release is no longer cached).
+func FleetHold(osName string) string {
+	holdMu.RLock()
+	v := fleetHolds[osName]
+	holdMu.RUnlock()
+	if v != "" && !ReleaseCached(osName, v) {
+		return ""
+	}
+	return v
+}
+
 // FleetTarget is the release hosts of osName boot unless their
 // targetVersion says otherwise: the OS's current release, "" while none
-// is cached. Bluefin's is the bluefin/current link itself, which is what
-// /bluefin/<mac>/ served before targetVersion existed.
+// is cached, or the release the autopilot holds the fleet at (see
+// HoldFleetTarget). Bluefin's current is the bluefin/current link itself,
+// which is what /bluefin/<mac>/ served before targetVersion existed.
 func FleetTarget(osName string) string {
+	if held := FleetHold(osName); held != "" {
+		return held
+	}
+	return CurrentTarget(osName)
+}
+
+// CurrentTarget is the OS's current release regardless of any hold.
+func CurrentTarget(osName string) string {
 	var v string
 	switch osName {
 	case OSFlatcar:
