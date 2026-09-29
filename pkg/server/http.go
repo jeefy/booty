@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/jeefy/booty/pkg/autopilot"
 	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
@@ -78,6 +79,8 @@ type Options struct {
 	// Cluster holds the cluster settings, CA and tokens for GET /cluster;
 	// nil means the flags are described without any CA.
 	Cluster *cluster.Manager
+	// Autopilot answers GET /autopilot; nil reads as mode off.
+	Autopilot *autopilot.Autopilot
 }
 
 func uiFileSystem(o Options) http.FileSystem {
@@ -95,6 +98,7 @@ func uiFileSystem(o Options) http.FileSystem {
 func NewHandler(o Options) http.Handler {
 	setJoinMinter(o.Minter)
 	setClusterManager(o.Cluster)
+	setAutopilot(o.Autopilot)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/healthz", handleHealthz)
@@ -118,6 +122,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/config/template/validate", handleConfigTemplateValidateRequest)
 	mux.HandleFunc("/cluster", handleClusterRequest)
 	mux.HandleFunc("/cluster/ready", handleClusterReadyRequest)
+	mux.HandleFunc("/autopilot", handleAutopilotRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))

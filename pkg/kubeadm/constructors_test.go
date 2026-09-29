@@ -69,8 +69,8 @@ func TestFromKubeconfigWithFileReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.cfg.TokenFile != filepath.Join(dir, "token") || m.cfg.CAData == nil {
-		t.Fatalf("relative references must resolve against the kubeconfig dir: %+v", m.cfg)
+	if m.api.cfg.TokenFile != filepath.Join(dir, "token") || m.api.cfg.CAData == nil {
+		t.Fatalf("relative references must resolve against the kubeconfig dir: %+v", m.api.cfg)
 	}
 	if _, err := m.JoinString(context.Background(), "aa:bb:cc:dd:ee:01", "n1"); err != nil {
 		t.Fatal(err)
@@ -122,14 +122,14 @@ func TestFromCA(t *testing.T) {
 	if m.APIServer() != "https://10.0.0.1:6443" {
 		t.Fatalf("APIServer %q", m.APIServer())
 	}
-	if m.cfg.Token != "" || m.cfg.TokenFile != "" || m.cfg.ClientCertData == nil {
-		t.Fatalf("FromCA must authenticate with a client certificate: %+v", m.cfg)
+	if m.api.cfg.Token != "" || m.api.cfg.TokenFile != "" || m.api.cfg.ClientCertData == nil {
+		t.Fatalf("FromCA must authenticate with a client certificate: %+v", m.api.cfg)
 	}
 	// The test server presents its own self-signed certificate, so point the
 	// minter at it while keeping the client certificate; the API server CA
 	// check is covered by the other tests.
-	m.cfg.APIServer = srv.URL
-	m.cfg.CAData = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	m.api.cfg.APIServer = srv.URL
+	m.api.cfg.CAData = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
 
 	join, err := m.JoinString(context.Background(), "aa:bb:cc:dd:ee:01", "n1")
 	if err != nil {

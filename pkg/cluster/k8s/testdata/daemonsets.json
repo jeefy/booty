@@ -1,0 +1,5 @@
+{"kind":"DaemonSetList","apiVersion":"apps/v1","items":[
+ {"metadata":{"name":"cilium","namespace":"kube-system","labels":{"k8s-app":"cilium","app.kubernetes.io/name":"cilium-agent"}}},
+ {"metadata":{"name":"kured","namespace":"kube-system"}},
+ {"metadata":{"name":"nvidia-device-plugin-daemonset","namespace":"gpu-operator","labels":{"app":"nvidia-device-plugin-daemonset"}}}
+]}

@@ -21,7 +21,7 @@ const healthFixture = `{
     "2026-09-28T10:00:00+0000 kubelet[1234]: node aren (192.168.1.57) failed to register with ehrlitan:6443",
     "2026-09-28T10:00:01+0000 kernel: e1000e 40:a8:f0:af:39:8d link is down"
   ],
-  "dmi": {"vendor": "HP", "product": "HP EliteDesk 800 G1 DM", "biosVersion": "L01 v02.78"},
+  "dmi": {"vendor": "HP", "product": "HP EliteDesk 800 G1 DM", "biosVersion": "L01 v02.78", "productUUID": "0CCCFB00-A3F6-11E4-9504-40A8F0AF398D"},
   "firmware": "uefi",
   "kernel": "6.17.1-300.fc44.x86_64",
   "bootID": "5b1c6b2e-4a9e-4e7b-9a0e-2d3f4a5b6c7d"
@@ -75,6 +75,7 @@ func TestHealthReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	want.ReceivedAt = "2026-09-28T12:00:00Z"
+	want.DMI.ProductUUID = strings.ToLower(want.DMI.ProductUUID)
 	got, _ := json.Marshal(h.Health)
 	wantJSON, _ := json.Marshal(want)
 	if string(got) != string(wantJSON) {
@@ -89,7 +90,7 @@ func TestHealthReport(t *testing.T) {
 
 	for _, endpoint := range []string{"/hosts?mac=aa:bb:cc:dd:ee:01", "/booty.json"} {
 		r := do(t, http.MethodGet, srv.URL+endpoint, "")
-		if r.status != 200 || !strings.Contains(r.body, `"health":{"receivedAt":"2026-09-28T12:00:00Z"`) || !strings.Contains(r.body, `"biosVersion":"L01 v02.78"`) {
+		if r.status != 200 || !strings.Contains(r.body, `"health":{"receivedAt":"2026-09-28T12:00:00Z"`) || !strings.Contains(r.body, `"biosVersion":"L01 v02.78","productUUID":"0cccfb00-a3f6-11e4-9504-40a8f0af398d"`) {
 			t.Fatalf("%s must show the health report: %+v", endpoint, r)
 		}
 	}

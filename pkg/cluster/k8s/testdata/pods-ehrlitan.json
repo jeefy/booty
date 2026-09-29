@@ -1,0 +1,17 @@
+{"kind":"PodList","apiVersion":"v1","items":[
+ {"metadata":{"name":"cilium-abc12","namespace":"kube-system","ownerReferences":[{"kind":"DaemonSet","name":"cilium","controller":true}]},
+  "spec":{"nodeName":"ehrlitan","containers":[{"name":"cilium-agent"}]},
+  "status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":2,"state":{"running":{}}}]}},
+ {"metadata":{"name":"web-7d9f-x1","namespace":"default","ownerReferences":[{"kind":"ReplicaSet","name":"web-7d9f","controller":true}]},
+  "spec":{"nodeName":"ehrlitan","containers":[{"name":"web"},{"name":"sidecar"}]},
+  "status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0,"state":{"running":{}}},{"ready":true,"restartCount":0,"state":{"running":{}}}]}},
+ {"metadata":{"name":"backup-29001-k7","namespace":"default","ownerReferences":[{"kind":"Job","name":"backup-29001","controller":true}]},
+  "spec":{"nodeName":"ehrlitan","containers":[{"name":"backup"}]},
+  "status":{"phase":"Pending","containerStatuses":[{"ready":false,"restartCount":0,"state":{"waiting":{"reason":"ContainerCreating"}}}]}},
+ {"metadata":{"name":"kube-proxy-ehrlitan","namespace":"kube-system","annotations":{"kubernetes.io/config.mirror":"abc"},"ownerReferences":[{"kind":"Node","name":"ehrlitan","controller":true}]},
+  "spec":{"nodeName":"ehrlitan","containers":[{"name":"kube-proxy"}]},
+  "status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0,"state":{"running":{}}}]}},
+ {"metadata":{"name":"lonely","namespace":"default"},
+  "spec":{"nodeName":"ehrlitan","containers":[{"name":"c"}]},
+  "status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0,"state":{"running":{}}}]}}
+]}

@@ -62,6 +62,67 @@ roleRef:
   name: booty-cluster-info
   apiGroup: rbac.authorization.k8s.io
 ---
+# Autopilot (--autopilot=guard|full): read nodes, pods and DaemonSets
+# cluster-wide (health gate, kured detection), cordon/uncordon and evict for
+# the API actuator's drain. Read-only in P2; the writes are only ever issued
+# by the controller of a later slice.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: booty-autopilot
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: booty-autopilot
+subjects:
+  - kind: ServiceAccount
+    name: booty
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: booty-autopilot
+  apiGroup: rbac.authorization.k8s.io
+---
+# Reboot Pods (booty node-reboot, hostPID + privileged, pinned to the node)
+# live in Booty's own namespace (POD_NAMESPACE below, --autopilotNamespace).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: booty-reboot-pods
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: booty-reboot-pods
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: booty
+    namespace: kube-system
+roleRef:
+  kind: Role
+  name: booty-reboot-pods
+  apiGroup: rbac.authorization.k8s.io
+---
 # Site-specific Butane only; hostname, SSH keys, update timer and the whole
 # kubeadm worker setup come from Booty itself.
 apiVersion: v1
@@ -137,6 +198,17 @@ spec:
             # - --k8sVersion=v1.34.3
             # - --cniVersion=v1.1.1
             - --sshAuthorizedKeysFile=/etc/booty/ssh/authorized_keys
+            # - --autopilot=guard          # P2: dry run, GET /autopilot reports the actuator
+          env:
+            # The autopilot's API actuator creates reboot Pods next to Booty
+            # from Booty's own image. The namespace comes from the downward
+            # API; the image cannot, so keep BOOTY_IMAGE equal to image: above.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: BOOTY_IMAGE
+              value: ghcr.io/jeefy/booty:main
           ports:
             - name: tftp
               containerPort: 69

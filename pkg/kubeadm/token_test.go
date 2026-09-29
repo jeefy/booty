@@ -239,7 +239,7 @@ func TestTokenRotationIsPickedUp(t *testing.T) {
 	if _, err := m.JoinString(context.Background(), "aa:bb:cc:dd:ee:01", "n1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(m.cfg.TokenFile, []byte("sa-token-2"), 0o600); err != nil {
+	if err := os.WriteFile(m.api.cfg.TokenFile, []byte("sa-token-2"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.JoinString(context.Background(), "aa:bb:cc:dd:ee:02", "n2"); err != nil {
@@ -483,7 +483,7 @@ func TestRenderedCachesPerMAC(t *testing.T) {
 
 func TestCACert(t *testing.T) {
 	_, m, _ := newFakeAPI(t)
-	fromFile, err := os.ReadFile(m.cfg.CAFile)
+	fromFile, err := os.ReadFile(m.api.cfg.CAFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +496,7 @@ func TestCACert(t *testing.T) {
 		t.Fatalf("CACert must prefer CAData: %q", got)
 	}
 	got[0] = 'x'
-	if string(inline.cfg.CAData) != "pem" {
+	if string(inline.api.cfg.CAData) != "pem" {
 		t.Fatal("CACert returns a copy")
 	}
 	if New(KubeConfig{APIServer: "https://x"}, time.Hour).CACert() != nil {
