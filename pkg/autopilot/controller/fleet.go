@@ -23,6 +23,9 @@ type Fleet interface {
 	Cached(osName string) []string
 	// Hold pins the fleet target of an OS at version ("" releases it).
 	Hold(osName, version string)
+	// SerialRollout makes the OS's fleet target follow lastGood whenever
+	// current differs from it, synchronously with a release landing.
+	SerialRollout(osName string)
 	// EffectiveTarget is the release the host boots right now.
 	EffectiveTarget(h *hardware.Host) string
 }
@@ -65,6 +68,7 @@ func (LiveFleet) SetLastGood(osName, version string) error {
 }
 func (LiveFleet) Cached(osName string) []string { return versions.CachedReleases(osName) }
 func (LiveFleet) Hold(osName, version string)   { versions.HoldFleetTarget(osName, version) }
+func (LiveFleet) SerialRollout(osName string)   { versions.SerialRollout(osName, true) }
 func (LiveFleet) EffectiveTarget(h *hardware.Host) string {
 	return versions.EffectiveTarget(h)
 }

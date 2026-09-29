@@ -31,11 +31,12 @@ type fakeFleet struct {
 	lastGood map[string]string
 	cached   map[string][]string
 	holds    map[string]string
+	serial   map[string]bool
 	updates  int
 }
 
 func newFakeFleet() *fakeFleet {
-	return &fakeFleet{hosts: map[string]*hardware.Host{}, current: map[string]string{}, lastGood: map[string]string{}, cached: map[string][]string{}, holds: map[string]string{}}
+	return &fakeFleet{hosts: map[string]*hardware.Host{}, current: map[string]string{}, lastGood: map[string]string{}, cached: map[string][]string{}, holds: map[string]string{}, serial: map[string]bool{}}
 }
 
 func (f *fakeFleet) add(h hardware.Host) {
@@ -101,11 +102,20 @@ func (f *fakeFleet) Hold(osName, version string) {
 	f.holds[osName] = version
 }
 
+func (f *fakeFleet) SerialRollout(osName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serial[osName] = true
+}
+
 func (f *fakeFleet) fleetTarget(osName string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if v := f.holds[osName]; v != "" {
 		return v
+	}
+	if lg := f.lastGood[osName]; f.serial[osName] && lg != "" && lg != f.current[osName] {
+		return lg
 	}
 	return f.current[osName]
 }
@@ -849,5 +859,32 @@ func TestShortWindowGatePasses(t *testing.T) {
 	h.wantState(macA, hardware.AutopilotIdle, 1, "")
 	if got := h.release("flatcar", "4800.0.0").Healthy; len(got) != 1 || got[0] != macA {
 		t.Fatalf("healthy list: %v", got)
+	}
+}
+
+// A release landing under full must not move a non-canary Bluefin host's
+// effective target before the controller's next tick: the hold is a
+// policy of the fleet, not a state the tick applies later.
+func TestBluefinFullHoldIsImmediateOnRelease(t *testing.T) {
+	h := newHarness(t, config.AutopilotFull)
+	h.fleet.current["bluefin"], h.fleet.lastGood["bluefin"], h.fleet.cached["bluefin"] = "26.09.673", "26.09.673", []string{"26.09.673"}
+	h.fleet.add(hardware.Host{MAC: macA, Hostname: "a", OS: "bluefin", Booted: "2026-09-28T10:00:00Z", Running: "26.09.673"})
+	h.fleet.add(hardware.Host{MAC: macB, Hostname: "b", OS: "bluefin", Booted: "2026-09-28T10:00:00Z", Running: "26.09.673", Canary: true})
+	h.tick()
+	if got := h.c.Status().OS["bluefin"]; got.Held || got.FleetTarget != "26.09.673" {
+		t.Fatalf("idle fleet: %+v", got)
+	}
+	h.fleet.current["bluefin"], h.fleet.cached["bluefin"] = "26.09.674", []string{"26.09.674", "26.09.673"}
+	hostA, _ := h.fleet.Host(macA)
+	if got := h.fleet.EffectiveTarget(hostA); got != "26.09.673" {
+		t.Fatalf("before the tick a non-canary host must still boot lastGood, got %s", got)
+	}
+	h.tick()
+	h.wantHold("bluefin", "26.09.673")
+	h.wantPin(macB, "26.09.674")
+	h.wantPin(macA, "")
+	hostA, _ = h.fleet.Host(macA)
+	if got := h.fleet.EffectiveTarget(hostA); got != "26.09.673" {
+		t.Fatalf("after the tick: %s", got)
 	}
 }

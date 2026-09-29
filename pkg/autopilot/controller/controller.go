@@ -120,6 +120,9 @@ func New(opts Options) (*Controller, error) {
 			c.opts.Fleet.Hold(osName, st.Held)
 		}
 	}
+	if c.full() {
+		c.opts.Fleet.SerialRollout("bluefin")
+	}
 	c.regenerateReports()
 	return c, nil
 }
