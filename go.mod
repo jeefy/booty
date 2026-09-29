@@ -1,9 +1,9 @@
 module github.com/jeefy/booty
 
-go 1.25.0
+go 1.26.0
 
 require (
-	github.com/ProtonMail/go-crypto v1.5.1
+	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/buger/jsonparser v1.6.1
 	github.com/coreos/butane v0.29.0
 	github.com/coreos/go-systemd/v22 v22.7.0
@@ -13,13 +13,13 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
 	github.com/j-keck/arping v1.0.3
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pin/tftp/v3 v3.2.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.57.0
 	gopkg.in/yaml.v3 v3.0.1
 	oras.land/oras-go/v2 v2.6.2
 )
@@ -55,9 +55,9 @@ require (
 	github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 // indirect
 	github.com/vincent-petithory/dataurl v1.0.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
