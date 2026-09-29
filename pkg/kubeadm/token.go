@@ -6,11 +6,9 @@
 package kubeadm
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -287,13 +285,9 @@ type clusterInfo struct {
 // MAC for half the token TTL, so the wrapper fetch and the child fetches of
 // one boot (and quick retries) share a single token.
 type Minter struct {
-	cfg KubeConfig
+	api *Client
 	ttl time.Duration
 	now func() time.Time
-
-	clientOnce sync.Once
-	client     *http.Client
-	clientErr  error
 
 	mu    sync.Mutex
 	cache map[string]cachedJoin
@@ -306,33 +300,24 @@ func New(cfg KubeConfig, ttl time.Duration) *Minter {
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
-	return &Minter{cfg: cfg, ttl: ttl, now: time.Now, cache: map[string]cachedJoin{}, locks: map[string]*sync.Mutex{}}
+	return &Minter{api: NewClient(cfg), ttl: ttl, now: time.Now, cache: map[string]cachedJoin{}, locks: map[string]*sync.Mutex{}}
 }
 
 // TTL is the token lifetime the minter writes into each Secret.
 func (m *Minter) TTL() time.Duration { return m.ttl }
 
 // APIServer is the URL the minter talks to; empty outside a cluster.
-func (m *Minter) APIServer() string { return m.cfg.APIServer }
+func (m *Minter) APIServer() string { return m.api.APIServer() }
+
+// Client is the API client the minter shares with the autopilot's cluster
+// client, so one Booty talks to one API server through one transport.
+func (m *Minter) Client() *Client { return m.api }
 
 // CACert is the PEM CA the minter verifies the API server with: the
 // kubeconfig's certificate-authority(-data), Booty's cluster CA under
 // FromCA, or the service account's ca.crt in-cluster. It is what a k0s
 // join token embeds for the worker. nil when none is configured.
-func (m *Minter) CACert() []byte {
-	if m.cfg.CAData != nil {
-		return bytes.Clone(m.cfg.CAData)
-	}
-	if m.cfg.CAFile == "" {
-		return nil
-	}
-	data, err := os.ReadFile(m.cfg.CAFile)
-	if err != nil {
-		slog.Debug("Reading API server CA failed", "file", m.cfg.CAFile, "error", err)
-		return nil
-	}
-	return data
-}
+func (m *Minter) CACert() []byte { return m.api.CACert() }
 
 // Cached returns the string minted earlier for mac (a kubeadm join string
 // or a rendered k0s token) if it is still within the cache window. It
@@ -484,11 +469,11 @@ func (m *Minter) createTokenSecret(ctx context.Context, tok Token, spec Spec, ho
 	if err != nil {
 		return err
 	}
-	resp, err := m.do(ctx, http.MethodPost, secretsPath, raw)
+	resp, err := m.api.Do(ctx, http.MethodPost, secretsPath, raw)
 	if err != nil {
 		return err
 	}
-	return drain(resp)
+	return Drain(resp)
 }
 
 func (m *Minter) clusterInfo(ctx context.Context) (clusterInfo, error) {
@@ -498,13 +483,13 @@ func (m *Minter) clusterInfo(ctx context.Context) (clusterInfo, error) {
 	if info.static || (info.endpoint != "" && m.now().Sub(info.fetched) < clusterInfoTTL) {
 		return info, nil
 	}
-	resp, err := m.do(ctx, http.MethodGet, clusterInfoPath, nil)
+	resp, err := m.api.Do(ctx, http.MethodGet, clusterInfoPath, nil)
 	if err != nil {
 		return clusterInfo{}, err
 	}
-	defer closeBody(resp)
+	defer CloseBody(resp)
 	if resp.StatusCode != http.StatusOK {
-		return clusterInfo{}, apiError(resp)
+		return clusterInfo{}, StatusFromResponse(resp)
 	}
 	var cm struct {
 		Data map[string]string `json:"data"`
@@ -606,13 +591,13 @@ func (m *Minter) Cleanup(ctx context.Context) (deleted int, err error) {
 	}
 	m.mu.Unlock()
 
-	resp, err := m.do(ctx, http.MethodGet, secretsPath+"?fieldSelector="+url.QueryEscape("type="+SecretType), nil)
+	resp, err := m.api.Do(ctx, http.MethodGet, secretsPath+"?fieldSelector="+url.QueryEscape("type="+SecretType), nil)
 	if err != nil {
 		return 0, err
 	}
-	defer closeBody(resp)
+	defer CloseBody(resp)
 	if resp.StatusCode != http.StatusOK {
-		return 0, apiError(resp)
+		return 0, StatusFromResponse(resp)
 	}
 	var list struct {
 		Items []secret `json:"items"`
@@ -626,12 +611,12 @@ func (m *Minter) Cleanup(ctx context.Context) (deleted int, err error) {
 		if !m.expiredBootyToken(s, now) {
 			continue
 		}
-		del, err := m.do(ctx, http.MethodDelete, secretsPath+"/"+url.PathEscape(s.Metadata.Name), nil)
+		del, err := m.api.Do(ctx, http.MethodDelete, secretsPath+"/"+url.PathEscape(s.Metadata.Name), nil)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		if err := drain(del); err != nil && del.StatusCode != http.StatusNotFound {
+		if err := Drain(del); err != nil && del.StatusCode != http.StatusNotFound {
 			errs = append(errs, fmt.Errorf("%s: %w", s.Metadata.Name, err))
 			continue
 		}
@@ -670,131 +655,4 @@ func secretField(s secret, key string) string {
 		return ""
 	}
 	return string(b)
-}
-
-func (m *Minter) httpClient() (*http.Client, error) {
-	m.clientOnce.Do(func() {
-		var pool *x509.CertPool
-		ca := m.cfg.CAData
-		if ca == nil && m.cfg.CAFile != "" {
-			data, err := os.ReadFile(m.cfg.CAFile)
-			if err != nil {
-				m.clientErr = fmt.Errorf("reading API server CA: %w", err)
-				return
-			}
-			ca = data
-		}
-		if ca != nil {
-			pool = x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(ca) {
-				m.clientErr = errors.New("API server CA holds no certificate")
-				return
-			}
-		}
-		tlsCfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-		if m.cfg.ClientCertData != nil || m.cfg.ClientKeyData != nil {
-			cert, err := tls.X509KeyPair(m.cfg.ClientCertData, m.cfg.ClientKeyData)
-			if err != nil {
-				m.clientErr = fmt.Errorf("loading client certificate: %w", err)
-				return
-			}
-			tlsCfg.Certificates = []tls.Certificate{cert}
-		}
-		m.client = &http.Client{
-			Timeout: requestTimeout,
-			Transport: &http.Transport{
-				Proxy:               nil,
-				TLSClientConfig:     tlsCfg,
-				TLSHandshakeTimeout: requestTimeout,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		}
-	})
-	return m.client, m.clientErr
-}
-
-func (m *Minter) bearerToken() (string, error) {
-	if m.cfg.TokenFile == "" {
-		return m.cfg.Token, nil
-	}
-	token, err := os.ReadFile(m.cfg.TokenFile)
-	if err != nil {
-		return "", fmt.Errorf("reading service account token: %w", err)
-	}
-	return strings.TrimSpace(string(token)), nil
-}
-
-func (m *Minter) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	if m.cfg.APIServer == "" {
-		return nil, ErrNotInCluster
-	}
-	client, err := m.httpClient()
-	if err != nil {
-		return nil, err
-	}
-	token, err := m.bearerToken()
-	if err != nil {
-		return nil, err
-	}
-	// The timeout must outlive this function: callers stream the body after
-	// we return, and cancelling here would abort that read mid-way.
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(m.cfg.APIServer, "/")+path, bytes.NewReader(body))
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := client.Do(req) //nolint:bodyclose // callers close via drain/closeBody
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
-	return resp, nil
-}
-
-type cancelOnClose struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-}
-
-func (c *cancelOnClose) Close() error {
-	err := c.ReadCloser.Close()
-	c.cancel()
-	return err
-}
-
-func drain(resp *http.Response) error {
-	defer closeBody(resp)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-	return apiError(resp)
-}
-
-func apiError(resp *http.Response) error {
-	var status struct {
-		Message string `json:"message"`
-		Reason  string `json:"reason"`
-	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	_ = json.Unmarshal(raw, &status)
-	if status.Message != "" {
-		return fmt.Errorf("API server returned %d %s: %s", resp.StatusCode, status.Reason, status.Message)
-	}
-	return fmt.Errorf("API server returned %d", resp.StatusCode)
-}
-
-func closeBody(resp *http.Response) {
-	if err := resp.Body.Close(); err != nil {
-		slog.Debug("Closing API response failed", "error", err)
-	}
 }
