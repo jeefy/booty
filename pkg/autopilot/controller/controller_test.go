@@ -211,6 +211,7 @@ func (h *harness) start() {
 		h.t.Fatal(err)
 	}
 	h.c = c
+	h.t.Cleanup(c.Wait)
 }
 
 func (h *harness) time() time.Time         { return time.Unix(h.clock.Load(), 0).UTC() }

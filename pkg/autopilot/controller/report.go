@@ -81,7 +81,7 @@ func (c *Controller) maybePost(key string, rep *Report) {
 	}
 	in, built := c.writeReport(key, rep)
 	c.posting[key] = true
-	go c.post(key, in, built)
+	c.spawn(func() { c.post(key, in, built) })
 }
 
 func (c *Controller) post(key string, in report.Input, built report.Report) {

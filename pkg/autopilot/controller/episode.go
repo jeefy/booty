@@ -504,7 +504,8 @@ func (c *Controller) requestReboot(e *Episode, state, why string) {
 		return
 	}
 	c.event(EventActuator, e.OS, e.Release, e.MAC, why+": draining and rebooting through the "+r.Name()+" actuator")
-	go c.actuate(r, target, e.MAC, e.Attempt)
+	mac, attempt := e.MAC, e.Attempt
+	c.spawn(func() { c.actuate(r, target, mac, attempt) })
 }
 
 func (c *Controller) actuate(r actuator.Rebooter, host actuator.Host, mac string, attempt int) {
@@ -539,7 +540,8 @@ func (c *Controller) finishActuator(e *Episode) {
 		return
 	}
 	name, host := e.Actuator, actuator.FromHardware(h)
-	go func() {
+	os, release, mac := e.OS, e.Release, e.MAC
+	c.spawn(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		r, err := c.opts.Actuators.Choose(ctx)
@@ -548,11 +550,11 @@ func (c *Controller) finishActuator(e *Episode) {
 		}
 		if err := r.Finish(ctx, host); err != nil {
 			c.mu.Lock()
-			c.event(EventActuator, e.OS, e.Release, e.MAC, name+" actuator: uncordon failed: "+err.Error())
+			c.event(EventActuator, os, release, mac, name+" actuator: uncordon failed: "+err.Error())
 			c.save()
 			c.mu.Unlock()
 		}
-	}()
+	})
 }
 
 // healthy ends the current attempt as passed.

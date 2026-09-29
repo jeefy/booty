@@ -99,6 +99,22 @@ type Controller struct {
 	actuator string
 	dirty    bool
 	posting  map[string]bool
+	bg       sync.WaitGroup
+}
+
+// Wait blocks until the background work the controller spawned (actuator
+// calls, uncordons, report posting) has finished. Run's caller uses it
+// after cancelling the context; tests use it so nothing writes state.json
+// after the test's directory is gone.
+func (c *Controller) Wait() { c.bg.Wait() }
+
+// spawn runs f in the background and tracks it for Wait.
+func (c *Controller) spawn(f func()) {
+	c.bg.Add(1)
+	go func() {
+		defer c.bg.Done()
+		f()
+	}()
 }
 
 // New loads the persisted state (if any) and re-applies the fleet holds
