@@ -18,10 +18,12 @@ Available Commands:
 
 Flags:
       --autoRegister string                Register unknown MACs on their first /booty.ipxe or /ignition.json fetch (bluefin: their first UEFI HTTP Boot netboot UKI fetch, which ProxyDHCP then offers every unknown x86-64 HTTP Boot client) as this OS (flatcar, coreos or bluefin) instead of sending them to the brig; empty disables
-      --autopilot string                   Self-healing upgrades: 'off', 'guard' (health gate, retry, downgrade and fleet hold for every OS) or 'full' (guard plus the Bluefin canary-serial rollout). P2: anything but off is a dry run that connects to the cluster (in-cluster or --kubeconfig), detects kured and reports the actuator it would use in GET /autopilot; nothing reboots (default "off")
+      --autopilot string                   Self-healing upgrades: 'off', 'guard' (health gate, retry, downgrade to lastGood and fleet hold for every OS; rollout order unchanged) or 'full' (guard plus the Bluefin canary-serial rollout, timeout/retry, quarantine and skip-to-next). Reboots go through kured when it runs in the cluster, else the Kubernetes API, else --rebootSSHKey (default "off")
       --autopilotDrainTimeout duration     How long the API actuator keeps retrying evictions refused by a PodDisruptionBudget before it gives up on draining a node (default 10m0s)
+      --autopilotHealthWindow duration     Health-gate window: how long a host has, from its observed reboot (first kernel/UKI fetch), to come back Ready with its workloads healthy (default 15m0s)
       --autopilotImage string              Image of the reboot Pods (must be Booty's own, it runs 'booty node-reboot'); defaults to the BOOTY_IMAGE environment variable, and the API actuator refuses to run without one
       --autopilotNamespace string          Namespace the autopilot's API actuator creates reboot Pods in; defaults to Booty's own (the POD_NAMESPACE downward-API variable), else kube-system
+      --autopilotRetryAfter duration       How long a release that a host rolled back from stays in TIMEOUT before the autopilot retries it once (on the Bluefin canary, or the same Flatcar/CoreOS host) (default 1h0m0s)
       --bluefinKeyring string              OpenPGP public keyring (binary as for gpgv --keyring, or armored) that must have signed a Bluefin release's SHA256SUMS (SHA256SUMS.gpg); the sync fails closed when set. Empty trusts SHA256SUMS from the release as-is
       --bluefinOCI string                  Fetch the Bluefin Server release files from this ORAS OCI artifact repository instead of GitHub releases (e.g. ghcr.io/projectbluefin/bluefin-server; tags <version> and latest; http://host:port/repo for a plain-HTTP registry). --githubToken is sent to ghcr.io only
       --bluefinRepo string                 GitHub repository whose v<version> releases provide the Bluefin Server netboot UKI, OS DDI and sysexts (default "projectbluefin/server")
@@ -113,7 +115,7 @@ booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behi
 * Configuration view (`/config`: every effective setting with its source, secrets redacted) and a Butane template editor with Butane validation, read-only aware for GitOps/ConfigMap mounts (see [Configuration view and editor](#configuration-view-and-editor))
 * Builtin Ignition fragment (hostname, SSH keys, update timer, install-complete callback, health report) merged into every host's config -- your Butane only carries what is specific to your fleet
 * Fleet status: every host reports what it is running and whether a reboot is pending (`/update-check`, `/info`), and what it looks like after boot (`/health`: failed units, journal errors, hardware)
-* Autopilot groundwork: releases are kept in `data/<os>/<version>/` behind `current`/`previous`/`lastGood` links for every OS, and a per-host `targetVersion` picks which one a machine boots and is asked to reboot into (see [Autopilot](#autopilot))
+* Autopilot: `--autopilot=guard` gates every reboot into a new release (kernel/Ignition fetched, OS up, no failed units, node Ready with its workloads healthy within 15 min), retries once, rolls the host back to `lastGood` and holds the fleet there when the release is at fault; `full` adds the Bluefin canary-serial rollout, TIMEOUT/retry, quarantine and skip-to-next. Reboots go through kured, the Kubernetes API or SSH (see [Autopilot](#autopilot))
 * `--profile=kubeadm-worker`: the whole Kubernetes worker setup (CNI, kubeadm/kubelet/kubectl/crictl, kubelet units, `kubeadm join` on every boot) as a versioned, embedded Ignition fragment
 * `--kubeadmJoin=auto`: a fresh, one-hour kubeadm bootstrap token per boot, minted through the Kubernetes API -- no long-lived token on the boot network
 * `--controlPlane=managed`: Booty generates the cluster CA and renders a whole kubeadm control plane (persistent state on `--controlPlaneDisk`, CNI installed from it) so a cluster boots from bare metal with nothing but Booty (see [Cluster bootstrap](#cluster-bootstrap))
@@ -392,9 +394,78 @@ Each check is recorded on the host (`running`, `lastCheck`, `rebootPending`, vis
 
 ## Autopilot
 
-Booty is growing into a self-healing upgrade controller: roll a release across the fleet, check that each node comes back healthy, and downgrade to the last good release when it does not. The design, state machine and remaining slices are in [docs/plans/2026-09-28-autopilot.md](docs/plans/2026-09-28-autopilot.md). What ships today is **P1, the signals and the versions**, and **P2, cluster awareness and the actuators** behind a dry run -- nothing acts on them yet:
+Booty is a self-healing upgrade controller: it rolls a release across the fleet, checks that each node comes back healthy, retries, downgrades to the last good release when it does not, and holds the fleet there. The design and the remaining slices (P4 reports, P5 verification) are in [docs/plans/2026-09-28-autopilot.md](docs/plans/2026-09-28-autopilot.md). `--autopilot=off` (the default) starts none of it and changes nothing.
 
-### Health reports
+### Modes
+
+| `--autopilot` | Does |
+|---|---|
+| `off` | Nothing. Releases, `targetVersion` and the health reports are still recorded, nothing acts on them. |
+| `guard` | Every OS: the health gate on every reboot into a release the host has not passed it on, one retry, rollback to `lastGood`, the fleet target held at `lastGood` from the first failure, TIMEOUT and a single retry, quarantine, NEEDS-HANDS. Rollout order is unchanged (kured, fleet-wide). |
+| `full` | `guard` plus, for Bluefin: the canary-serial rollout (one host at a time, canary first), the TIMEOUT retry on the canary, and skip-to-next once a release is quarantined. |
+
+Clocks: `--autopilotHealthWindow` (default `15m`, from the observed reboot, not from when kured was asked) and `--autopilotRetryAfter` (default `1h`, the TIMEOUT). The controller reconciles every 30 s and persists its state to `data/autopilot/state.json` (atomic write), so a restart resumes gates in progress with their stored `t0` and re-applies the fleet holds.
+
+### The health gate
+
+An **episode** is the attempts of one host into one release; an **attempt** is one reboot. The gate reads the signals P1 already records, in the handlers that record them:
+
+| Level | Signal | Where it comes from | Fails as |
+|---|---|---|---|
+| L0 *served* | kernel/UKI fetch: `/booty.ipxe` (Flatcar/CoreOS), the netboot UKI or its BIOS `.linux` section (Bluefin). Starts the gate clock `t0`. | `handleIPXERequest`, `recordBluefinNetboot` | a second fetch before the OS is up = `boot-loop` |
+| L0 | Ignition fetch (`/ignition.json` wrapper, `bluefin-node.ign` GET) | `recordBoot`, `serveBluefinNodeConfig` | none 5 min after L0 = `no-ignition` |
+| L1 *OS* | `POST /booted` (optionally `?running=`) and `POST /health` | `handleBootedRequest`, `handleHealthRequest` | `failedUnits` non-empty = `failed-units` (immediately) |
+| L2 *cluster* | polled every 30 s through the k8s client: Node `Ready` and stable for 5 min, `nodeInfo.osImage` not naming another cached release, every DaemonSet pod Ready, no pod in `CrashLoopBackOff`/`ImagePullBackOff`/`Error`/`Failed` or `Pending` for over 5 min **that was not already so in the baseline** sample taken at `t0` | `k8s.Client.Sample` | at the end of the window: `node-not-ready` or `workloads-unhealthy` |
+| — | nothing fetched within a window after the controller asked for a reboot (node NotReady, or an actuator rebooted it) | — | `hung` |
+| — | the window elapsed before L1 | — | `timeout` |
+
+Without a cluster client (or a host without a hostname) the gate is L1 only and says so in the episode note. Job pods and pods that were already unhealthy before the reboot never count.
+
+### State machine
+
+```
+R cached ─► fleet target = R (full + Bluefin: canary first, then one host at a time;
+            everything else: kured order as today)
+host reboots into R ─► health gate
+   healthy ─► when every host of that OS that has booted is healthy on R: lastGood = R
+   failed  ─► fleet target held at lastGood; attempt 2: reboot again (same target, host pinned to R)
+      healthy ─► hold released, continue
+      failed  ─► targetVersion = lastGood, reboot, gate
+                  healthy on lastGood ─► the release is bad: hold stays, R enters TIMEOUT,
+                                         report stub drafted
+                  failed on lastGood  ─► NEEDS-HANDS (alert, left on lastGood, release not blamed)
+R in TIMEOUT for --autopilotRetryAfter ─► retry once (full + Bluefin: on the canary;
+                                          otherwise on the host that failed)
+   healthy ─► release leaves TIMEOUT, rollout resumes
+   failed  ─► R QUARANTINED, host back on lastGood; full + Bluefin: pick the newest cached
+              release that is neither quarantined nor in TIMEOUT and start again, else stay
+hung (nothing fetched within the window) ─► NEEDS-HANDS: no actuator can reach a machine
+                                            that is not up, and there is no BMC
+```
+
+Per host the state is `idle`, `rolling` (reboot requested, not yet observed), `gating`, `retrying` (attempt 2 requested), `rolled-back` (on `lastGood`) or `needs-hands`, shown with the attempt and the last class on the host record (`autopilot` field), in `/hosts`, the Hosts table and the Autopilot page. Per release: `rolling`, `timeout`, `quarantined`, `good`.
+
+**The fleet hold** is how a bad release stops after one node: while a host is failing on the current release, or the release is in TIMEOUT/quarantined, `FleetTarget(os)` answers `lastGood` instead of `current`, so every render and `/update-check` for hosts without a `targetVersion` follow it (hosts that already booted the bad release are asked to reboot back). Under `full` the Bluefin fleet target is held at `lastGood` for the whole rollout and hosts move one at a time through a controller-set `targetVersion` (shown as *pinned*), cleared once `lastGood` advances. The controller only ever clears pins it set.
+
+**Canary order** (Bluefin, `full`): hosts with `canary: true` sorted by MAC, then workers by MAC, then control planes; installed Bluefin hosts never take part. `canary` is a host field (`/register`, the host form) and is accepted for every OS.
+
+### Actuators
+
+Chosen at each use, in this order: **kured** if a kured DaemonSet exists (Booty does nothing itself: `/update-check` answers `rebootRequired:true` while the host's target differs from what it runs, *and* while the controller is waiting for it to reboot into the same release again, so attempt 2 works), else the **Kubernetes API** (cordon, evict, a privileged reboot Pod from Booty's own image; uncordon after the gate passes), else **SSH**. With no actuator at all the controller still gates, holds and downgrades through `targetVersion`, logs that it cannot force a reboot, and waits for the host's own update timer. Actuators are called from the controller only; a boot loop supplies its own next attempt. Details in [Cluster awareness and actuators](#cluster-awareness-and-actuators).
+
+### Endpoints and UI
+
+* `GET /autopilot`: `mode`, `actuator`, `cluster` (from P2), `dryRun` (`true` only when off), `healthWindow`, `retryAfter`, per-OS `os.<name>: {fleetTarget, current, lastGood, held, releases:[{version, state, since, attempts, class, report, healthy, failedOn, failing}]}`, per-host `hosts:[{mac, os, healthyOn, pinned, episode}]` with the episode's attempts and relative timeline, `events` (a ring of the last 200; the text never carries hostnames, IPs or MACs, the MAC is a field), `reports` (the stubs), `held`, `quarantined`, `needsHands`.
+* `POST /autopilot/{os}/release/{version}/clear` un-quarantines (or ends the TIMEOUT of) a release so the fleet tries it again; like `/register` it needs nothing but reach to the port (see [Trust model](#trust-model)). `409` when the release is not in a state to clear.
+* `GET /info` gains `"autopilot":{"mode","actuator","held":[os…],"quarantined":n,"needsHands":n}`.
+* The **Autopilot** page shows mode, actuator, cluster and attention counters, the fleet target/`current`/`lastGood` per OS with the hold, every release with its state and since when, the per-host state table (attempt, class, note), the report stubs and the event timeline, with a *Clear* button on quarantined/TIMEOUT releases. The host form has the *Autopilot canary* checkbox and the Hosts table shows `canary` and the episode state as badges.
+* `alert` events (NEEDS-HANDS, failed actuator writes) are also logged at error level.
+
+**Reports** in P3 are stubs: for every release the autopilot blames it records in `state.json` what P4's redacting builder needs (attempts with classes and relative timelines, DMI vendor/product/BIOS, firmware, kernel, boot path, kubelet/osImage/runtime, the rollback result, the raw journal excerpt and a hash of the DMI UUID) and emits a `report` event. `GET /autopilot` lists them without the journal excerpt.
+
+**Safety.** Never more than one Bluefin host is rolling under `full`; under `guard` the rollout order is not changed, only held. `lastGood` only advances when every host of the OS that has ever booted is healthy on the release. A host that fails on `lastGood` too is a sick node, not a bad release: it is left alone and flagged, the release is not blamed and the hold released. Nothing in the controller writes to the cluster except through an actuator; the tests assert the fake API server sees GETs only.
+
+### Health reports (P1)
 
 `POST /health?mac=<mac>` is what the `health` builtin's `booty-health.service` calls once a node reaches `multi-user.target` (on Flatcar, CoreOS and diskless Bluefin alike; see [Composition](#composition) for the body). Registered hosts only (404 otherwise); the body is capped at 64 KiB and every field is trimmed and bounded server-side (at most 200 failed units, 50 journal lines of 300 bytes within 8 KiB, `firmware` must be `uefi` or `bios`). The report is stored as the host's `health` field with a `receivedAt` stamp and shows in `/hosts`, `/booty.json` and the UI:
 
@@ -407,9 +478,9 @@ Booty is growing into a self-healing upgrade controller: roll a release across t
 
 A report replaces the previous one; a repeated POST from the same boot (same `bootID`) converges on the same stored state and is logged at debug level only. It sets the host's `running` when the update check has not yet. Journal lines may carry hostnames and addresses, so Booty logs them at debug level only -- the info-level log has counts, the release, the firmware and the kernel.
 
-### Cluster awareness and actuators
+### Cluster awareness and actuators (P2)
 
-`--autopilot=guard|full` (default `off`) turns on the groundwork the controller of the next slice will drive. In P2 it is a **dry run**: Booty connects to the cluster, works out how it *would* reboot a host, logs that at start-up and answers `GET /autopilot`; nothing reboots, cordons or evicts. `off` skips all of it (`/autopilot` answers `{"mode":"off","actuator":"none","dryRun":true}`).
+With `--autopilot=guard|full` Booty connects to the cluster, detects kured and chooses the actuator the controller uses; `off` skips all of it (`/autopilot` answers `{"mode":"off","actuator":"none","dryRun":true}`).
 
 **Cluster client.** The same plain `net/http` client the token minter uses (in-cluster service account, or `--kubeconfig`; `--controlPlane=managed` shares the minter's admin certificate), extended to read nodes (Ready condition and its transition time, `spec.unschedulable`, the control-plane label, `nodeInfo`: `systemUUID`, kubelet, OS image, kernel, runtime, kured's `weave.works/kured-*` annotations), the pods on a node across all namespaces (phase, ready/restart counts, controlling owner, mirror pods) and the DaemonSets. Failures are typed: unreachable, forbidden (RBAC), not found. On it sits the **health-gate primitive** the controller will poll every 30 s: a node is healthy when it is `Ready`, every pod on it that is not a Job's is `Running` with all containers ready (or `Succeeded`), and no container restarted since the baseline sample taken before the reboot.
 
@@ -423,21 +494,21 @@ The node name is the host's `hostname` (both OS paths set it from Booty); when t
 
 **RBAC** for the API paths ([examples/k8s.yaml](examples/k8s.yaml)): a `ClusterRole` with `nodes` get/list/watch/patch, `pods` get/list/watch, `pods/eviction` create and `apps/daemonsets` get/list/watch, and a `Role` in Booty's namespace with `pods` create/delete/get for the reboot Pods. The Deployment also sets `POD_NAMESPACE` (downward API) and `BOOTY_IMAGE` (a literal; keep it equal to the container image, the downward API cannot supply it).
 
-`GET /autopilot` in P2:
+The cluster block of `GET /autopilot`:
 
 ```json
-{"mode":"guard","cluster":{"reachable":true,"kured":true,"nodes":6,"apiServer":"https://..."},"actuator":"kured","dryRun":true}
+{"mode":"guard","cluster":{"reachable":true,"kured":true,"nodes":6,"apiServer":"https://..."},"actuator":"kured","dryRun":false, ...}
 ```
 
-`cluster.reachable` is whether the node list succeeded (a 403 still counts as reachable and carries the RBAC error in `cluster.error`; a dead server does not), `actuator` is `kured`, `api`, `ssh` or `none`, and `sshUsers` names the per-OS logins when it is `ssh`. The only code that builds an eviction or a reboot Pod is behind the actuator methods; P2's wiring never calls them (the test suite asserts the endpoint issues nothing but GETs against a fake API server).
+`cluster.reachable` is whether the node list succeeded (a 403 still counts as reachable and carries the RBAC error in `cluster.error`; a dead server does not), `actuator` is `kured`, `api`, `ssh` or `none`, and `sshUsers` names the per-OS logins when it is `ssh`. The only code that builds an eviction or a reboot Pod is behind the actuator methods, and only the controller calls them (the test suite asserts `GET /autopilot` and the controller's own polling issue nothing but GETs against a fake API server).
 
-### Releases and retention
+### Releases and retention (P1)
 
-Every OS keeps its releases in `data/<os>/<version>/` behind three relative symlinks: `current` (the fleet target, repointed atomically once a release is fully on disk and verified), `previous` (the release `current` replaced, so hosts mid-boot can finish) and `lastGood` (the newest release the whole fleet was healthy on). P1 initialises `lastGood` to `current` once and leaves it there; the controller of a later slice moves it. **Pruning keeps exactly the releases `current`, `previous`, `lastGood` and any registered host's `targetVersion` name**, and removes every other release directory -- so a bad release can be rolled back to `lastGood` without a download, at the cost of up to three releases on disk per OS (roughly 1.2 GB Flatcar, 3 GB CoreOS, 2.5 GB Bluefin).
+Every OS keeps its releases in `data/<os>/<version>/` behind three relative symlinks: `current` (the newest release, repointed atomically once it is fully on disk and verified), `previous` (the release `current` replaced, so hosts mid-boot can finish) and `lastGood` (the newest release the whole fleet was healthy on). `lastGood` is initialised to `current` once; the autopilot controller moves it, and holds the fleet target at it after a failure (see [Autopilot](#autopilot)). **Pruning keeps exactly the releases `current`, `previous`, `lastGood` and any registered host's `targetVersion` name**, and removes every other release directory -- so a bad release can be rolled back to `lastGood` without a download, at the cost of up to three releases on disk per OS (roughly 1.2 GB Flatcar, 3 GB CoreOS, 2.5 GB Bluefin).
 
 Booty migrates older data directories on start-up, idempotently and logged as `… release layout migrated`: Flatcar's top-level `flatcar_production_pxe.vmlinuz`/`flatcar_production_pxe_image.cpio.gz` (plain files from the earliest releases, or symlinks into `flatcar/<version>/`) end up in `flatcar/<version>/` with `current` pointing at the version from `version.txt`; CoreOS's flat `fedora-coreos-<version>-live-*` files move into `coreos/<version>/`; Bluefin's `bluefin/<version>/` with `current`/`previous` only gains `lastGood`. `flatcar_pin.txt` and `version.txt` stay where they are. The top-level names remain as symlinks into `<os>/current` (`data/flatcar_production_pxe.vmlinuz -> flatcar/current/flatcar_production_pxe.vmlinuz`), so `/data/<old name>` keeps serving the current release; `/data/<os>/<version>/…` serves any retained one.
 
-### Per-host `targetVersion`
+### Per-host `targetVersion` (P1)
 
 Each host may carry `targetVersion` (`/register`, `/hosts`, `/booty.json`): empty, or a cached release of the host's OS (`400` otherwise, naming the cached ones). Every render honours it: a Flatcar host's `/booty.ipxe` fetches `data/flatcar/<version>/…`, a CoreOS host's `data/coreos/<version>/…` with `VERSION` set to it, and a Bluefin host's `/bluefin/<mac>/` directory serves that release's netboot UKI, DDI, `SHA256SUMS`, BIOS `.linux`/`.initrd`/`.ucode` sections and a node Ignition whose sysexts, kubeadm sysext and install unit name it (the chainload and BIOS menus show its version). A `targetVersion` that has since been pruned falls back to the fleet target with a warning in the log. `/update-check` answers from the same effective target, so setting `targetVersion` on a host is how you hold it on, or move it to, a specific release: kured drains and reboots it, and it comes back running that release.
 
@@ -713,9 +784,9 @@ Out of scope for now: HTTPS Boot (some vendor firmware is built to allow only `h
 
 ## Trust model
 
-Booty is meant to run on a network you control. It has **no authentication**: anyone who can reach the HTTP port can register hosts (and set their `targetVersion`), POST a health report for any registered MAC, read any registered host's rendered Ignition (including the kubeadm join string and the builtin SSH keys) via `/ignition.json?mac=` or `/ignition/builtin.json?mac=`, download boot artifacts, and -- through the [configuration editor](#configuration-view-and-editor) -- read the effective configuration (`joinString` and `githubToken` redacted) and, unless the data directory is mounted read-only, rewrite the Butane template every host boots with. This is inherent to PXE -- the booting machine has no credentials yet -- so treat the boot VLAN like you treat your DHCP server.
+Booty is meant to run on a network you control. It has **no authentication**: anyone who can reach the HTTP port can register hosts (and set their `targetVersion` or `canary`), un-quarantine a release, POST a health report for any registered MAC, read any registered host's rendered Ignition (including the kubeadm join string and the builtin SSH keys) via `/ignition.json?mac=` or `/ignition/builtin.json?mac=`, download boot artifacts, and -- through the [configuration editor](#configuration-view-and-editor) -- read the effective configuration (`joinString` and `githubToken` redacted) and, unless the data directory is mounted read-only, rewrite the Butane template every host boots with. This is inherent to PXE -- the booting machine has no credentials yet -- so treat the boot VLAN like you treat your DHCP server.
 
-With `--kubeadmJoin=static` the join string is whatever you configured, typically a never-expiring token that grants node-join to anyone who reads it. Prefer `--kubeadmJoin=auto`: each real boot gets its own token that expires after `--joinTokenTTL` (1 h by default) and is deleted afterwards, so what leaks over the boot VLAN is worth at most one hour of node-join; previews never mint. k0s workers get the same one-hour tokens whenever Booty can reach the API (managed, or external with `--kubeconfig`), and the pre-shared 7-day token only while it cannot. Booty's own credential for that is its service account, scoped by the Roles in [examples/k8s.yaml](examples/k8s.yaml) to creating/listing/deleting Secrets in `kube-system` and reading `cluster-info`. The autopilot's `ClusterRole` adds node patching, pod eviction and, in Booty's namespace, creating privileged `hostPID` reboot Pods -- the power to drain and reboot any node, which is what a reboot controller is; it is only granted (and only used) once `--autopilot` is on, and P2 never exercises the write half (see [Cluster awareness and actuators](#cluster-awareness-and-actuators)).
+With `--kubeadmJoin=static` the join string is whatever you configured, typically a never-expiring token that grants node-join to anyone who reads it. Prefer `--kubeadmJoin=auto`: each real boot gets its own token that expires after `--joinTokenTTL` (1 h by default) and is deleted afterwards, so what leaks over the boot VLAN is worth at most one hour of node-join; previews never mint. k0s workers get the same one-hour tokens whenever Booty can reach the API (managed, or external with `--kubeconfig`), and the pre-shared 7-day token only while it cannot. Booty's own credential for that is its service account, scoped by the Roles in [examples/k8s.yaml](examples/k8s.yaml) to creating/listing/deleting Secrets in `kube-system` and reading `cluster-info`. The autopilot's `ClusterRole` adds node patching, pod eviction and, in Booty's namespace, creating privileged `hostPID` reboot Pods -- the power to drain and reboot any node, which is what a reboot controller is; it is only granted (and only used) once `--autopilot` is on, and only the controller's API actuator exercises the write half (see [Autopilot](#autopilot)). `POST /autopilot/{os}/release/{version}/clear` is as open as `/register`.
 
 What Booty does enforce: TFTP and HTTP file serving are confined to `--dataDir` (no path traversal, no directory listings), `hardware.json`, the version pin file, temp files, the OCI blob store and everything under `cluster/` (the cluster CA and bootstrap tokens, see [Cluster bootstrap](#cluster-bootstrap)) are never served over `/data/`, Ignition template paths from the hardware database must stay inside `--dataDir`, and all inputs (MACs, hostnames, OS names, roles, versions, `installDisk`, `stateDisk`, `extensions`, `mode`) are validated. A Bluefin host's `bluefin-node.ign` is as readable on the boot VLAN as any other host's Ignition (a k0s controller's carries the cluster CA key, exactly like a Flatcar controller's). Bluefin releases are verified against `SHA256SUMS`, and with `--bluefinKeyring` against its signature, before Booty serves them; the nodes verify the signature themselves as well. `--autoRegister` widens this further; read [Auto-registration](#auto-registration) before turning it on.
 
