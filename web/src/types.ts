@@ -12,9 +12,17 @@ export function acceptsInstallDisk(os: HostOS | '' | undefined): boolean {
 export const ROLE_OPTIONS = ['worker', 'control-plane'] as const
 export type HostRole = (typeof ROLE_OPTIONS)[number]
 
-/** Bluefin Server opt-in sysexts; kubestellar runs on k0s and needs it. */
-export const BLUEFIN_EXTENSIONS = ['zfs', 'kubestellar', 'k0s'] as const
-export type BluefinExtension = (typeof BLUEFIN_EXTENSIONS)[number]
+/** Bluefin Server opt-in sysexts with a fixed name; kubestellar runs on k0s and needs it. */
+export const BLUEFIN_EXTENSIONS = ['zfs', 'kubestellar', 'k0s', 'nvidia-container-toolkit'] as const
+
+/**
+ * NVIDIA driver sysext, one per host and not alongside zfs. The server
+ * accepts any nvidia-open-<branch>; the known branches are only suggestions.
+ */
+export type NvidiaDriverFlavour = `nvidia-open-${number}`
+export const NVIDIA_DRIVER_FLAVOURS: readonly NvidiaDriverFlavour[] = ['nvidia-open-595']
+
+export type BluefinExtension = (typeof BLUEFIN_EXTENSIONS)[number] | NvidiaDriverFlavour
 
 /** Bluefin Server boot modes; the server treats "" as `diskless`. */
 export const BLUEFIN_MODES = ['diskless', 'installed'] as const

@@ -147,9 +147,31 @@ describe('HostForm', () => {
     expect(fields.findAll('input[type="checkbox"]').map((o) => o.attributes('id'))).toEqual([
       'ext-zfs-aa:bb:cc:dd:ee:01',
       'ext-kubestellar-aa:bb:cc:dd:ee:01',
-      'ext-k0s-aa:bb:cc:dd:ee:01'
+      'ext-k0s-aa:bb:cc:dd:ee:01',
+      'ext-nvidia-container-toolkit-aa:bb:cc:dd:ee:01'
     ])
     expect(fields.text()).toContain('kubestellar needs k0s')
+    expect(fields.findAll('datalist option').map((o) => o.attributes('value'))).toEqual([
+      'nvidia-open-595'
+    ])
+  })
+
+  it('keeps one NVIDIA driver flavour next to the fixed extensions', async () => {
+    const model = draft({ os: 'bluefin', extensions: ['k0s', 'nvidia-open-595'] })
+    const wrapper = mountForm(model)
+    const input = wrapper.find('input[id^="nvidia-"]')
+    expect((input.element as HTMLInputElement).value).toBe('nvidia-open-595')
+
+    await wrapper.find('#ext-nvidia-container-toolkit-aa\\:bb\\:cc\\:dd\\:ee\\:01').setValue(true)
+    await input.setValue(' NVIDIA-open-615 ')
+    expect(model.extensions).toEqual(['k0s', 'nvidia-container-toolkit', 'nvidia-open-615'])
+
+    await input.setValue('nvidia-open-beta')
+    expect(model.extensions).toEqual(['k0s', 'nvidia-container-toolkit', 'nvidia-open-beta'])
+    expect((input.element as HTMLInputElement).value).toBe('nvidia-open-beta')
+
+    await input.setValue('')
+    expect(model.extensions).toEqual(['k0s', 'nvidia-container-toolkit'])
   })
 
   it('offers the autopilot canary checkbox for every OS and writes it into the draft', async () => {
