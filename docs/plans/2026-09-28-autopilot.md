@@ -9,7 +9,7 @@ next one.
 
 | Topic | Decision |
 |---|---|
-| Actuator | Booty is cluster-aware. **kured** if it exists in the cluster (the default); else the Kubernetes API (drain + reboot); else SSH when Booty is not in a cluster. |
+| Actuator | Booty is cluster-aware. **kured** if it exists in the cluster (the default); else SSH when `--rebootSSHKey` is set; else the Kubernetes API (drain + reboot Pod) as the last resort. *(Order changed 2026-09-30: was kured → API → SSH.)* |
 | Healthy | Node `Ready` **and** the workloads that belong on the node scheduled and healthy, within **15 min**. |
 | Reports | **No PII**: no hostname, MAC or IP. Machine and cluster information only. |
 | Canary | `canary: true` host field; default the first non-control-plane host. |
@@ -67,8 +67,10 @@ Bluefin canary order: hosts with `canary: true` (sorted), else the first `role !
 ## Actuators (chosen at each use, in this order)
 
 1. **kured** present (a DaemonSet named `kured` or labelled `app=kured` in any namespace): `/update-check` for the host answers `rebootRequired:true` while `targetVersion != running`; the node's `booty-update.timer` touches the sentinel; kured drains, reboots, uncordons. Booty never touches kured's lock.
-2. **Kubernetes API** (in-cluster or `--kubeconfig`): cordon (`PATCH nodes/<n>` `spec.unschedulable`), evict pods (`pods/eviction`, honouring PDBs, skipping DaemonSet pods), then a **reboot Pod** on the node: Booty's own image, `hostPID: true`, privileged, `command: [/booty, node-reboot]` which sends `SIGRTMIN+5` to PID 1 (systemd: `reboot.target`) after `sync`. Uncordon after L2 passes. RBAC: `nodes` get/list/watch/patch, `pods` list/watch (all namespaces) + create/delete in Booty's namespace, `pods/eviction` create, `daemonsets` list.
-3. **SSH** (`--rebootSSHKey`, users `root` for Bluefin, `core` + `sudo` for Flatcar/CoreOS): `systemctl reboot`; drain via the API first when a kubeconfig is available, else none.
+2. **SSH** (`--rebootSSHKey`, users `root` for Bluefin, `core` + `sudo` for Flatcar/CoreOS): `systemctl reboot`; drain via the API first when a kubeconfig is available, else none.
+3. **Kubernetes API** (in-cluster or `--kubeconfig`; the last resort): cordon (`PATCH nodes/<n>` `spec.unschedulable`), evict pods (`pods/eviction`, honouring PDBs, skipping DaemonSet pods), then a **reboot Pod** on the node: Booty's own image, `hostPID: true`, privileged, `command: [/booty, node-reboot]` which sends `SIGRTMIN+5` to PID 1 (systemd: `reboot.target`) after `sync`. Uncordon after L2 passes. RBAC: `nodes` get/list/watch/patch, `pods` list/watch (all namespaces) + create/delete in Booty's namespace, `pods/eviction` create, `daemonsets` list.
+
+**Changed 2026-09-30**: the order was kured → API → SSH; it is now kured → SSH → API. An operator who hands Booty an SSH key has chosen how nodes are rebooted; the privileged hostPID reboot Pod is the last resort when neither kured nor a key exists. SSH keeps draining through the API client when one is reachable.
 
 The node name for API calls is the host's `hostname` (both OS paths set it from Booty); matching is confirmed via `nodeInfo.systemUUID` ↔ the `/health` DMI UUID hash where available, never by MAC in the report.
 

@@ -50,11 +50,20 @@ func TestChooseOrder(t *testing.T) {
 	}
 	now = now.Add(6 * time.Minute)
 	r, err = c.Choose(ctx)
-	if err != nil || r.Name() != NameAPI {
-		t.Fatalf("no kured, API reachable: %v %v", r, err)
+	if err != nil || r.Name() != NameSSH {
+		t.Fatalf("no kured, API reachable, key set: SSH wins over the API: %v %v", r, err)
+	}
+	if r.(*SSH).Drain != client {
+		t.Fatal("a reachable API must still drain for SSH")
 	}
 	if got := api.Writes(); len(got) != 0 {
 		t.Fatalf("choosing and inspecting must never write: %v", got)
+	}
+
+	c = NewChooser(Options{Client: client, Now: func() time.Time { return now }})
+	r, err = c.Choose(ctx)
+	if err != nil || r.Name() != NameAPI {
+		t.Fatalf("no kured, API reachable, no key: the API is the last resort: %v %v", r, err)
 	}
 
 	dead := k8s.FromConfig(kubeadmConfig("https://127.0.0.1:1"))

@@ -1,9 +1,12 @@
 // Package actuator is how the autopilot makes a host reboot: through
-// kured's sentinel when kured runs in the cluster, through the Kubernetes
-// API (cordon, evict, a privileged reboot Pod) when Booty can reach it,
-// or over SSH. Choose picks one in that order. Every Rebooter is a plain
-// value that does nothing until Prepare/Reboot/Finish are called; the
-// controller (plan P3) is the only caller, P2 only reports which one
+// kured's sentinel when kured runs in the cluster, over SSH when the
+// operator handed Booty a key, or through the Kubernetes API (cordon,
+// evict, a privileged reboot Pod) when Booty can reach it. Choose picks
+// one in that order: an operator who configured --rebootSSHKey has chosen
+// how nodes are rebooted, and the privileged hostPID reboot Pod is the
+// last resort when neither kured nor a key exists. Every Rebooter is a
+// plain value that does nothing until Prepare/Reboot/Finish are called;
+// the controller (plan P3) is the only caller, P2 only reports which one
 // would be used.
 package actuator
 
@@ -110,8 +113,8 @@ type Options struct {
 }
 
 // Chooser applies the plan's order at each use: kured if present (cached
-// for KuredTTL), else the API when reachable, else SSH when a key is
-// configured.
+// for KuredTTL), else SSH when a key is configured, else the API when
+// reachable.
 type Chooser struct {
 	opts Options
 
@@ -186,10 +189,13 @@ func (c *Chooser) noteFailure(err error) {
 	c.kured, c.kuredChecked, c.kuredErr = false, c.opts.Now(), err
 }
 
-// Choose picks the actuator for this moment. The cluster is "reachable"
-// when the kured lookup succeeded; a client that answers 403 still counts
-// as reachable for the API actuator (its own calls will say what RBAC is
-// missing), a transport failure does not.
+// Choose picks the actuator for this moment: kured when it runs in the
+// cluster, SSH when --rebootSSHKey is set (an operator who handed Booty a
+// key has chosen how nodes are rebooted), the API's privileged reboot Pod
+// as the last resort. The cluster is "reachable" when the kured lookup
+// succeeded; a client that answers 403 still counts as reachable for the
+// API actuator (its own calls will say what RBAC is missing) and still
+// drains for SSH, a transport failure does neither.
 func (c *Chooser) Choose(ctx context.Context) (Rebooter, error) {
 	present, err := c.Kured(ctx)
 	if err != nil && !k8s.IsUnreachable(err) && !k8s.IsForbidden(err) {
@@ -198,14 +204,14 @@ func (c *Chooser) Choose(ctx context.Context) (Rebooter, error) {
 	switch {
 	case present:
 		return Kured{}, nil
-	case c.opts.Client != nil && c.opts.Client.Configured() && !k8s.IsUnreachable(err):
-		return &API{Client: c.opts.Client, Namespace: c.opts.Namespace, Image: c.opts.Image, DrainTimeout: c.opts.DrainTimeout}, nil
 	case c.opts.SSHKeyPath != "":
 		var drain *k8s.Client
 		if c.opts.Client != nil && c.opts.Client.Configured() && !k8s.IsUnreachable(err) {
 			drain = c.opts.Client
 		}
 		return &SSH{KeyPath: c.opts.SSHKeyPath, KnownHosts: c.opts.KnownHosts, Drain: drain, DrainTimeout: c.opts.DrainTimeout}, nil
+	case c.opts.Client != nil && c.opts.Client.Configured() && !k8s.IsUnreachable(err):
+		return &API{Client: c.opts.Client, Namespace: c.opts.Namespace, Image: c.opts.Image, DrainTimeout: c.opts.DrainTimeout}, nil
 	}
 	return nil, ErrNoActuator
 }
