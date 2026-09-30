@@ -17,6 +17,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/viper"
@@ -203,6 +204,135 @@ func TestSelectBluefinArtifacts(t *testing.T) {
 			t.Error("short hash must fail")
 		}
 	})
+}
+
+func TestSelectBluefinNvidiaArtifacts(t *testing.T) {
+	const ver = "20260927.123"
+	line := func(hash byte, name string) string { return strings.Repeat(string(hash), 64) + " *" + name + "\n" }
+	base := line('1', "bluefin-server-netboot_"+ver+".efi") + line('2', "bluefin-server_"+ver+".raw")
+	cases := []struct {
+		name string
+		sums string
+		want map[string]string
+	}{
+		{
+			name: "no NVIDIA sysexts in the release",
+			sums: base + line('c', "zfs_"+ver+".raw.zst"),
+			want: map[string]string{"zfs": "zfs_" + ver + ".raw.zst zfs_" + ver + ".raw c"},
+		},
+		{
+			name: "driver locked to the image version, toolkit on its own",
+			sums: base +
+				line('n', "nvidia-open-595_"+ver+".raw.zst") +
+				line('o', "nvidia-open-595_20260926.200.raw.zst") +
+				line('t', "nvidia-container-toolkit-1.20.1.raw.zst"),
+			want: map[string]string{
+				"nvidia-open-595":          "nvidia-open-595_" + ver + ".raw.zst nvidia-open-595_" + ver + ".raw n",
+				"nvidia-container-toolkit": "nvidia-container-toolkit-1.20.1.raw.zst nvidia-container-toolkit-1.20.1.raw t",
+			},
+		},
+		{
+			name: "every driver branch of the version, none that only looks like one",
+			sums: base +
+				line('n', "nvidia-open-595_"+ver+".raw.zst") +
+				line('m', "nvidia-open-615_"+ver+".raw.zst") +
+				line('x', "nvidia-open-beta_"+ver+".raw.zst") +
+				line('y', "nvidia-595_"+ver+".raw.zst") +
+				line('z', "nvidia-open-595_"+ver+".raw"),
+			want: map[string]string{
+				"nvidia-open-595": "nvidia-open-595_" + ver + ".raw.zst nvidia-open-595_" + ver + ".raw n",
+				"nvidia-open-615": "nvidia-open-615_" + ver + ".raw.zst nvidia-open-615_" + ver + ".raw m",
+			},
+		},
+		{
+			name: "only an older image's driver",
+			sums: base + line('o', "nvidia-open-595_20260926.200.raw.zst"),
+			want: map[string]string{},
+		},
+		{
+			name: "several toolkits are ambiguous and skipped",
+			sums: base + line('t', "nvidia-container-toolkit-1.20.1.raw.zst") + line('u', "nvidia-container-toolkit-1.21.0.raw.zst") + line('a', "k0s-1.36.4-k0s.0.raw.zst"),
+			want: map[string]string{"k0s": "k0s-1.36.4-k0s.0.raw.zst k0s-1.36.4-k0s.0.raw a"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sums, err := parseSHA256SUMS(strings.NewReader(tc.sums))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, sysexts, err := selectBluefinArtifacts(ver, sums)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]string{}
+			for _, s := range sysexts {
+				got[s.name] = s.asset + " " + s.raw() + " " + s.sha256[:1]
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("sysexts %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMissingRequestedSysexts(t *testing.T) {
+	const ver = "20260927.123"
+	m := BluefinManifest{Version: ver, Sysexts: map[string]BluefinSysext{"zfs": {}, "nvidia-container-toolkit": {}}}
+	hosts := map[string]*hardware.Host{
+		"aa:00:00:00:00:02": {OS: "bluefin", Hostname: "gpu", Extensions: []string{"nvidia-container-toolkit", "nvidia-open-595"}},
+		"aa:00:00:00:00:01": {OS: "bluefin", Hostname: "gpu-old", Extensions: []string{"k0s", "nvidia-open-595"}},
+		"aa:00:00:00:00:03": {OS: "bluefin", Hostname: "storage", Extensions: []string{"zfs"}},
+		"aa:00:00:00:00:04": {OS: "bluefin", Hostname: "pinned", Extensions: []string{"nvidia-open-595"}, TargetVersion: "20260926.200"},
+		"aa:00:00:00:00:05": {OS: "bluefin", Hostname: "pinned-here", Extensions: []string{"nvidia-open-595"}, TargetVersion: ver},
+		"aa:00:00:00:00:06": {OS: "flatcar", Hostname: "flatcar"},
+		"aa:00:00:00:00:07": nil,
+	}
+	got := missingRequestedSysexts(m, hosts)
+	want := []sysextGap{
+		{mac: "aa:00:00:00:00:01", hostname: "gpu-old", missing: []string{"k0s", "nvidia-open-595"}},
+		{mac: "aa:00:00:00:00:02", hostname: "gpu", missing: []string{"nvidia-open-595"}},
+		{mac: "aa:00:00:00:00:05", hostname: "pinned-here", missing: []string{"nvidia-open-595"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestBluefinVersionCheckInstallsNvidiaSysexts(t *testing.T) {
+	const ver = "20260927.123"
+	rel := newFakeRelease(t, ver, map[string]string{
+		"nvidia-open-595_" + ver + ".raw.zst":     "NVIDIA-595",
+		"nvidia-container-toolkit-1.20.1.raw.zst": "NVIDIA-CTK",
+	})
+	srv, _ := fakeGitHub(t, releasesJSON(ver), rel)
+	dir := setupBluefin(t, srv.URL)
+
+	BluefinVersionCheck()
+
+	if got := state.CurrentBluefinVersion(); got != ver {
+		t.Fatalf("current=%q want %s", got, ver)
+	}
+	relDir := filepath.Join(dir, "bluefin", ver)
+	m, err := LoadBluefinManifest(relDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]BluefinSysext{
+		"nvidia-open-595":          {File: "nvidia-open-595_" + ver + ".raw", Sha256: sha("NVIDIA-595")},
+		"nvidia-container-toolkit": {File: "nvidia-container-toolkit-1.20.1.raw", Sha256: sha("NVIDIA-CTK")},
+	}
+	if !reflect.DeepEqual(m.Sysexts, want) {
+		t.Fatalf("sysexts %+v", m.Sysexts)
+	}
+	for _, s := range want {
+		if got := sha(readText(t, filepath.Join(relDir, s.File))); got != s.Sha256 {
+			t.Fatalf("%s: sha256 %s, want %s", s.File, got, s.Sha256)
+		}
+	}
+	if m.SHA256Sums["nvidia-open-595_"+ver+".raw.zst"] != sha(rel.files["nvidia-open-595_"+ver+".raw.zst"]) {
+		t.Fatalf("sha256sums %v", m.SHA256Sums)
+	}
 }
 
 func sha(s string) string {

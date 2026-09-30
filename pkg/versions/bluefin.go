@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/jeefy/booty/pkg/config"
+	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/spf13/viper"
 )
@@ -31,6 +33,7 @@ const (
 	bluefinDDISuffix     = ".raw"
 	bluefinZstSuffix     = ".zst"
 	bluefinK0sPrefix     = "k0s-"
+	bluefinNvidiaCTK     = "nvidia-container-toolkit-"
 	bluefinReleasePages  = 20
 
 	// BluefinSumsFile and BluefinSigFile are the release's checksum list and
@@ -39,11 +42,14 @@ const (
 	BluefinSumsFile = "SHA256SUMS"
 	BluefinSigFile  = "SHA256SUMS.gpg"
 
-	// Sysext names as they appear in BluefinManifest.Sysexts.
-	BluefinSysextZFS         = "zfs"
-	BluefinSysextKubeStellar = "kubestellar"
-	BluefinSysextK0s         = "k0s"
-	BluefinSysextKubeadm     = "kubeadm"
+	// Sysext names as they appear in BluefinManifest.Sysexts. NVIDIA driver
+	// flavours (hardware.IsNvidiaDriverFlavour) appear under their own
+	// name, nvidia-open-<branch>.
+	BluefinSysextZFS                    = "zfs"
+	BluefinSysextKubeStellar            = "kubestellar"
+	BluefinSysextK0s                    = "k0s"
+	BluefinSysextKubeadm                = "kubeadm"
+	BluefinSysextNvidiaContainerToolkit = "nvidia-container-toolkit"
 )
 
 // Overridable in tests to point at an httptest server.
@@ -249,8 +255,10 @@ func (s bluefinSysextSource) raw() string { return strings.TrimSuffix(s.asset, b
 // selectBluefinArtifacts resolves the netboot UKI and DDI of version (both
 // must be listed in SHA256SUMS: Booty does not serve unverified images)
 // and the optional sysexts: zfs_<version>.raw.zst,
-// kubestellar_<version>.raw.zst, kubeadm_<version>.raw.zst and the single
-// k0s-*.raw.zst.
+// kubestellar_<version>.raw.zst, kubeadm_<version>.raw.zst, every NVIDIA
+// driver flavour nvidia-open-<branch>_<version>.raw.zst, and the single
+// k0s-*.raw.zst and nvidia-container-toolkit-*.raw.zst (their own version
+// axis).
 func selectBluefinArtifacts(version string, sums sha256Sums) (BluefinManifest, []bluefinSysextSource, error) {
 	m := BluefinManifest{
 		Version:    version,
@@ -272,20 +280,40 @@ func selectBluefinArtifacts(version string, sums sha256Sums) (BluefinManifest, [
 			sysexts = append(sysexts, bluefinSysextSource{name: name, asset: asset, sha256: hash})
 		}
 	}
-	var k0s []string
-	for _, name := range sums.order {
-		if strings.HasPrefix(name, bluefinK0sPrefix) && strings.HasSuffix(name, bluefinDDISuffix+bluefinZstSuffix) {
-			k0s = append(k0s, name)
+	versioned := "_" + version + bluefinDDISuffix + bluefinZstSuffix
+	for _, asset := range sums.order {
+		if flavour, ok := strings.CutSuffix(asset, versioned); ok && hardware.IsNvidiaDriverFlavour(flavour) {
+			sysexts = append(sysexts, bluefinSysextSource{name: flavour, asset: asset, sha256: sums.hashes[asset]})
 		}
 	}
-	switch len(k0s) {
-	case 0:
-	case 1:
-		sysexts = append(sysexts, bluefinSysextSource{name: BluefinSysextK0s, asset: k0s[0], sha256: sums.hashes[k0s[0]]})
-	default:
-		slog.Warn("SHA256SUMS lists several k0s sysexts; skipping k0s", "version", version, "files", k0s)
+	for _, own := range []struct{ name, prefix string }{
+		{BluefinSysextK0s, bluefinK0sPrefix},
+		{BluefinSysextNvidiaContainerToolkit, bluefinNvidiaCTK},
+	} {
+		if s, ok := selectOwnVersionSysext(version, sums, own.name, own.prefix); ok {
+			sysexts = append(sysexts, s)
+		}
 	}
 	return m, sysexts, nil
+}
+
+// selectOwnVersionSysext finds the one <prefix><any version>.raw.zst in
+// SHA256SUMS; several are ambiguous and skip the sysext.
+func selectOwnVersionSysext(version string, sums sha256Sums, name, prefix string) (bluefinSysextSource, bool) {
+	var found []string
+	for _, asset := range sums.order {
+		if strings.HasPrefix(asset, prefix) && strings.HasSuffix(asset, bluefinDDISuffix+bluefinZstSuffix) {
+			found = append(found, asset)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return bluefinSysextSource{}, false
+	case 1:
+		return bluefinSysextSource{name: name, asset: found[0], sha256: sums.hashes[found[0]]}, true
+	}
+	slog.Warn("SHA256SUMS lists several "+name+" sysexts; skipping "+name, "version", version, "files", found)
+	return bluefinSysextSource{}, false
 }
 
 // errBluefinAssetMissing marks a release file the source does not have, so
@@ -423,6 +451,38 @@ func BluefinVersionCheck() {
 	}
 	state.SetCurrentBluefinVersion(target)
 	slog.Info("Bluefin updated", "version", target, "netbootUKI", manifest.NetbootUKI, "ddi", manifest.DDI, "sysexts", len(manifest.Sysexts))
+	for _, gap := range missingRequestedSysexts(manifest, hardware.Snapshot().Hosts) {
+		slog.Error("Bluefin release lacks sysexts a host requests; it boots without them", "version", manifest.Version, "mac", gap.mac, "hostname", gap.hostname, "missing", gap.missing)
+	}
+}
+
+type sysextGap struct {
+	mac, hostname string
+	missing       []string
+}
+
+// missingRequestedSysexts lists the Bluefin hosts that follow m (no
+// targetVersion, or m's) and request extensions m does not carry. A release
+// without an optional sysext still installs; this only names who is
+// affected.
+func missingRequestedSysexts(m BluefinManifest, hosts map[string]*hardware.Host) []sysextGap {
+	var gaps []sysextGap
+	for mac, h := range hosts {
+		if h == nil || h.OS != OSBluefin || (h.TargetVersion != "" && h.TargetVersion != m.Version) {
+			continue
+		}
+		var missing []string
+		for _, e := range h.Extensions {
+			if _, ok := m.Sysexts[e]; !ok {
+				missing = append(missing, e)
+			}
+		}
+		if len(missing) > 0 {
+			gaps = append(gaps, sysextGap{mac: mac, hostname: h.Hostname, missing: missing})
+		}
+	}
+	slices.SortFunc(gaps, func(a, b sysextGap) int { return strings.Compare(a.mac, b.mac) })
+	return gaps
 }
 
 // LoadRemoteBluefinVersion asks the configured source for the newest
