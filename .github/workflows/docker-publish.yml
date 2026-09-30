@@ -17,7 +17,37 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Docs-only changes (Markdown, docs/, the plans) do not need the test run,
+  # the multi-arch image build, provenance or verification. This job decides;
+  # everything else hangs off it through `needs`, so a docs-only push or PR
+  # ends with every other job skipped (which GitHub counts as passing).
+  # Tags and releases always build.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.gitignore'
+              - '!.sisyphus/**'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: read
