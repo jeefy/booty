@@ -577,9 +577,11 @@ WantedBy=local-fs.target
 }
 
 // addBluefinExtensions downloads the opted-in sysexts from Booty's copy of
-// the release. zfs and kubestellar land in /etc/extensions under their
-// versioned name (their extension-release file is
-// extension-release.<name>_<version>); k0s is placed where
+// the release. zfs, kubestellar and the NVIDIA driver flavours land in
+// /etc/extensions under their versioned name (their extension-release file
+// is extension-release.<name>_<version>); nvidia-container-toolkit, on its
+// own version axis like k0s, lands under its stable name
+// (extension-release.nvidia-container-toolkit); k0s is placed where
 // k0s-first-boot.service picks it up.
 func addBluefinExtensions(cfg *ign36.Config, mac string, release versions.BluefinManifest, exts []string) {
 	for _, name := range exts {
@@ -589,12 +591,15 @@ func addBluefinExtensions(cfg *ign36.Config, mac string, release versions.Bluefi
 			continue
 		}
 		source := "http://" + config.ServerHostPort() + "/data/" + path.Join(config.BluefinDir, release.Version, sysext.File)
-		if name == hardware.ExtensionK0s {
+		switch name {
+		case hardware.ExtensionK0s:
 			cfg.Storage.Files = append(cfg.Storage.Files, bluefinRemoteFile(bluefinK0sSysext, source, sysext.Sha256))
 			cfg.Systemd.Units = append(cfg.Systemd.Units, ign36.Unit{Name: bluefinK0sFirstBoot, Enabled: boolPtr(true)})
-			continue
+		case hardware.ExtensionNvidiaContainerToolkit:
+			cfg.Storage.Files = append(cfg.Storage.Files, bluefinRemoteFile(filepath.Join(bluefinExtensionsDir, name+".raw"), source, sysext.Sha256))
+		default:
+			cfg.Storage.Files = append(cfg.Storage.Files, bluefinRemoteFile(filepath.Join(bluefinExtensionsDir, sysext.File), source, sysext.Sha256))
 		}
-		cfg.Storage.Files = append(cfg.Storage.Files, bluefinRemoteFile(filepath.Join(bluefinExtensionsDir, sysext.File), source, sysext.Sha256))
 	}
 }
 
