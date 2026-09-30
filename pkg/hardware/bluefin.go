@@ -3,6 +3,7 @@ package hardware
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -21,13 +22,25 @@ const (
 
 // Bluefin Server opt-in sysexts a host can list in Extensions.
 const (
-	ExtensionZFS         = "zfs"
-	ExtensionKubeStellar = "kubestellar"
-	ExtensionK0s         = "k0s"
+	ExtensionZFS                    = "zfs"
+	ExtensionKubeStellar            = "kubestellar"
+	ExtensionK0s                    = "k0s"
+	ExtensionNvidiaContainerToolkit = "nvidia-container-toolkit"
 )
 
-// ValidExtensions are the sysext names Extensions accepts.
-var ValidExtensions = []string{ExtensionK0s, ExtensionKubeStellar, ExtensionZFS}
+// ValidExtensions are the fixed sysext names Extensions accepts; NVIDIA
+// driver flavours (IsNvidiaDriverFlavour) are accepted on top of them.
+var ValidExtensions = []string{ExtensionK0s, ExtensionKubeStellar, ExtensionNvidiaContainerToolkit, ExtensionZFS}
+
+// nvidiaDriverFlavour matches an NVIDIA open-kernel-module driver sysext,
+// nvidia-open-<driver branch>, so a new branch needs no code change here.
+var nvidiaDriverFlavour = regexp.MustCompile(`^nvidia-open-[0-9]{1,6}$`)
+
+// IsNvidiaDriverFlavour reports whether name is an NVIDIA driver flavour
+// such as nvidia-open-595.
+func IsNvidiaDriverFlavour(name string) bool {
+	return nvidiaDriverFlavour.MatchString(name)
+}
 
 var (
 	ErrInvalidStateDisk  = errors.New("invalid stateDisk")
@@ -43,24 +56,39 @@ func ValidateStateDisk(disk string) error {
 }
 
 // NormalizeExtensions trims, deduplicates and sorts names and checks them
-// against ValidExtensions; kubestellar runs on k0s and requires it.
+// against ValidExtensions and the NVIDIA driver flavours. kubestellar runs
+// on k0s and requires it; a host takes at most one driver flavour, and not
+// alongside zfs: both sysexts ship the kernel's module index, so merging
+// both hides one set of modules (the driver sysext refuses to load then).
 func NormalizeExtensions(names []string) ([]string, error) {
-	var out []string
+	var out, flavours []string
 	for _, n := range names {
 		n = strings.ToLower(strings.TrimSpace(n))
 		if n == "" {
 			continue
 		}
-		if !slices.Contains(ValidExtensions, n) {
-			return nil, fmt.Errorf("%w: %q is not one of %s", ErrInvalidExtensions, n, strings.Join(ValidExtensions, ", "))
+		driver := IsNvidiaDriverFlavour(n)
+		if !driver && !slices.Contains(ValidExtensions, n) {
+			return nil, fmt.Errorf("%w: %q is not one of %s or nvidia-open-<branch>", ErrInvalidExtensions, n, strings.Join(ValidExtensions, ", "))
 		}
-		if !slices.Contains(out, n) {
-			out = append(out, n)
+		if slices.Contains(out, n) {
+			continue
+		}
+		out = append(out, n)
+		if driver {
+			flavours = append(flavours, n)
 		}
 	}
 	slices.Sort(out)
+	slices.Sort(flavours)
 	if slices.Contains(out, ExtensionKubeStellar) && !slices.Contains(out, ExtensionK0s) {
 		return nil, fmt.Errorf("%w: %s requires %s", ErrInvalidExtensions, ExtensionKubeStellar, ExtensionK0s)
+	}
+	if len(flavours) > 1 {
+		return nil, fmt.Errorf("%w: only one NVIDIA driver flavour per host, got %s", ErrInvalidExtensions, strings.Join(flavours, ", "))
+	}
+	if len(flavours) == 1 && slices.Contains(out, ExtensionZFS) {
+		return nil, fmt.Errorf("%w: %s and %s cannot be merged on one host (both ship the kernel module index)", ErrInvalidExtensions, flavours[0], ExtensionZFS)
 	}
 	return out, nil
 }
