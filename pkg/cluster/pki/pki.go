@@ -170,9 +170,30 @@ func (p *PKI) DiscoveryHash() string {
 }
 
 // Fingerprint is the SHA-256 of the DER-encoded CA certificate, for display.
-func (p *PKI) Fingerprint() string {
-	sum := sha256.Sum256(p.caCert.Raw)
+func (p *PKI) Fingerprint() string { return CertFingerprint(p.caCert) }
+
+// CertFingerprint is the display fingerprint of any certificate in the
+// format Fingerprint uses: "sha256:" and the hex SHA-256 of its DER
+// encoding.
+func CertFingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// FingerprintPEM is CertFingerprint of the first CERTIFICATE block in
+// pemData, so an external cluster's CA (a kubeconfig's
+// certificate-authority-data, the service account's ca.crt) can be shown
+// next to a managed one. It fails when there is no parseable certificate.
+func FingerprintPEM(pemData []byte) (string, error) {
+	der, _ := decodePEM(pemData, "CERTIFICATE")
+	if der == nil {
+		return "", errors.New("no CERTIFICATE block")
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return "", fmt.Errorf("parsing certificate: %w", err)
+	}
+	return CertFingerprint(cert), nil
 }
 
 // NotAfter is the CA certificate's expiry.
