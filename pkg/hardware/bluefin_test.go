@@ -24,7 +24,7 @@ func TestNormalizeExtensions(t *testing.T) {
 		{name: "nvidia container toolkit alone", in: []string{"nvidia-container-toolkit"}, want: []string{"nvidia-container-toolkit"}},
 		{name: "driver with toolkit and k0s", in: []string{"nvidia-container-toolkit", "nvidia-open-595", "k0s", "nvidia-open-595"}, want: []string{"k0s", "nvidia-container-toolkit", "nvidia-open-595"}},
 		{name: "two driver flavours", in: []string{"nvidia-open-595", "nvidia-open-615"}, err: ErrInvalidExtensions},
-		{name: "driver with zfs", in: []string{"zfs", "nvidia-open-595"}, err: ErrInvalidExtensions},
+		{name: "driver with zfs and toolkit", in: []string{"zfs", "nvidia-open-595", "nvidia-container-toolkit"}, want: []string{"nvidia-container-toolkit", "nvidia-open-595", "zfs"}},
 		{name: "driver without branch", in: []string{"nvidia-open-"}, err: ErrInvalidExtensions},
 		{name: "driver with a non-numeric branch", in: []string{"nvidia-open-latest"}, err: ErrInvalidExtensions},
 		{name: "proprietary driver", in: []string{"nvidia-595"}, err: ErrInvalidExtensions},
@@ -50,7 +50,6 @@ func TestNormalizeExtensions(t *testing.T) {
 func TestNormalizeExtensionsNvidiaErrors(t *testing.T) {
 	for in, want := range map[string][]string{
 		"only one NVIDIA driver flavour per host, got nvidia-open-595, nvidia-open-615":                         {"nvidia-open-615", "nvidia-open-595"},
-		"nvidia-open-595 and zfs cannot be merged on one host":                                                  {"nvidia-open-595", "zfs"},
 		`"nvidia-open-x" is not one of k0s, kubestellar, nvidia-container-toolkit, zfs or nvidia-open-<branch>`: {"nvidia-open-x"},
 	} {
 		if _, err := NormalizeExtensions(want); err == nil || !strings.Contains(err.Error(), in) {

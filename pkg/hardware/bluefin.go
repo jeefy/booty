@@ -57,9 +57,9 @@ func ValidateStateDisk(disk string) error {
 
 // NormalizeExtensions trims, deduplicates and sorts names and checks them
 // against ValidExtensions and the NVIDIA driver flavours. kubestellar runs
-// on k0s and requires it; a host takes at most one driver flavour, and not
-// alongside zfs: both sysexts ship the kernel's module index, so merging
-// both hides one set of modules (the driver sysext refuses to load then).
+// on k0s and requires it; a host takes at most one driver flavour. A driver
+// flavour and zfs merge fine: the sysexts ship no module index of their
+// own and the base image loads their modules.
 func NormalizeExtensions(names []string) ([]string, error) {
 	var out, flavours []string
 	for _, n := range names {
@@ -86,9 +86,6 @@ func NormalizeExtensions(names []string) ([]string, error) {
 	}
 	if len(flavours) > 1 {
 		return nil, fmt.Errorf("%w: only one NVIDIA driver flavour per host, got %s", ErrInvalidExtensions, strings.Join(flavours, ", "))
-	}
-	if len(flavours) == 1 && slices.Contains(out, ExtensionZFS) {
-		return nil, fmt.Errorf("%w: %s and %s cannot be merged on one host (both ship the kernel module index)", ErrInvalidExtensions, flavours[0], ExtensionZFS)
 	}
 	return out, nil
 }

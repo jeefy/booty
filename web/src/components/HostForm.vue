@@ -236,7 +236,7 @@ const nvidiaDriver = computed<string>({
           ></option>
         </datalist>
         <div :id="`nvidia-help-${draft.mac}`" class="form-text field-help">
-          One nvidia-open-&lt;branch&gt; per host (Turing or newer), not with zfs.
+          One nvidia-open-&lt;branch&gt; per host (Turing or newer); can be combined with zfs.
         </div>
       </div>
     </div>

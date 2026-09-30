@@ -81,12 +81,16 @@ func TestBluefinRegisterNvidiaExtensions(t *testing.T) {
 	srv, _ := newTestServer(t)
 	for body, want := range map[string]string{
 		`"extensions":["nvidia-open-595","nvidia-open-615"]`: "only one NVIDIA driver flavour per host",
-		`"extensions":["nvidia-open-595","zfs"]`:             "nvidia-open-595 and zfs cannot be merged",
 		`"extensions":["nvidia-open"]`:                       "is not one of",
 	} {
 		r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"`+bluefinMAC+`","os":"bluefin",`+body+`}`)
 		if r.status != http.StatusBadRequest || !strings.Contains(r.body, want) {
 			t.Errorf("%s: want 400 %q, got %+v", body, want, r)
 		}
+	}
+
+	r := do(t, http.MethodPost, srv.URL+"/register", `{"mac":"`+bluefinMAC+`","os":"bluefin","extensions":["nvidia-open-595","zfs","nvidia-container-toolkit"]}`)
+	if r.status != http.StatusOK {
+		t.Errorf("driver with zfs and toolkit is accepted: got %+v", r)
 	}
 }
