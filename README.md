@@ -879,3 +879,10 @@ I like treating (most of) my machines like cattle. This is an easier and more li
 **Can you make it do X?**
 
 Feature requests / optimizations / PRs are welcome! Feel free to ping me [@jeefy](https://twitter.com/jeefy) on Twitter.
+
+### CI
+
+`.github/workflows/docker-publish.yml` runs tests, the multi-arch image build,
+SLSA provenance and its verification. Docs-only changes (Markdown, `docs/`,
+`LICENSE`, `.gitignore`) skip all of that through the `changes` job; tags and
+releases always build.
