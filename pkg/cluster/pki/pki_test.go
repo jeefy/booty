@@ -158,6 +158,25 @@ func TestDiscoveryHashMatchesOpenSSL(t *testing.T) {
 	}
 }
 
+func TestFingerprintPEMMatchesFingerprint(t *testing.T) {
+	p, err := LoadOrCreate(filepath.Join(t.TempDir(), "pki"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := FingerprintPEM(append([]byte("# a comment before the block\n"), p.CACert()...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != p.Fingerprint() || !strings.HasPrefix(got, "sha256:") || len(got) != len("sha256:")+64 {
+		t.Fatalf("FingerprintPEM %s, Fingerprint %s", got, p.Fingerprint())
+	}
+	for name, data := range map[string][]byte{"empty": nil, "key only": p.CAKey(), "garbage": []byte("-----BEGIN CERTIFICATE-----\nbm9wZQ==\n-----END CERTIFICATE-----\n")} {
+		if _, err := FingerprintPEM(data); err == nil {
+			t.Errorf("%s: FingerprintPEM must fail", name)
+		}
+	}
+}
+
 func TestAdminKubeconfig(t *testing.T) {
 	p, err := LoadOrCreate(filepath.Join(t.TempDir(), "pki"))
 	if err != nil {

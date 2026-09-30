@@ -21,7 +21,8 @@ import (
 
 // API serves Fixtures (request path, plus "?<fieldSelector>" when one
 // was sent) and records writes: Patches by path, Evictions and Deleted by
-// namespace/name, Created manifests by namespace.
+// namespace/name, Created manifests by namespace. GET /version is answered
+// like a real API server unless a fixture overrides it.
 type API struct {
 	mu        sync.Mutex
 	Fixtures  map[string][]byte
@@ -108,6 +109,13 @@ func (f *API) Writes() []string {
 	return out
 }
 
+// Seen returns a copy of every recorded request, "METHOD /path".
+func (f *API) Seen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Requests...)
+}
+
 func (f *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -130,6 +138,10 @@ func (f *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if fx, ok := f.Fixtures[key]; ok {
 			_, _ = w.Write(fx)
+			return
+		}
+		if key == "/version" {
+			_, _ = w.Write([]byte(`{"major":"1","minor":"34","gitVersion":"v1.34.3"}`))
 			return
 		}
 		if strings.HasPrefix(key, "/api/v1/pods?") {

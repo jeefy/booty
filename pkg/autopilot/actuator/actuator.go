@@ -102,7 +102,11 @@ type Options struct {
 	KnownHosts string
 	// KuredTTL is how long a kured detection is trusted (default 5 min).
 	KuredTTL time.Duration
-	Now      func() time.Time
+	// InspectTTL is how long an Inspect answer is reused (default 1 min):
+	// GET /autopilot and GET /cluster both poll it, and one node listing a
+	// minute is what the API server should pay for that.
+	InspectTTL time.Duration
+	Now        func() time.Time
 }
 
 // Chooser applies the plan's order at each use: kured if present (cached
@@ -115,12 +119,20 @@ type Chooser struct {
 	kured        bool
 	kuredChecked time.Time
 	kuredErr     error
+
+	inspectMu sync.Mutex
+	inspected time.Time
+	status    Status
+	actuator  string
 }
 
 // NewChooser returns a Chooser; Options.Client may be nil.
 func NewChooser(opts Options) *Chooser {
 	if opts.KuredTTL <= 0 {
 		opts.KuredTTL = 5 * time.Minute
+	}
+	if opts.InspectTTL <= 0 {
+		opts.InspectTTL = time.Minute
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -210,8 +222,21 @@ type Status struct {
 
 // Inspect reads the cluster (nodes and DaemonSets, both GETs) and names
 // the actuator Choose would return. It never calls Prepare, Reboot or
-// Finish.
+// Finish. The answer is reused for InspectTTL, so the pages polling it
+// share one probe; concurrent callers wait for that probe rather than
+// starting their own.
 func (c *Chooser) Inspect(ctx context.Context) (Status, string) {
+	c.inspectMu.Lock()
+	defer c.inspectMu.Unlock()
+	if !c.inspected.IsZero() && c.opts.Now().Sub(c.inspected) < c.opts.InspectTTL {
+		return c.status, c.actuator
+	}
+	c.status, c.actuator = c.inspect(ctx)
+	c.inspected = c.opts.Now()
+	return c.status, c.actuator
+}
+
+func (c *Chooser) inspect(ctx context.Context) (Status, string) {
 	var st Status
 	client := c.opts.Client
 	if client != nil && client.Configured() {

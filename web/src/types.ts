@@ -426,13 +426,24 @@ export interface ClusterHost {
   secureBoot: boolean
 }
 
-/** GET /cluster response. `caFingerprint` is the public-key hash, never key material. */
+/**
+ * GET /cluster response. `caFingerprint` is the CA's hash, never key material.
+ * `source` says whose facts `ready`, `endpoint` and `caFingerprint` are:
+ * `managed` (Booty's CA and the control-plane host's ready report) or
+ * `external` (the API server Booty talks to, where `ready` means `connected`).
+ * `connected`/`nodes`/`apiServer` describe the live API connection in both
+ * modes; older servers omit them.
+ */
 export interface ClusterInfo {
   distribution: ClusterDistribution
   controlPlane: ControlPlaneMode
+  source: ControlPlaneMode
   endpoint: string
+  apiServer: string
   cni: ClusterCNI
   ready: boolean
+  connected: boolean
+  nodes: number
   caFingerprint: string
   hosts: ClusterHost[]
   warnings: string[]
@@ -450,12 +461,17 @@ function oneOf<T extends string>(value: string | undefined, options: readonly T[
 }
 
 export function normalizeClusterInfo(raw: RawClusterInfo | null | undefined): ClusterInfo {
+  const controlPlane = oneOf(raw?.controlPlane, CONTROL_PLANE_MODES, 'external')
   return {
     distribution: oneOf(raw?.distribution, CLUSTER_DISTRIBUTIONS, 'kubeadm'),
-    controlPlane: oneOf(raw?.controlPlane, CONTROL_PLANE_MODES, 'external'),
+    controlPlane,
+    source: oneOf(raw?.source, CONTROL_PLANE_MODES, controlPlane),
     endpoint: raw?.endpoint ?? '',
+    apiServer: raw?.apiServer ?? '',
     cni: oneOf(raw?.cni, CLUSTER_CNIS, 'none'),
     ready: raw?.ready ?? false,
+    connected: raw?.connected ?? false,
+    nodes: Math.max(0, Math.trunc(raw?.nodes ?? 0)) || 0,
     caFingerprint: raw?.caFingerprint ?? '',
     hosts: (raw?.hosts ?? []).map((h) => ({
       mac: h.mac ?? '',

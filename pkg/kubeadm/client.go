@@ -73,7 +73,28 @@ type Client struct {
 	once   sync.Once
 	client *http.Client
 	err    error
+
+	probeMu   sync.Mutex
+	probe     probeResult
+	probeNow  func() time.Time
+	probeTime time.Time
 }
+
+// probeResult is one answer of Reachable: whether the API server answered
+// at all, and the error when it did not or did not answer 2xx.
+type probeResult struct {
+	reachable bool
+	err       error
+}
+
+const (
+	// probeTimeout bounds the Reachable probe: GET /version is served from
+	// memory, so anything slower is as good as down for a status page.
+	probeTimeout = 3 * time.Second
+	// ProbeTTL is how long a Reachable answer is reused, so a UI polling
+	// every 30 s costs the API server at most one request a minute.
+	ProbeTTL = time.Minute
+)
 
 // NewClient returns a Client for cfg. Nothing is dialled until the first
 // request; an empty APIServer makes every request fail with ErrNotInCluster.
@@ -216,6 +237,44 @@ func (c *Client) Decode(ctx context.Context, method, path string, body []byte, v
 		return fmt.Errorf("decoding %s %s: %w", method, path, err)
 	}
 	return nil
+}
+
+// Reachable reports whether the API server answers right now, with GET
+// /version (which every identity may call, authenticated or not) bounded
+// by probeTimeout and the answer cached for ProbeTTL. reachable is true
+// whenever the server answered, even with a non-2xx status: the error
+// then says what it answered (a 401 means Booty's credentials are wrong,
+// not that the cluster is down), and a transport failure wraps
+// ErrUnreachable. Without an API server it is false with ErrNotInCluster
+// and costs nothing.
+func (c *Client) Reachable(ctx context.Context) (reachable bool, err error) {
+	if c.cfg.APIServer == "" {
+		return false, ErrNotInCluster
+	}
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	now := c.now()
+	if !c.probeTime.IsZero() && now.Sub(c.probeTime) < ProbeTTL {
+		return c.probe.reachable, c.probe.err
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	c.probe = probeResult{}
+	resp, err := c.Do(ctx, http.MethodGet, "/version", nil)
+	if err != nil {
+		c.probe.err = err
+	} else {
+		c.probe = probeResult{reachable: true, err: Drain(resp)}
+	}
+	c.probeTime = now
+	return c.probe.reachable, c.probe.err
+}
+
+func (c *Client) now() time.Time {
+	if c.probeNow != nil {
+		return c.probeNow()
+	}
+	return time.Now()
 }
 
 type cancelOnClose struct {

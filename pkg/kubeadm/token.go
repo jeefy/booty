@@ -319,6 +319,11 @@ func (m *Minter) Client() *Client { return m.api }
 // join token embeds for the worker. nil when none is configured.
 func (m *Minter) CACert() []byte { return m.api.CACert() }
 
+// Reachable is Client.Reachable on the minter's API client: the cached
+// GET /version probe GET /cluster shows as connected when no autopilot
+// client exists.
+func (m *Minter) Reachable(ctx context.Context) (bool, error) { return m.api.Reachable(ctx) }
+
 // Cached returns the string minted earlier for mac (a kubeadm join string
 // or a rendered k0s token) if it is still within the cache window. It
 // never talks to the API server.
