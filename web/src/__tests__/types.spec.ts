@@ -181,13 +181,17 @@ describe('normalizeTemplateValidation', () => {
 })
 
 describe('normalizeClusterInfo', () => {
-  it('returns kubeadm/external/none, not ready and empty lists for a null payload', () => {
+  it('returns kubeadm/external/none, not ready, not connected and empty lists for a null payload', () => {
     expect(normalizeClusterInfo(null)).toEqual({
       distribution: 'kubeadm',
       controlPlane: 'external',
+      source: 'external',
       endpoint: '',
+      apiServer: '',
       cni: 'none',
       ready: false,
+      connected: false,
+      nodes: 0,
       caFingerprint: '',
       hosts: [],
       warnings: []
@@ -198,9 +202,13 @@ describe('normalizeClusterInfo', () => {
     const info = normalizeClusterInfo({
       distribution: 'k0s',
       controlPlane: 'managed',
+      source: 'managed',
       endpoint: 'https://10.0.0.1:6443',
+      apiServer: 'https://10.0.0.1:6443',
       cni: 'cilium',
       ready: true,
+      connected: true,
+      nodes: 3,
       caFingerprint: 'sha256:abc',
       hosts: [
         {
@@ -218,9 +226,13 @@ describe('normalizeClusterInfo', () => {
     expect(info).toMatchObject({
       distribution: 'k0s',
       controlPlane: 'managed',
+      source: 'managed',
       endpoint: 'https://10.0.0.1:6443',
+      apiServer: 'https://10.0.0.1:6443',
       cni: 'cilium',
       ready: true,
+      connected: true,
+      nodes: 3,
       caFingerprint: 'sha256:abc'
     })
     expect(info.hosts).toEqual([
@@ -259,6 +271,24 @@ describe('normalizeClusterInfo', () => {
     expect(unknown.distribution).toBe('kubeadm')
     expect(unknown.controlPlane).toBe('external')
     expect(unknown.cni).toBe('none')
+  })
+
+  it('derives source from controlPlane and defaults the connection fields on an older server', () => {
+    const legacy = normalizeClusterInfo({ controlPlane: 'managed', ready: true })
+    expect(legacy).toMatchObject({
+      controlPlane: 'managed',
+      source: 'managed',
+      ready: true,
+      connected: false,
+      nodes: 0,
+      apiServer: ''
+    })
+    expect(normalizeClusterInfo({ controlPlane: 'external', source: 'bogus' as never }).source).toBe(
+      'external'
+    )
+    expect(normalizeClusterInfo({ nodes: -2 }).nodes).toBe(0)
+    expect(normalizeClusterInfo({ nodes: Number.NaN }).nodes).toBe(0)
+    expect(normalizeClusterInfo({ nodes: 6.9 }).nodes).toBe(6)
   })
 })
 
