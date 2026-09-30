@@ -113,6 +113,30 @@ func TestChooseOrder(t *testing.T) {
 	}
 }
 
+func TestInspectIsCachedForInspectTTL(t *testing.T) {
+	ctx := context.Background()
+	api, client := loaded(t)
+	now := time.Now()
+	c := NewChooser(Options{Client: client, Now: func() time.Time { return now }})
+	st, name := c.Inspect(ctx)
+	if !st.Reachable || st.Nodes != 3 || name != NameKured {
+		t.Fatalf("first inspect: %+v %s", st, name)
+	}
+	listed := len(api.Seen())
+	api.Set("/api/v1/nodes", []byte(`{"items":[]}`))
+	now = now.Add(30 * time.Second)
+	if st, _ := c.Inspect(ctx); st.Nodes != 3 || len(api.Seen()) != listed {
+		t.Fatalf("within InspectTTL the answer is reused without a request: %+v (%d requests)", st, len(api.Seen())-listed)
+	}
+	now = now.Add(31 * time.Second)
+	if st, _ := c.Inspect(ctx); st.Nodes != 0 || len(api.Seen()) == listed {
+		t.Fatalf("after InspectTTL the cluster is read again: %+v", st)
+	}
+	if got := api.Writes(); len(got) != 0 {
+		t.Fatalf("inspecting must never write: %v", got)
+	}
+}
+
 func TestResolve(t *testing.T) {
 	_, client := loaded(t)
 	ctx := context.Background()
