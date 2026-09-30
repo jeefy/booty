@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import {
   BLUEFIN_EXTENSIONS,
   BLUEFIN_MODES,
+  NVIDIA_DRIVER_FLAVOURS,
   OS_OPTIONS,
   ROLE_OPTIONS,
   acceptsInstallDisk,
@@ -62,6 +63,21 @@ function toggleExtension(name: BluefinExtension, on: boolean) {
   const rest = (draft.value.extensions ?? []).filter((e) => e !== name)
   draft.value.extensions = on ? [...rest, name] : rest
 }
+
+function isFixedExtension(name: string): boolean {
+  return (BLUEFIN_EXTENSIONS as readonly string[]).includes(name)
+}
+
+// The driver slot is any name that is not a fixed extension, so a
+// mistyped flavour stays visible until the server's 400 explains it.
+const nvidiaDriver = computed<string>({
+  get: () => (draft.value.extensions ?? []).find((e) => !isFixedExtension(e)) ?? '',
+  set: (value) => {
+    const rest = (draft.value.extensions ?? []).filter(isFixedExtension)
+    const flavour = value.trim().toLowerCase()
+    draft.value.extensions = flavour ? [...rest, flavour as BluefinExtension] : rest
+  }
+})
 </script>
 
 <template>
@@ -199,6 +215,29 @@ function toggleExtension(name: BluefinExtension, on: boolean) {
           </label>
         </div>
         <div class="form-text field-help">Opt-in sysexts; kubestellar needs k0s.</div>
+      </div>
+      <div class="col-12 col-md-2">
+        <label class="form-label small mb-1" :for="`nvidia-${draft.mac}`">NVIDIA driver</label>
+        <input
+          :id="`nvidia-${draft.mac}`"
+          v-model.lazy="nvidiaDriver"
+          type="text"
+          class="form-control form-control-sm mono"
+          placeholder="none"
+          :list="`nvidia-flavours-${draft.mac}`"
+          :disabled="busy"
+          :aria-describedby="`nvidia-help-${draft.mac}`"
+        />
+        <datalist :id="`nvidia-flavours-${draft.mac}`">
+          <option
+            v-for="flavour in NVIDIA_DRIVER_FLAVOURS"
+            :key="flavour"
+            :value="flavour"
+          ></option>
+        </datalist>
+        <div :id="`nvidia-help-${draft.mac}`" class="form-text field-help">
+          One nvidia-open-&lt;branch&gt; per host (Turing or newer); can be combined with zfs.
+        </div>
       </div>
     </div>
     <div class="row g-2 align-items-end">
