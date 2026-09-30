@@ -70,6 +70,12 @@ const clusterRoles = computed(() => {
   const controlPlane = hosts.filter((h) => h.role === 'control-plane').length
   return { controlPlane, workers: hosts.length - controlPlane }
 })
+const clusterState = computed(() => {
+  const c = cluster.value
+  if (!c) return ''
+  if (c.source === 'external') return c.connected ? 'connected' : 'unreachable'
+  return c.ready ? 'bootstrapped' : 'not ready yet'
+})
 
 async function loadCluster() {
   try {
@@ -314,7 +320,7 @@ onUnmounted(() => {
               aria-hidden="true"
             ></span>
             <span class="cluster-state" data-testid="cluster-state">
-              {{ cluster.ready ? 'bootstrapped' : 'not ready yet' }}
+              {{ clusterState }}
             </span>
             <span class="cluster-roles stat-hint" data-testid="cluster-roles">
               {{ clusterRoles.controlPlane }} control-plane ·
@@ -333,8 +339,20 @@ onUnmounted(() => {
               }}</span>
               <span v-else class="text-secondary">—</span>
             </dd>
+            <template v-if="cluster.apiServer">
+              <dt class="stat-label">API server</dt>
+              <dd>
+                <span class="mono truncate cluster-endpoint" :title="cluster.apiServer" data-testid="cluster-api-server">{{
+                  cluster.apiServer
+                }}</span>
+              </dd>
+            </template>
             <dt class="stat-label">CNI</dt>
             <dd class="mono">{{ cluster.cni }}</dd>
+            <template v-if="cluster.nodes > 0">
+              <dt class="stat-label">Nodes</dt>
+              <dd class="mono" data-testid="cluster-nodes">{{ cluster.nodes }}</dd>
+            </template>
             <dt class="stat-label">CA fingerprint</dt>
             <dd class="cluster-fingerprint">
               <template v-if="cluster.caFingerprint">

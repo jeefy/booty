@@ -88,6 +88,21 @@ const clusterInfo = {
   warnings: []
 }
 
+const externalClusterInfo = {
+  distribution: 'kubeadm',
+  controlPlane: 'external',
+  source: 'external',
+  endpoint: '10.96.0.1:443',
+  apiServer: 'https://10.96.0.1:443',
+  cni: 'cilium',
+  ready: true,
+  connected: true,
+  nodes: 6,
+  caFingerprint: FINGERPRINT,
+  hosts: [{ mac: 'aa:bb:cc:dd:ee:02', hostname: 'bravo', os: 'flatcar', role: 'worker', booted: '' }],
+  warnings: []
+}
+
 function mountHome(overrides: Handlers = {}) {
   const handlers: Handlers = {
     '/booty.json': () => jsonResponse({ hosts: { a: {} }, unknownHosts: {} }),
@@ -349,7 +364,6 @@ describe('HomeView', () => {
       '/cluster': () =>
         jsonResponse({
           ...clusterInfo,
-          controlPlane: 'external',
           ready: false,
           endpoint: '',
           caFingerprint: '',
@@ -364,9 +378,11 @@ describe('HomeView', () => {
     expect(card.find('[data-testid="cluster-state"]').text()).toBe('not ready yet')
     expect(card.find('[data-testid="cluster-fingerprint"]').exists()).toBe(false)
     expect(card.find('[data-testid="cluster-copy"]').exists()).toBe(false)
+    expect(card.find('[data-testid="cluster-api-server"]').exists()).toBe(false)
+    expect(card.find('[data-testid="cluster-nodes"]').exists()).toBe(false)
     expect(card.findAll('[data-testid="cluster-facts"] dd').map((dd) => dd.text())).toEqual([
       'kubeadm',
-      'external',
+      'managed',
       '—',
       'cilium',
       '—'
@@ -380,6 +396,84 @@ describe('HomeView', () => {
       'CA key is served on the boot VLAN',
       'no control-plane host registered'
     ])
+  })
+
+  it('reads connected, the node count and the API server for a reachable external control plane', async () => {
+    const { wrapper } = mountHome({ '/cluster': () => jsonResponse(externalClusterInfo) })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="cluster-card"]')
+    expect(card.classes()).toContain('cluster-panel--ready')
+    expect(card.find('.status-dot').classes()).toContain('status-dot--ready')
+    expect(card.find('[data-testid="cluster-state"]').text()).toBe('connected')
+    expect(card.find('[data-testid="cluster-roles"]').text()).toBe('0 control-plane · 1 worker')
+
+    const facts = card.find('[data-testid="cluster-facts"]')
+    const pairs = facts.findAll('dt').map((dt, i) => [dt.text(), facts.findAll('dd')[i]!.text()])
+    expect(pairs).toEqual([
+      ['Distribution', 'kubeadm'],
+      ['Control plane', 'external'],
+      ['Endpoint', '10.96.0.1:443'],
+      ['API server', 'https://10.96.0.1:443'],
+      ['CNI', 'cilium'],
+      ['Nodes', '6'],
+      ['CA fingerprint', `${FINGERPRINT}Copy`]
+    ])
+    expect(card.find('[data-testid="cluster-api-server"]').attributes('title')).toBe(
+      'https://10.96.0.1:443'
+    )
+    expect(card.find('[data-testid="cluster-fingerprint"]').text()).toBe(FINGERPRINT)
+    expect(card.find('[data-testid="cluster-copy"]').exists()).toBe(true)
+    expect(card.find('[data-testid="cluster-warnings"]').exists()).toBe(false)
+  })
+
+  it('reads unreachable, hides the node count and lists the API warning for an external control plane Booty cannot reach', async () => {
+    const { wrapper } = mountHome({
+      '/cluster': () =>
+        jsonResponse({
+          ...externalClusterInfo,
+          ready: false,
+          connected: false,
+          nodes: 0,
+          caFingerprint: '',
+          warnings: [
+            'API server https://10.96.0.1:443 unreachable: GET /api/v1/nodes: API server unreachable: dial tcp 10.96.0.1:443: connect: connection refused'
+          ]
+        })
+    })
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="cluster-card"]')
+    expect(card.classes()).not.toContain('cluster-panel--ready')
+    expect(card.find('.status-dot').classes()).not.toContain('status-dot--ready')
+    expect(card.find('[data-testid="cluster-state"]').text()).toBe('unreachable')
+    expect(card.find('[data-testid="cluster-nodes"]').exists()).toBe(false)
+    expect(card.find('[data-testid="cluster-api-server"]').text()).toBe('https://10.96.0.1:443')
+    expect(card.find('[data-testid="cluster-fingerprint"]').exists()).toBe(false)
+    expect(card.findAll('[data-testid="cluster-facts"] dd').map((dd) => dd.text())).toEqual([
+      'kubeadm',
+      'external',
+      '10.96.0.1:443',
+      'https://10.96.0.1:443',
+      'cilium',
+      '—'
+    ])
+    expect(
+      card
+        .find('[data-testid="cluster-warnings"]')
+        .findAll('li')
+        .map((li) => li.text())
+    ).toEqual([
+      'API server https://10.96.0.1:443 unreachable: GET /api/v1/nodes: API server unreachable: dial tcp 10.96.0.1:443: connect: connection refused'
+    ])
+  })
+
+  it('keeps the managed wording when an older server sends no source field', async () => {
+    const { wrapper } = mountHome({
+      '/cluster': () => jsonResponse({ ...clusterInfo, source: undefined, connected: undefined })
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="cluster-state"]').text()).toBe('bootstrapped')
   })
 
   it('hides the cluster card when /cluster answers 404 and keeps the rest of the page', async () => {
