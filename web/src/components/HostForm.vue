@@ -7,6 +7,7 @@ import {
   OS_OPTIONS,
   ROLE_OPTIONS,
   acceptsInstallDisk,
+  hostReporting,
   hostRole,
   type BluefinExtension,
   type BluefinMode,
@@ -14,6 +15,7 @@ import {
   type HostRole
 } from '@/types'
 import PowerBadge from '@/components/PowerBadge.vue'
+import NoAgentBadge from '@/components/NoAgentBadge.vue'
 
 const draft = defineModel<Host>({ required: true })
 
@@ -29,6 +31,11 @@ const emit = defineEmits<{
 }>()
 
 const showInstallDisk = computed(() => acceptsInstallDisk(draft.value.os))
+const reporting = computed(() => hostReporting(draft.value))
+// A draft from the brig carries none of the server-owned facts; a registered host always has its power block.
+const registered = computed(() =>
+  Boolean(draft.value.power || draft.value.booted || draft.value.lastCheck || draft.value.running)
+)
 
 const ROLE_LABEL: Record<HostRole, string> = {
   worker: 'Worker',
@@ -83,10 +90,18 @@ const nvidiaDriver = computed<string>({
 
 <template>
   <form class="host-form" @submit.prevent="emit('submit')">
-    <div v-if="draft.power" class="host-form-power small text-secondary" data-testid="host-form-power">
-      <span class="me-1">Power</span>
-      <PowerBadge :power="draft.power" />
-      <span v-if="draft.power.reason" class="ms-2">{{ draft.power.reason }}</span>
+    <div v-if="registered" class="host-form-facts small text-secondary">
+      <div v-if="draft.power" class="host-form-power" data-testid="host-form-power">
+        <span class="me-1">Power</span>
+        <PowerBadge :power="draft.power" />
+        <span v-if="draft.power.reason" class="ms-2">{{ draft.power.reason }}</span>
+      </div>
+      <div class="host-form-running" data-testid="host-form-running">
+        <span class="me-1">Running</span>
+        <NoAgentBadge v-if="reporting === 'never'" />
+        <span v-else-if="draft.running" class="mono">{{ draft.running }}</span>
+        <span v-else>unknown</span>
+      </div>
     </div>
     <div class="row g-2 align-items-start">
       <div class="col-12 col-md-2">
@@ -312,10 +327,18 @@ const nvidiaDriver = computed<string>({
   padding: var(--booty-space-2) 0;
 }
 
-.host-form-power {
+.host-form-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-1) var(--booty-space-4);
+  margin-bottom: var(--booty-space-2);
+}
+
+.host-form-power,
+.host-form-running {
   display: flex;
   align-items: center;
-  margin-bottom: var(--booty-space-2);
 }
 
 .host-form .row + .row {

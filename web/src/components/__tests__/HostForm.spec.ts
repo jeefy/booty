@@ -226,4 +226,39 @@ describe('HostForm', () => {
     expect(model.stateDisk).toBe('/dev/sdb')
     expect(model.extensions).toEqual(['k0s', 'kubestellar'])
   })
+
+  describe('Running line', () => {
+    const RUNNING = '[data-testid="host-form-running"]'
+
+    it('shows the "no agent yet" badge for a registered host that never reported', () => {
+      const wrapper = mountForm(draft({ power: { state: 'up' }, health: null }))
+      const line = wrapper.find(RUNNING)
+      expect(line.text()).toContain('Running')
+      const badge = line.find('[data-testid="host-no-agent"]')
+      expect(badge.text()).toBe('no agent yet')
+      expect(badge.attributes('title')).toContain('Reboot to pick up the current Ignition')
+      expect(wrapper.find('[data-testid="host-form-power"]').exists()).toBe(true)
+    })
+
+    it('shows the running version once the host reports', () => {
+      const wrapper = mountForm(
+        draft({ running: '26.10.816', lastCheck: '2026-10-01T18:00:43Z', booted: '2026-10-01T05:01:33Z' })
+      )
+      const line = wrapper.find(RUNNING)
+      expect(line.find('.mono').text()).toBe('26.10.816')
+      expect(line.find('[data-testid="host-no-agent"]').exists()).toBe(false)
+    })
+
+    it('says unknown for a host that booted but has no version yet', () => {
+      const wrapper = mountForm(draft({ booted: '2026-10-01T05:01:33Z' }))
+      expect(wrapper.find(RUNNING).text()).toContain('unknown')
+      expect(wrapper.find('[data-testid="host-no-agent"]').exists()).toBe(false)
+    })
+
+    it('hides the server-owned facts for a draft registered from the brig', () => {
+      const wrapper = mountForm(draft())
+      expect(wrapper.find(RUNNING).exists()).toBe(false)
+      expect(wrapper.find('[data-testid="host-no-agent"]').exists()).toBe(false)
+    })
+  })
 })
