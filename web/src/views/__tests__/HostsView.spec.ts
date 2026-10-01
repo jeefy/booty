@@ -524,4 +524,78 @@ describe('HostsView', () => {
     expect(registered.text()).toContain('charlie')
     expect(registered.text()).toContain('coreos')
   })
+
+  it('shows the power badge, enables the power buttons from /power and updates the row on 202', async () => {
+    const up = { ...hostA, power: { state: 'up', since: '2026-09-24T10:00:00Z', reason: 'answers on tcp/22' } }
+    const off = { ...hostB, power: { state: 'off', since: '2026-09-24T09:00:00Z' } }
+    const { wrapper, calls, handlers } = mountWithData(
+      { hosts: { [up.mac]: up, [off.mac]: off }, unknownHosts: {} },
+      {
+        '/power': () =>
+          jsonResponse({
+            hosts: {},
+            events: [],
+            capabilities: { wol: true, actuator: 'ssh' },
+            summary: { up: 1, off: 1, unreachable: 0, inFlight: 0 }
+          })
+      }
+    )
+    await flushPromises()
+    expect(calls.some((c) => c.url === '/power')).toBe(true)
+
+    const alpha = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"]')
+    const badge = alpha.find('[data-testid="host-power"]')
+    expect(badge.attributes('data-state')).toBe('up')
+    expect(badge.text()).toContain('Up')
+    expect(alpha.find('[data-action="power-reboot"]').attributes('disabled')).toBeUndefined()
+    expect(alpha.find('[data-action="power-shutdown"]').attributes('disabled')).toBeUndefined()
+    expect(alpha.find('[data-action="power-on"]').attributes('disabled')).toBeDefined()
+
+    const bravo = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"]')
+    expect(bravo.find('[data-testid="host-power"]').attributes('data-state')).toBe('off')
+    expect(bravo.find('[data-action="power-on"]').attributes('disabled')).toBeUndefined()
+    expect(bravo.find('[data-action="power-reboot"]').attributes('disabled')).toBeDefined()
+
+    handlers['/power/aa%3Abb%3Acc%3Add%3Aee%3A02/on'] = () =>
+      jsonResponse({ status: 'ok', mac: off.mac, power: { state: 'powering-on', request: 'on' } }, 202)
+    await bravo.find('[data-action="power-on"]').trigger('click')
+    expect(bravo.find('[data-testid="power-confirm"]').exists()).toBe(true)
+    expect(bravo.find('[data-action="edit"]').attributes('disabled')).toBeDefined()
+    await bravo.find('[data-action="power-confirm"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-power"]').attributes('data-state')).toBe(
+      'powering-on'
+    )
+    expect(wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-action="power-on"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables reboot and shutdown with the no-actuator reason when /power says none or fails', async () => {
+    const up = { ...hostA, power: { state: 'up' } }
+    const { wrapper } = mountWithData(
+      { hosts: { [up.mac]: up }, unknownHosts: {} },
+      { '/power': () => jsonResponse({ capabilities: { wol: true, actuator: 'none' } }) }
+    )
+    await flushPromises()
+    const reboot = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="power-reboot"]')
+    expect(reboot.attributes('disabled')).toBeDefined()
+    expect(reboot.attributes('title')).toContain('no actuator')
+
+    const failing = mountWithData({ hosts: { [up.mac]: up }, unknownHosts: {} })
+    await flushPromises()
+    expect(
+      failing.wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="power-shutdown"]').attributes('disabled')
+    ).toBeDefined()
+  })
+
+  it('offers force only for the last up worker on shutdown', async () => {
+    const up = { ...hostA, power: { state: 'up' } }
+    const { wrapper } = mountWithData(
+      { hosts: { [up.mac]: up, [hostC.mac]: { ...hostC, power: { state: 'off' } } }, unknownHosts: {} },
+      { '/power': () => jsonResponse({ capabilities: { wol: true, actuator: 'api' } }) }
+    )
+    await flushPromises()
+    const row = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"]')
+    await row.find('[data-action="power-shutdown"]').trigger('click')
+    expect(row.find('[data-testid="power-force"]').text()).toContain('last worker')
+  })
 })

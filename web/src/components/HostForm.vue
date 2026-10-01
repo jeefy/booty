@@ -13,6 +13,7 @@ import {
   type Host,
   type HostRole
 } from '@/types'
+import PowerBadge from '@/components/PowerBadge.vue'
 
 const draft = defineModel<Host>({ required: true })
 
@@ -82,6 +83,11 @@ const nvidiaDriver = computed<string>({
 
 <template>
   <form class="host-form" @submit.prevent="emit('submit')">
+    <div v-if="draft.power" class="host-form-power small text-secondary" data-testid="host-form-power">
+      <span class="me-1">Power</span>
+      <PowerBadge :power="draft.power" />
+      <span v-if="draft.power.reason" class="ms-2">{{ draft.power.reason }}</span>
+    </div>
     <div class="row g-2 align-items-start">
       <div class="col-12 col-md-2">
         <label class="form-label small mb-1" :for="`hostname-${draft.mac}`">Hostname</label>
@@ -304,6 +310,12 @@ const nvidiaDriver = computed<string>({
 <style scoped>
 .host-form {
   padding: var(--booty-space-2) 0;
+}
+
+.host-form-power {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--booty-space-2);
 }
 
 .host-form .row + .row {
