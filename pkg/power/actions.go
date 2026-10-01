@@ -304,7 +304,6 @@ func (t *Tracker) Cancel(mac string) (*hardware.HostPower, error) {
 	if p.Probe.At != "" {
 		probe = &probeResult{ok: p.Probe.OK, method: p.Probe.Method}
 	}
-	p.State = hardware.PowerUnknown
 	t.settle(p, probe, now, "cancelled "+was)
 	t.write(mac, p)
 	t.event(mac, "operator cancelled the "+was+" expectation")
