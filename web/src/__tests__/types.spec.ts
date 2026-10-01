@@ -8,6 +8,8 @@ import {
   normalizeClusterInfo,
   normalizeEffectiveConfig,
   normalizeHost,
+  normalizeHostPower,
+  normalizePowerStatus,
   normalizeSecureBootInfo,
   normalizeTemplateDocument,
   normalizeTemplateValidation,
@@ -283,9 +285,9 @@ describe('normalizeClusterInfo', () => {
       nodes: 0,
       apiServer: ''
     })
-    expect(normalizeClusterInfo({ controlPlane: 'external', source: 'bogus' as never }).source).toBe(
-      'external'
-    )
+    expect(
+      normalizeClusterInfo({ controlPlane: 'external', source: 'bogus' as never }).source
+    ).toBe('external')
     expect(normalizeClusterInfo({ nodes: -2 }).nodes).toBe(0)
     expect(normalizeClusterInfo({ nodes: Number.NaN }).nodes).toBe(0)
     expect(normalizeClusterInfo({ nodes: 6.9 }).nodes).toBe(6)
@@ -372,5 +374,49 @@ describe('registerPayload', () => {
       expect(payload.hostname).toBe('alpha')
       expect(host.stateDisk).toBe('/dev/sdb')
     }
+  })
+})
+
+describe('normalizeHostPower / normalizePowerStatus', () => {
+  it('defaults an absent or unknown block to unknown', () => {
+    expect(normalizeHostPower(undefined)).toMatchObject({
+      state: 'unknown',
+      request: '',
+      cordoned: false
+    })
+    expect(normalizeHostPower({ state: 'nonsense', request: 'bogus' })).toMatchObject({
+      state: 'unknown',
+      request: ''
+    })
+  })
+
+  it('keeps every known field', () => {
+    const p = normalizeHostPower({
+      state: 'rebooting',
+      since: '2026-09-30T10:00:00Z',
+      reason: 'kernel update',
+      request: 'reboot',
+      requestedBy: '192.168.1.20',
+      requestedAt: '2026-09-30T09:59:00Z',
+      lastSeen: '2026-09-30T09:58:00Z',
+      cordoned: true,
+      probe: { ok: true, at: '2026-09-30T09:58:30Z', method: 'tcp/22' }
+    })
+    expect(p.state).toBe('rebooting')
+    expect(p.request).toBe('reboot')
+    expect(p.cordoned).toBe(true)
+    expect(p.probe).toEqual({ ok: true, at: '2026-09-30T09:58:30Z', method: 'tcp/22' })
+  })
+
+  it('normalizes GET /power with defaults for an older server', () => {
+    const st = normalizePowerStatus({
+      hosts: { a: { state: 'up' }, b: null },
+      events: [{ text: 'x' }]
+    })
+    expect(st.hosts.a!.state).toBe('up')
+    expect(st.hosts.b!.state).toBe('unknown')
+    expect(st.events[0]).toEqual({ at: '', kind: 'power', mac: '', text: 'x' })
+    expect(st.capabilities).toEqual({ wol: false, actuator: 'none' })
+    expect(st.summary).toEqual({ up: 0, off: 0, unreachable: 0, inFlight: 0 })
   })
 })

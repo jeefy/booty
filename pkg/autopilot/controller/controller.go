@@ -288,17 +288,24 @@ func (c *Controller) setReleaseState(r *Release, state string) {
 }
 
 // hostsOf lists the registered hosts of osName that take part in the
-// autopilot: installed Bluefin hosts never netboot and are skipped.
+// autopilot: installed Bluefin hosts never netboot, and a host an operator
+// shut down (plan 2026-09-30-power) is excluded until it boots again;
+// both are skipped.
 func (c *Controller) hostsOf(osName string) []*hardware.Host {
 	var out []*hardware.Host
 	for _, h := range c.opts.Fleet.Hosts() {
-		if hostOS(h) != osName || h.Installed() {
+		if hostOS(h) != osName || excluded(h) {
 			continue
 		}
 		out = append(out, h)
 	}
 	slices.SortFunc(out, func(a, b *hardware.Host) int { return compareStrings(a.MAC, b.MAC) })
 	return out
+}
+
+// excluded reports whether the autopilot leaves h alone entirely.
+func excluded(h *hardware.Host) bool {
+	return h.Installed() || h.PoweredOffByRequest()
 }
 
 func compareStrings(a, b string) int {
@@ -467,6 +474,25 @@ func (c *Controller) Clear(osName, version string) error {
 	c.applyHolds()
 	c.save()
 	return nil
+}
+
+// Driving reports whether the autopilot has an attempt in flight on mac
+// (rolling, gating, retrying or rolled-back): the power buttons refuse
+// such a host.
+func (c *Controller) Driving(mac string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeEpisode(mac) != nil
+}
+
+// Event appends an event of another component (the power tracker) to the
+// ring so the Autopilot timeline shows it. Text must carry no hostnames,
+// IPs or MACs.
+func (c *Controller) Event(kind, mac, text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.event(kind, "", "", mac, text)
+	c.save()
 }
 
 // RebootWanted reports whether the controller is waiting for mac to

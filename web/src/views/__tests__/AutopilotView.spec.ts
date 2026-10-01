@@ -138,10 +138,35 @@ const guard = {
 const reportMarkdown =
   '# Flatcar 4800.0.0: failed-units (autopilot report)\n\n<!-- booty-autopilot: flatcar 4800.0.0 abc -->\n\n| Boot path | `uefi-pxe` |\n'
 
-function mountView(status: unknown, onClear?: (url: string, init?: RequestInit) => Response) {
+const powerEvents = {
+  hosts: {},
+  events: [
+    {
+      at: '2026-09-28T12:05:00Z',
+      kind: 'power',
+      mac: 'aa:bb:cc:dd:ee:02',
+      text: 'reboot requested through the ssh actuator (drain: true, force: false)'
+    },
+    {
+      at: '2026-09-28T12:00:00Z',
+      kind: 'power',
+      mac: 'aa:bb:cc:dd:ee:01',
+      text: 'duplicate of the autopilot ring'
+    }
+  ],
+  capabilities: { wol: true, actuator: 'ssh' },
+  summary: { up: 2, off: 0, unreachable: 0, inFlight: 1 }
+}
+
+function mountView(
+  status: unknown,
+  onClear?: (url: string, init?: RequestInit) => Response,
+  power: unknown = { ...powerEvents, events: [] }
+) {
   const spy = mockFetch((url, init) => {
     if (url === '/autopilot') return jsonResponse(status)
     if (url === '/booty.json') return jsonResponse(hosts)
+    if (url === '/power') return jsonResponse(power)
     if (url === '/autopilot/reports/flatcar-4800.0.0.md') {
       return new Response(reportMarkdown, {
         status: 200,
@@ -299,5 +324,31 @@ describe('AutopilotView', () => {
     expect(
       wrapper.find('tr[data-report-body="bluefin-26.09.701"] [data-testid="report-error"]').text()
     ).toContain('no such report')
+  })
+
+  it('merges the power tracker\'s events into the timeline with a power badge, without duplicates', async () => {
+    const withDuplicate = {
+      ...guard,
+      events: [
+        ...guard.events,
+        { at: '2026-09-28T12:00:00Z', kind: 'power', mac: 'aa:bb:cc:dd:ee:01', text: 'duplicate of the autopilot ring' }
+      ]
+    }
+    const { wrapper } = mountView(withDuplicate, undefined, powerEvents)
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="autopilot-timeline"] li[data-kind="power"]')
+    expect(items).toHaveLength(2)
+    expect(items[0]!.text()).toContain('reboot requested through the ssh actuator')
+    expect(items[0]!.text()).toContain('aren')
+    expect(items[0]!.find('[data-testid="event-kind"]').classes()).toContain('text-bg-info')
+    expect(wrapper.findAll('[data-testid="autopilot-timeline"] li')[1]!.attributes('data-kind')).toBe('power')
+  })
+
+  it('shows power events even when the autopilot is off', async () => {
+    const { wrapper } = mountView({ mode: 'off', actuator: 'none', dryRun: true }, undefined, powerEvents)
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="autopilot-timeline"] li')
+    expect(items).toHaveLength(2)
+    expect(items.every((li) => li.attributes('data-kind') === 'power')).toBe(true)
   })
 })

@@ -394,7 +394,7 @@ func decodeDataURL(t *testing.T, src string) string {
 // maps so the other tests can count what is specific to the host.
 var (
 	bluefinBootyUnits = []string{ign.BootedUnitName, ign.UpdateServiceName, ign.UpdateTimerName, ign.HealthUnitName}
-	bluefinBootyFiles = []string{bluefinUpdateCheckScript, bluefinHealthReportScript}
+	bluefinBootyFiles = []string{bluefinUpdateCheckScript, bluefinHealthReportScript, ign.WoLLinkPath}
 )
 
 // bluefinNode fetches mac's node config and checks it is a valid spec 3.6.0

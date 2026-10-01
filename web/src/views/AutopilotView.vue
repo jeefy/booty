@@ -7,14 +7,17 @@ import {
   RELEASE_STATE_LABEL,
   normalizeAutopilotStatus,
   normalizeBootyData,
+  normalizePowerStatus,
   type AutopilotHost,
   type AutopilotRelease,
   type AutopilotReport,
   type AutopilotStatus,
   type BootyData,
   type HostOS,
+  type PowerEvent,
   type RawAutopilotStatus,
   type RawBootyData,
+  type RawPowerStatus,
   type StatusResponse
 } from '@/types'
 import { formatAbsolute, formatRelative } from '@/utils/time'
@@ -24,6 +27,7 @@ import EmptyState from '@/components/EmptyState.vue'
 
 const status = ref<AutopilotStatus>(normalizeAutopilotStatus(null))
 const hostData = ref<BootyData>(normalizeBootyData(null))
+const powerEvents = ref<PowerEvent[]>([])
 const loading = ref(true)
 const error = ref('')
 const clearing = reactive<Record<string, boolean>>({})
@@ -51,7 +55,19 @@ const hostsWithEpisodes = computed(() =>
   [...status.value.hosts].sort((a, b) => hostLabel(a.mac).localeCompare(hostLabel(b.mac)))
 )
 
-const events = computed(() => [...status.value.events].reverse())
+/**
+ * The autopilot's ring plus the power tracker's own (the latter mirrors
+ * into the former while a controller runs, so duplicates are dropped).
+ */
+const events = computed(() => {
+  const seen = new Set(status.value.events.map((e) => `${e.at}|${e.mac}|${e.text}`))
+  const extra = powerEvents.value
+    .filter((e) => !seen.has(`${e.at}|${e.mac}|${e.text}`))
+    .map((e) => ({ at: e.at, kind: e.kind, os: '', release: '', mac: e.mac, text: e.text }))
+  return [...status.value.events, ...extra]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .reverse()
+})
 
 function osReleases(os: HostOS): AutopilotRelease[] {
   return status.value.os[os]?.releases ?? []
@@ -72,9 +88,10 @@ function episodeState(h: AutopilotHost) {
 async function load() {
   loading.value = true
   error.value = ''
-  const [statusResult, hostsResult] = await Promise.allSettled([
+  const [statusResult, hostsResult, powerResult] = await Promise.allSettled([
     apiGet<RawAutopilotStatus>('/autopilot'),
-    apiGet<RawBootyData>('/booty.json')
+    apiGet<RawBootyData>('/booty.json'),
+    apiGet<RawPowerStatus>('/power')
   ])
   if (statusResult.status === 'fulfilled') {
     status.value = normalizeAutopilotStatus(statusResult.value)
@@ -84,6 +101,8 @@ async function load() {
   if (hostsResult.status === 'fulfilled') {
     hostData.value = normalizeBootyData(hostsResult.value)
   }
+  powerEvents.value =
+    powerResult.status === 'fulfilled' ? normalizePowerStatus(powerResult.value).events : []
   loading.value = false
 }
 
@@ -489,13 +508,20 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+      </template>
 
+      <template v-if="!off || events.length">
         <div class="section-title">Timeline</div>
         <div class="panel fade-in">
           <ul v-if="events.length" class="timeline" data-testid="autopilot-timeline">
             <li v-for="(e, i) in events" :key="i" :data-kind="e.kind">
               <span class="when" :title="formatAbsolute(e.at)">{{ formatRelative(e.at) }}</span>
-              <span class="badge text-bg-light border kind">{{ e.kind }}</span>
+              <span
+                class="badge kind"
+                :class="e.kind === 'power' ? 'text-bg-info' : 'text-bg-light border'"
+                data-testid="event-kind"
+                >{{ e.kind }}</span
+              >
               <span v-if="e.os" class="badge text-bg-light border">{{ e.os }}</span>
               <span v-if="e.release" class="mono small">{{ e.release }}</span>
               <span v-if="e.mac" class="small text-secondary">{{ hostLabel(e.mac) }}</span>
@@ -505,7 +531,7 @@ onMounted(() => {
           <EmptyState
             v-else
             title="Nothing happened yet"
-            hint="Episodes, holds, releases and actuator calls show up here."
+            hint="Episodes, holds, releases, actuator calls and power actions show up here."
           />
         </div>
       </template>

@@ -5,6 +5,7 @@ import { ApiError, apiGet, apiPost, errorMessage } from '@/api'
 import {
   normalizeBootyData,
   normalizeClusterInfo,
+  normalizePowerSummary,
   normalizeSecureBootInfo,
   type BootyData,
   type ClusterInfo,
@@ -20,6 +21,7 @@ import {
   splitRunning,
   targetVersion
 } from '@/utils/fleet'
+import { powerSummaryText, summarizePower } from '@/utils/power'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 
@@ -52,6 +54,12 @@ const bluefin = computed(() => ({
 }))
 const bootyVersion = computed(() => info.value.booty?.version || '')
 const fleet = computed(() => fleetSummary(hostData.value, info.value))
+const power = computed(() =>
+  info.value.power
+    ? normalizePowerSummary(info.value.power)
+    : summarizePower(Object.values(hostData.value.hosts))
+)
+const powerText = computed(() => powerSummaryText(power.value))
 const pending = computed(() =>
   pendingHosts(hostData.value).map((host) => ({
     mac: host.mac,
@@ -265,6 +273,17 @@ onUnmounted(() => {
               data-testid="fleet-pending"
             >
               {{ fleet.pendingReboots }}
+            </div>
+          </div>
+          <div class="fleet-stat">
+            <div class="stat-label">Power</div>
+            <div class="fleet-power" data-testid="fleet-power">
+              <RouterLink to="/hosts" :title="power.inFlight ? `${power.inFlight} in flight` : 'Per-host power on the Hosts page'">
+                {{ powerText }}
+              </RouterLink>
+              <span v-if="power.inFlight" class="badge text-bg-info ms-2" data-testid="fleet-power-inflight">
+                {{ power.inFlight }} in flight
+              </span>
             </div>
           </div>
           <div class="fleet-stat fleet-source stat-hint">
@@ -557,6 +576,19 @@ onUnmounted(() => {
   align-items: flex-end;
   gap: var(--booty-space-3) var(--booty-space-5);
   padding: var(--booty-space-3);
+}
+
+.fleet-power {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fleet-power a {
+  text-decoration: none;
+}
+
+.fleet-power a:hover {
+  text-decoration: underline;
 }
 
 .fleet-source {

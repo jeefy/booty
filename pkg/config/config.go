@@ -334,7 +334,7 @@ const DefaultIgnitionFile = "config/ignition.yaml"
 
 // DefaultBuiltin lists the fragments Booty merges into every registered
 // host's Ignition config unless --builtin says otherwise.
-const DefaultBuiltin = "hostname,update,booted,sshkeys,health"
+const DefaultBuiltin = "hostname,update,booted,sshkeys,health,wol"
 
 // Values for DoInstallClearOn: clear a host's pending doInstall when it
 // fetches its Ignition config, only once it POSTs /booted, or (Bluefin) on

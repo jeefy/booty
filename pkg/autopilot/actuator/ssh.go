@@ -50,10 +50,19 @@ func (s *SSH) User(os string) string {
 // Command is what runs on the host: systemctl reboot, through sudo for
 // the core user.
 func (s *SSH) Command(os string) string {
+	return s.command(os, "reboot")
+}
+
+// PowerOffCommand is systemctl poweroff, through sudo for the core user.
+func (s *SSH) PowerOffCommand(os string) string {
+	return s.command(os, "poweroff")
+}
+
+func (s *SSH) command(os, verb string) string {
 	if s.User(os) == "root" {
-		return "systemctl reboot"
+		return "systemctl " + verb
 	}
-	return "sudo systemctl reboot"
+	return "sudo systemctl " + verb
 }
 
 // Prepare cordons and drains through the API when a client is available.
@@ -67,6 +76,15 @@ func (s *SSH) Prepare(ctx context.Context, host Host) error {
 
 // Reboot runs the reboot command on the host over SSH.
 func (s *SSH) Reboot(ctx context.Context, host Host) error {
+	return s.run(ctx, host, s.Command(host.OS))
+}
+
+// PowerOff runs systemctl poweroff on the host over SSH.
+func (s *SSH) PowerOff(ctx context.Context, host Host) error {
+	return s.run(ctx, host, s.PowerOffCommand(host.OS))
+}
+
+func (s *SSH) run(ctx context.Context, host Host, command string) error {
 	addr := host.IP
 	if addr == "" {
 		addr = host.Hostname
@@ -78,11 +96,11 @@ func (s *SSH) Reboot(ctx context.Context, host Host) error {
 	if port == 0 {
 		port = 22
 	}
-	out, err := s.Run(ctx, net.JoinHostPort(addr, fmt.Sprint(port)), s.User(host.OS), s.Command(host.OS))
+	out, err := s.Run(ctx, net.JoinHostPort(addr, fmt.Sprint(port)), s.User(host.OS), command)
 	if err != nil {
 		return fmt.Errorf("ssh %s@%s: %w", s.User(host.OS), addr, err)
 	}
-	slog.Info("Reboot requested over SSH", "host", host.Hostname, "user", s.User(host.OS), "command", s.Command(host.OS), "output", strings.TrimSpace(string(out)))
+	slog.Info("Command run over SSH", "host", host.Hostname, "user", s.User(host.OS), "command", command, "output", strings.TrimSpace(string(out)))
 	return nil
 }
 

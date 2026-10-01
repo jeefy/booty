@@ -23,6 +23,7 @@ import (
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/kubeadm"
+	"github.com/jeefy/booty/pkg/power"
 	"github.com/jeefy/booty/pkg/tftp"
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
@@ -81,6 +82,9 @@ type Options struct {
 	Cluster *cluster.Manager
 	// Autopilot answers GET /autopilot; nil reads as mode off.
 	Autopilot *autopilot.Autopilot
+	// Power answers GET /power and the power actions; nil serves the
+	// recorded states read-only and refuses actions.
+	Power *power.Tracker
 }
 
 func uiFileSystem(o Options) http.FileSystem {
@@ -99,6 +103,7 @@ func NewHandler(o Options) http.Handler {
 	setJoinMinter(o.Minter)
 	setClusterManager(o.Cluster)
 	setAutopilot(o.Autopilot)
+	setPowerTracker(o.Power)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/healthz", handleHealthz)
@@ -124,6 +129,8 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/cluster/ready", handleClusterReadyRequest)
 	mux.HandleFunc("/autopilot", handleAutopilotRequest)
 	mux.HandleFunc("/autopilot/", handleAutopilotRequest)
+	mux.HandleFunc("/power", handlePowerRequest)
+	mux.HandleFunc("/power/", handlePowerRequest)
 	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))

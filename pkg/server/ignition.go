@@ -28,6 +28,7 @@ import (
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	ign "github.com/jeefy/booty/pkg/ignition"
+	"github.com/jeefy/booty/pkg/power"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/tftp"
 	"github.com/jeefy/booty/pkg/versions"
@@ -175,6 +176,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		bluefinIPXEVars(mac, host, secureBoot || host.SecureBoot, &vars)
 	}
 	if host != nil && os != "bluefin" && !isPreview(r) {
+		powerFetch(mac, power.FetchKernel)
 		autopilotFetch(mac, controller.FetchKernel)
 	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
@@ -423,7 +425,7 @@ func builtinFragment(ctx context.Context, host *hardware.Host, features ign.Feat
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
-	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, features)
+	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys, MAC: host.MAC}, features)
 	return appendProfile(ctx, cfg, host, joinString, mint)
 }
 
@@ -614,6 +616,7 @@ func recordBoot(mac, ip string, host *hardware.Host) {
 	if err := hardware.MarkBooted(mac, ip, time.Now()); err != nil {
 		slog.Error("Could not record boot", "mac", mac, "error", err)
 	}
+	powerFetch(mac, power.FetchIgnition)
 	autopilotFetch(mac, controller.FetchIgnition)
 	if !host.DoInstall {
 		return

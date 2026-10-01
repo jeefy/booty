@@ -21,6 +21,7 @@ import (
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/ignition"
 	"github.com/jeefy/booty/pkg/kubeadm"
+	"github.com/jeefy/booty/pkg/power"
 	"github.com/jeefy/booty/pkg/profile"
 	"github.com/jeefy/booty/pkg/server"
 	"github.com/jeefy/booty/pkg/state"
@@ -65,7 +66,7 @@ func init() {
 	flags.String(config.GithubToken, "", "GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit; no scopes needed) and, with --autopilotIssues, used to file autopilot reports as issues (needs issues:write on that repository)")
 	flags.String(config.ServerIP, "", "IP address that clients can connect to; autodetected from the default route when empty (set explicitly behind a VIP/NAT)")
 	flags.Int(config.ServerHttpPort, 0, "HTTP port clients use to reach Booty when it differs from --httpPort (port mapping); 0 means same as --httpPort")
-	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys, health), or 'none' to serve the user config as-is")
+	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys, health, wol), or 'none' to serve the user config as-is")
 	flags.String(config.SSHAuthorizedKeysFl, "", "File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin")
 	flags.StringSlice(config.SSHAuthorizedKeys, nil, "SSH public key added to the 'core' user by the sshkeys builtin (repeatable)")
 	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
@@ -268,6 +269,10 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return err
 	}
+	tracker, err := newPowerTracker(pilot)
+	if err != nil {
+		return err
+	}
 	if server.DefaultTemplateInUse() {
 		slog.Info("No Butane template found; serving the embedded default", "path", config.DataPath(config.DefaultIgnitionFile))
 	}
@@ -296,7 +301,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("embedded web ui: %w", err)
 	}
-	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles, Minter: minter, Cluster: clusterManager, Autopilot: pilot}, errCh)
+	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles, Minter: minter, Cluster: clusterManager, Autopilot: pilot, Power: tracker}, errCh)
 	if err != nil {
 		tftpServer.Shutdown(5 * time.Second)
 		return err
@@ -321,6 +326,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if pilot.Controller != nil {
 		go pilot.Controller.Run(ctx)
 	}
+	go tracker.Run(ctx)
 
 	go func() {
 		versions.FlatcarVersionCheck()
@@ -487,15 +493,34 @@ func newK0sMinter(m *cluster.Manager, ttl time.Duration) (*kubeadm.Minter, error
 // transport when there is one, else comes from --kubeconfig or the
 // in-cluster environment, and the controller is started once the HTTP
 // server is up.
+// newAutopilot builds the autopilot (client, chooser and, unless the mode
+// is off, the controller). The client and chooser are built even when the
+// mode is off: the power buttons drain and reboot through them.
 func newAutopilot(s autopilot.Settings, minter *kubeadm.Minter) (*autopilot.Autopilot, error) {
-	if !s.Enabled() {
-		return &autopilot.Autopilot{Settings: s}, nil
-	}
 	var shared *kubeadm.Client
 	if minter != nil {
 		shared = minter.Client()
 	}
 	return autopilot.Setup(s, shared)
+}
+
+// newPowerTracker wires the power tracker to the hardware map, the
+// autopilot's cluster client and chooser, and its controller when one
+// runs (docs/plans/2026-09-30-power.md).
+func newPowerTracker(a *autopilot.Autopilot) (*power.Tracker, error) {
+	opts := power.Options{Fleet: power.LiveFleet{}}
+	if a != nil {
+		if a.Client != nil && a.Client.Configured() {
+			opts.Cluster = a.Client
+		}
+		if a.Chooser != nil {
+			opts.Actuators = a.Chooser
+		}
+		if a.Controller != nil {
+			opts.Autopilot = a.Controller
+		}
+	}
+	return power.New(opts)
 }
 
 func cleanupJoinTokens(ctx context.Context, minter *kubeadm.Minter) {

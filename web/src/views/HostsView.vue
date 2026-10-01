@@ -6,10 +6,14 @@ import {
   autopilotHostState,
   normalizeBootyData,
   normalizeHost,
+  normalizePowerStatus,
   registerPayload,
   type BootyData,
   type Host,
+  type HostPower,
+  type PowerCapabilities,
   type RawBootyData,
+  type RawPowerStatus,
   type RegisterResponse,
   type StatusResponse,
   type UnknownHost
@@ -26,6 +30,9 @@ import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import HostForm from '@/components/HostForm.vue'
+import PowerBadge from '@/components/PowerBadge.vue'
+import PowerActions from '@/components/PowerActions.vue'
+import { isLastUpWorker } from '@/utils/power'
 
 const hostData = ref<BootyData>(normalizeBootyData(null))
 const loading = ref(true)
@@ -35,6 +42,8 @@ const drafts = reactive<Record<string, Host>>({})
 const rowErrors = reactive<Record<string, string>>({})
 const busy = reactive<Record<string, boolean>>({})
 const confirmingDelete = reactive<Record<string, boolean>>({})
+const confirmingPower = reactive<Record<string, boolean>>({})
+const powerCapabilities = ref<PowerCapabilities | null>(null)
 
 const hosts = computed(() =>
   Object.entries(hostData.value.hosts).sort(([, a], [, b]) =>
@@ -52,17 +61,43 @@ function clearRowState(mac: string) {
   delete rowErrors[mac]
   delete busy[mac]
   delete confirmingDelete[mac]
+  delete confirmingPower[mac]
+}
+
+async function loadPower() {
+  try {
+    powerCapabilities.value = normalizePowerStatus(await apiGet<RawPowerStatus>('/power')).capabilities
+  } catch {
+    powerCapabilities.value = null
+  }
 }
 
 async function load() {
   loading.value = true
   error.value = ''
+  const power = loadPower()
   try {
     hostData.value = normalizeBootyData(await apiGet<RawBootyData>('/booty.json'))
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
     loading.value = false
+  }
+  await power
+}
+
+const hostList = computed(() => Object.values(hostData.value.hosts))
+
+function lastUpWorker(host: Host): boolean {
+  return isLastUpWorker(host, hostList.value)
+}
+
+function powerUpdated(mac: string, power: HostPower) {
+  const host = hostData.value.hosts[mac]
+  if (!host) return
+  hostData.value = {
+    ...hostData.value,
+    hosts: { ...hostData.value.hosts, [mac]: { ...host, power } }
   }
 }
 
@@ -176,6 +211,7 @@ onMounted(() => {
               <th scope="col">Running</th>
               <th scope="col">Last check</th>
               <th scope="col">Last boot</th>
+              <th scope="col">Power</th>
               <th scope="col" class="text-end">Actions</th>
             </tr>
           </thead>
@@ -224,6 +260,7 @@ onMounted(() => {
                     >
                       {{ HOST_STATUS_LABEL[hostStatus(host)].text }}
                     </span>
+                    <PowerBadge :power="host.power" />
                   </div>
                   <div class="host-config small text-secondary" data-testid="host-config">
                     <span class="mono" title="Ignition file">{{
@@ -326,12 +363,22 @@ onMounted(() => {
                     formatRelative(host.booted)
                   }}</span>
                 </td>
+                <td class="power-cell">
+                  <PowerActions
+                    :host="host"
+                    :capabilities="powerCapabilities"
+                    :last-up-worker="lastUpWorker(host)"
+                    :disabled="Boolean(busy[mac]) || Boolean(drafts[mac])"
+                    @updated="powerUpdated(mac, $event)"
+                    @confirming="confirmingPower[mac] = $event"
+                  />
+                </td>
                 <td class="text-end text-nowrap">
                   <template v-if="!drafts[mac] && !confirmingDelete[mac]">
                     <button
                       type="button"
                       class="btn btn-sm btn-outline-secondary me-1"
-                      :disabled="busy[mac]"
+                      :disabled="busy[mac] || confirmingPower[mac]"
                       data-action="edit"
                       @click="startEdit(mac, host)"
                     >
@@ -340,7 +387,7 @@ onMounted(() => {
                     <button
                       type="button"
                       class="btn btn-sm btn-outline-danger"
-                      :disabled="busy[mac]"
+                      :disabled="busy[mac] || confirmingPower[mac]"
                       data-action="delete"
                       @click="confirmingDelete[mac] = true"
                     >
@@ -379,12 +426,12 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="rowErrors[mac] && !drafts[mac]" :data-mac-error="mac">
-                <td colspan="8" class="pt-0 border-top-0">
+                <td colspan="9" class="pt-0 border-top-0">
                   <div class="row-error" data-testid="row-error">{{ rowErrors[mac] }}</div>
                 </td>
               </tr>
               <tr v-if="drafts[mac]" class="table-active" :data-mac-edit="mac">
-                <td colspan="8" class="pt-0 border-top-0">
+                <td colspan="9" class="pt-0 border-top-0">
                   <HostForm
                     v-model="drafts[mac]"
                     :busy="Boolean(busy[mac])"
@@ -528,6 +575,10 @@ onMounted(() => {
 
 .running {
   max-width: 12rem;
+}
+
+.power-cell {
+  min-width: 14rem;
 }
 
 .os-cell {

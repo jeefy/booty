@@ -615,4 +615,29 @@ describe('HomeView', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="cluster-state"]').text()).toBe('bootstrapped')
   })
+
+  it('shows the fleet power summary from /info and falls back to the host records', async () => {
+    const { wrapper } = mountHome({
+      '/info': () =>
+        jsonResponse({ ...baseInfo, power: { up: 6, off: 0, unreachable: 1, inFlight: 2 } })
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="fleet-power"]').text()).toContain('6 up · 0 off · 1 unreachable')
+    expect(wrapper.find('[data-testid="fleet-power-inflight"]').text()).toContain('2 in flight')
+
+    const derived = mountHome({
+      '/booty.json': () =>
+        jsonResponse({
+          hosts: {
+            a: { mac: 'a', power: { state: 'up' } },
+            b: { mac: 'b', power: { state: 'off' } },
+            c: { mac: 'c' }
+          },
+          unknownHosts: {}
+        })
+    })
+    await flushPromises()
+    expect(derived.wrapper.find('[data-testid="fleet-power"]').text()).toContain('1 up · 1 off · 0 unreachable')
+    expect(derived.wrapper.find('[data-testid="fleet-power-inflight"]').exists()).toBe(false)
+  })
 })

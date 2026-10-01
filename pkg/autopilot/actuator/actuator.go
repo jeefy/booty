@@ -55,6 +55,14 @@ type Rebooter interface {
 	Finish(ctx context.Context, host Host) error
 }
 
+// PowerActuator is a Rebooter that can also power a host off: the SSH and
+// API actuators. kured is not one (its sentinel means "in the next
+// window"), which is why operator actions never go through it.
+type PowerActuator interface {
+	Rebooter
+	PowerOff(ctx context.Context, host Host) error
+}
+
 // Names of the actuators, as reported by Name and GET /autopilot.
 const (
 	NameKured = "kured"
@@ -66,6 +74,10 @@ const (
 // ErrNoActuator is returned by Choose when no way to reboot exists: no
 // reachable cluster and no SSH key.
 var ErrNoActuator = errors.New("no reboot actuator available: no kured, no reachable Kubernetes API and no --rebootSSHKey")
+
+// ErrNoOperatorActuator is returned by Operator when neither SSH nor the
+// API can carry an operator's reboot or shutdown.
+var ErrNoOperatorActuator = errors.New("no actuator: configure --rebootSSHKey or run Booty in the cluster")
 
 // ErrNodeMismatch is returned by Resolve when the node named after the
 // host reports a different system UUID than the host's health report.
@@ -214,6 +226,35 @@ func (c *Chooser) Choose(ctx context.Context) (Rebooter, error) {
 		return &API{Client: c.opts.Client, Namespace: c.opts.Namespace, Image: c.opts.Image, DrainTimeout: c.opts.DrainTimeout}, nil
 	}
 	return nil, ErrNoActuator
+}
+
+// Operator picks the actuator for an operator's reboot or shutdown
+// button: SSH when --rebootSSHKey is set, else the API when a client is
+// configured and reachable; never kured. Both drain through the API
+// client when one is reachable.
+func (c *Chooser) Operator(ctx context.Context) (PowerActuator, error) {
+	var drain *k8s.Client
+	if c.opts.Client != nil && c.opts.Client.Configured() {
+		if _, err := c.Kured(ctx); err == nil || k8s.IsForbidden(err) {
+			drain = c.opts.Client
+		}
+	}
+	switch {
+	case c.opts.SSHKeyPath != "":
+		return &SSH{KeyPath: c.opts.SSHKeyPath, KnownHosts: c.opts.KnownHosts, Drain: drain, DrainTimeout: c.opts.DrainTimeout}, nil
+	case drain != nil:
+		return &API{Client: drain, Namespace: c.opts.Namespace, Image: c.opts.Image, DrainTimeout: c.opts.DrainTimeout}, nil
+	}
+	return nil, ErrNoOperatorActuator
+}
+
+// OperatorName is the name Operator would return, NameNone when none.
+func (c *Chooser) OperatorName(ctx context.Context) string {
+	r, err := c.Operator(ctx)
+	if err != nil {
+		return NameNone
+	}
+	return r.Name()
 }
 
 // Status is the dry-run view of the chooser: what GET /autopilot reports

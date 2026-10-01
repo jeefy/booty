@@ -186,7 +186,7 @@ func TestBluefinNodeCarriesBootyUnits(t *testing.T) {
 	if !strings.Contains(*units[ign.UpdateServiceName].Contents, "ExecStart="+bluefinUpdateCheckScript+"\n") || !strings.Contains(*units[ign.HealthUnitName].Contents, "ExecStart="+bluefinHealthReportScript+"\n") {
 		t.Fatalf("units must run the /etc/booty scripts: %v", units)
 	}
-	for _, p := range bluefinBootyFiles {
+	for _, p := range []string{bluefinUpdateCheckScript, bluefinHealthReportScript} {
 		f, ok := files[p]
 		if !ok || f.mode != 0o755 || !f.overwrite || !strings.HasPrefix(f.contents, "#!/bin/bash\n") {
 			t.Fatalf("%s: %+v", p, f)
@@ -195,11 +195,17 @@ func TestBluefinNodeCarriesBootyUnits(t *testing.T) {
 	if !strings.Contains(files[bluefinUpdateCheckScript].contents, `"http://192.168.1.10:8080/update-check"`) || !strings.Contains(files[bluefinHealthReportScript].contents, `"http://192.168.1.10:8080/health?mac=$MAC"`) {
 		t.Fatalf("scripts must talk to Booty: %v", files)
 	}
+	if f := files[ign.WoLLinkPath]; f.mode != 0o644 || !f.overwrite || f.contents != "[Match]\nMACAddress="+bluefinMAC+"\n\n[Link]\nWakeOnLan=magic\n" {
+		t.Fatalf("wol builtin arms the NIC through a .link file: %+v", f)
+	}
 
 	viper.Set(config.Builtin, "hostname,health")
 	_, files, units = bluefinNodeAll(t, srv.URL, bluefinMAC, "?preview=1")
 	if _, ok := units[ign.HealthUnitName]; !ok || len(units) != 1 || len(files) != 2 {
 		t.Fatalf("--builtin toggles apply to the node config: %v %v", units, files)
+	}
+	if _, ok := files[ign.WoLLinkPath]; ok {
+		t.Fatal("wol is dropped with its toggle")
 	}
 	viper.Set(config.Builtin, "none")
 	if r := do(t, http.MethodGet, srv.URL+bluefinNodePath+"?preview=1", ""); r.status != 404 {
