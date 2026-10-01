@@ -379,7 +379,7 @@ func newBluefinSource() (bluefinSource, error) {
 // repository.
 func ValidateBluefinFlags() error {
 	if pin := strings.TrimSpace(viper.GetString(config.BluefinVersion)); pin != "" && !ValidBluefinVersion(pin) {
-		return fmt.Errorf("--%s %q: not a Bluefin Server version such as 20260927.123", config.BluefinVersion, pin)
+		return fmt.Errorf("--%s %q: not a Bluefin Server version such as 26.09.747", config.BluefinVersion, pin)
 	}
 	if path := strings.TrimSpace(viper.GetString(config.BluefinKeyring)); path != "" {
 		if _, err := loadBluefinKeyring(path); err != nil {
