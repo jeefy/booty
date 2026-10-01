@@ -15,6 +15,7 @@ const title = computed(() => {
   const parts = [`Power: ${label.value.text}`]
   if (power.value.since) parts.push(`since ${formatAbsolute(power.value.since)}`)
   if (power.value.reason) parts.push(power.value.reason)
+  if (power.value.lastSeen) parts.push(`last seen ${formatRelative(power.value.lastSeen)}`)
   if (power.value.request) parts.push(`request: ${power.value.request}`)
   if (power.value.cordoned) parts.push('node cordoned by Booty')
   if (power.value.probe.at) {
