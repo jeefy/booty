@@ -4,13 +4,19 @@ import { apiGet, apiPost, errorMessage } from '@/api'
 import {
   AUTOPILOT_HOST_LABEL,
   autopilotHostState,
+  fleetTargets,
+  hostReporting,
+  hostTarget,
   normalizeBootyData,
   normalizeHost,
   normalizePowerStatus,
   registerPayload,
+  versionMatch,
   type BootyData,
+  type FleetTargets,
   type Host,
   type HostPower,
+  type Info,
   type PowerCapabilities,
   type RawBootyData,
   type RawPowerStatus,
@@ -32,9 +38,12 @@ import EmptyState from '@/components/EmptyState.vue'
 import HostForm from '@/components/HostForm.vue'
 import PowerBadge from '@/components/PowerBadge.vue'
 import PowerActions from '@/components/PowerActions.vue'
+import NoAgentBadge from '@/components/NoAgentBadge.vue'
 import { isLastUpWorker } from '@/utils/power'
 
 const hostData = ref<BootyData>(normalizeBootyData(null))
+const targets = ref<FleetTargets>({})
+const now = ref(new Date())
 const loading = ref(true)
 const error = ref('')
 
@@ -72,10 +81,20 @@ async function loadPower() {
   }
 }
 
+async function loadTargets() {
+  try {
+    targets.value = fleetTargets((await apiGet<Info>('/info')) ?? {})
+  } catch {
+    targets.value = {}
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
+  now.value = new Date()
   const power = loadPower()
+  const info = loadTargets()
   try {
     hostData.value = normalizeBootyData(await apiGet<RawBootyData>('/booty.json'))
   } catch (err) {
@@ -83,7 +102,7 @@ async function load() {
   } finally {
     loading.value = false
   }
-  await power
+  await Promise.all([power, info])
 }
 
 const hostList = computed(() => Object.values(hostData.value.hosts))
@@ -176,6 +195,20 @@ const runningLabels = computed(() => {
   return labels
 })
 
+const reporting = computed(() => {
+  const states: Record<string, ReturnType<typeof hostReporting>> = {}
+  for (const [mac, host] of hosts.value) states[mac] = hostReporting(host, now.value)
+  return states
+})
+
+const matches = computed(() => {
+  const result: Record<string, { match: ReturnType<typeof versionMatch>; target: string }> = {}
+  for (const [mac, host] of hosts.value) {
+    result[mac] = { match: versionMatch(host, targets.value), target: hostTarget(host, targets.value) }
+  }
+  return result
+})
+
 onMounted(() => {
   void load()
 })
@@ -253,6 +286,7 @@ onMounted(() => {
                   <div class="host-name">
                     <span>{{ host.hostname || '—' }}</span>
                     <span
+                      v-if="reporting[mac] !== 'never'"
                       class="badge"
                       :class="HOST_STATUS_LABEL[hostStatus(host)].badge"
                       :data-status="hostStatus(host)"
@@ -338,10 +372,31 @@ onMounted(() => {
                     </span>
                   </div>
                 </td>
-                <td data-testid="host-running">
-                  <template v-if="runningLabels[mac]">
-                    <div class="mono truncate running" :title="host.running">
-                      {{ runningLabels[mac].image }}
+                <td data-testid="host-running" :data-reporting="reporting[mac]">
+                  <NoAgentBadge v-if="reporting[mac] === 'never'" />
+                  <template v-else-if="runningLabels[mac]">
+                    <div class="running-line">
+                      <span class="mono truncate running" :title="host.running">
+                        {{ runningLabels[mac].image }}
+                      </span>
+                      <span
+                        v-if="matches[mac].match === 'match'"
+                        class="version-match version-match--ok"
+                        :title="`Running the target release ${matches[mac].target}`"
+                        data-testid="host-version-match"
+                        data-match="match"
+                        aria-label="on target"
+                        >✓</span
+                      >
+                      <span
+                        v-else-if="matches[mac].match === 'behind'"
+                        class="badge text-bg-warning version-behind"
+                        :title="`Target release is ${matches[mac].target}; the host runs ${host.running}`"
+                        data-testid="host-version-match"
+                        data-match="behind"
+                      >
+                        behind {{ matches[mac].target }}
+                      </span>
                     </div>
                     <div
                       v-if="runningLabels[mac].digest"
@@ -350,8 +405,16 @@ onMounted(() => {
                     >
                       @{{ runningLabels[mac].shortDigest }}
                     </div>
+                    <div
+                      v-if="reporting[mac] === 'stale'"
+                      class="small version-stale"
+                      :title="`Last check-in ${formatAbsolute(host.lastCheck)}; the agent reports every 10 min`"
+                      data-testid="host-stale"
+                    >
+                      last seen {{ formatRelative(host.lastCheck, now) }}
+                    </div>
                   </template>
-                  <span v-else class="text-secondary">—</span>
+                  <span v-else class="text-secondary" title="Reporting, but no version yet">—</span>
                 </td>
                 <td data-testid="host-last-check">
                   <span :title="formatAbsolute(host.lastCheck)">{{
@@ -575,6 +638,30 @@ onMounted(() => {
 
 .running {
   max-width: 12rem;
+}
+
+.running-line {
+  display: flex;
+  align-items: center;
+  gap: var(--booty-space-1);
+}
+
+.version-match {
+  font-weight: 700;
+  line-height: 1;
+}
+
+.version-match--ok {
+  color: var(--bs-success);
+}
+
+.version-behind {
+  white-space: nowrap;
+}
+
+.version-stale {
+  color: var(--bs-warning-text-emphasis);
+  white-space: nowrap;
 }
 
 .power-cell {
