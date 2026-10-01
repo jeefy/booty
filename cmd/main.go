@@ -60,7 +60,7 @@ func init() {
 	flags.String(config.FlatcarVersion, "", "Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel")
 	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
 	flags.String(config.BluefinRepo, config.DefaultBluefinRepo, "GitHub repository whose v<version> releases provide the Bluefin Server netboot UKI, OS DDI and sysexts")
-	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 20260927.123, tag v20260927.123). When empty, tracks the newest v<version> release (or the OCI artifact's latest tag)")
+	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 26.09.747, tag v26.09.747). When empty, tracks the newest v<version> release (or the OCI artifact's latest tag)")
 	flags.String(config.BluefinKeyring, "", "OpenPGP public keyring (binary as for gpgv --keyring, or armored) that must have signed a Bluefin release's SHA256SUMS (SHA256SUMS.gpg); the sync fails closed when set. Empty trusts SHA256SUMS from the release as-is")
 	flags.String(config.BluefinOCI, "", "Fetch the Bluefin Server release files from this ORAS OCI artifact repository instead of GitHub releases (e.g. ghcr.io/projectbluefin/bluefin-server; tags <version> and latest; http://host:port/repo for a plain-HTTP registry). --githubToken is sent to ghcr.io only")
 	flags.String(config.GithubToken, "", "GitHub token sent as a bearer token to the releases API (raises the unauthenticated 60 requests/hour limit; no scopes needed) and, with --autopilotIssues, used to file autopilot reports as issues (needs issues:write on that repository)")
