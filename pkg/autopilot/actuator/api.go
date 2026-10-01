@@ -150,6 +150,16 @@ func Evictable(p k8s.Pod) bool {
 // Reboot creates the reboot Pod on the node. It fails before touching the
 // API when Image or Namespace are unknown.
 func (a *API) Reboot(ctx context.Context, host Host) error {
+	return a.runPod(ctx, host, false)
+}
+
+// PowerOff creates the same Pod with `node-reboot --poweroff`, so the node
+// powers off instead of rebooting.
+func (a *API) PowerOff(ctx context.Context, host Host) error {
+	return a.runPod(ctx, host, true)
+}
+
+func (a *API) runPod(ctx context.Context, host Host, poweroff bool) error {
 	if a.Image == "" {
 		return errors.New("reboot pod: Booty's own image is unknown; set --autopilotImage or the BOOTY_IMAGE environment variable")
 	}
@@ -164,14 +174,14 @@ func (a *API) Reboot(ctx context.Context, host Host) error {
 	if err := a.Client.DeletePod(ctx, a.Namespace, name); err != nil {
 		return fmt.Errorf("reboot pod: removing the previous %s: %w", name, err)
 	}
-	manifest, err := RebootPodManifest(a.Namespace, name, node.Name, a.Image)
+	manifest, err := PowerPodManifest(a.Namespace, name, node.Name, a.Image, poweroff)
 	if err != nil {
 		return err
 	}
 	if err := a.Client.CreatePod(ctx, a.Namespace, manifest); err != nil {
 		return fmt.Errorf("reboot pod: %w", err)
 	}
-	slog.Info("Reboot pod created", "node", node.Name, "pod", a.Namespace+"/"+name, "image", a.Image)
+	slog.Info("Reboot pod created", "node", node.Name, "pod", a.Namespace+"/"+name, "image", a.Image, "poweroff", poweroff)
 	return nil
 }
 
@@ -198,7 +208,16 @@ func RebootPodName(nodeName string) string {
 // signal the host's PID 1, pinned with nodeName, tolerating every taint,
 // never restarted, bounded by RebootPodDeadline.
 func RebootPodManifest(namespace, name, nodeName, image string) ([]byte, error) {
+	return PowerPodManifest(namespace, name, nodeName, image, false)
+}
+
+// PowerPodManifest is RebootPodManifest with the choice of `--poweroff`.
+func PowerPodManifest(namespace, name, nodeName, image string, poweroff bool) ([]byte, error) {
 	privileged := true
+	command := []string{"/booty", "node-reboot"}
+	if poweroff {
+		command = append(command, "--poweroff")
+	}
 	pod := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",
@@ -220,7 +239,7 @@ func RebootPodManifest(namespace, name, nodeName, image string) ([]byte, error) 
 				"name":            "node-reboot",
 				"image":           image,
 				"imagePullPolicy": "IfNotPresent",
-				"command":         []string{"/booty", "node-reboot"},
+				"command":         command,
 				"securityContext": map[string]any{"privileged": &privileged},
 			}},
 		},
