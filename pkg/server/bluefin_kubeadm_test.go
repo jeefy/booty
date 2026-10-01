@@ -83,6 +83,9 @@ func TestBluefinKubeadmWorkerNodeConfig(t *testing.T) {
 	if f := files[profile.BluefinJoinScript]; f.mode != 0o755 || !strings.Contains(f.contents, "export PATH=/usr/bin:/usr/sbin") {
 		t.Fatalf("join script: %+v", f)
 	}
+	if f := files[profile.BluefinFormatScript]; f.mode != 0o755 || !f.overwrite || !strings.Contains(f.contents, "blkid -p -o export") || !strings.Contains(f.contents, `exec mkfs.ext4 -F -L "${LABEL}" "${dev}"`) {
+		t.Fatalf("format script: %+v", f)
+	}
 
 	if len(cfg.Storage.Disks) != 0 || len(cfg.Storage.Filesystems) != 0 {
 		t.Fatalf("the containerd disk is never partitioned, formatted or wiped by Ignition: %+v %+v", cfg.Storage.Disks, cfg.Storage.Filesystems)
@@ -93,13 +96,18 @@ func TestBluefinKubeadmWorkerNodeConfig(t *testing.T) {
 			t.Errorf("%s must be enabled: %+v", name, units[name])
 		}
 	}
-	for _, name := range []string{`var-lib-containerd\x2ddisk.mount`, profile.BluefinContainerdDirUnit, "var-lib-containerd.mount"} {
+	for _, name := range []string{profile.BluefinContainerdFormatUnit, `var-lib-containerd\x2ddisk.mount`, profile.BluefinContainerdDirUnit, "var-lib-containerd.mount"} {
 		u, ok := units[name]
 		if !ok || u.Contents == nil || enabled(u) {
 			t.Errorf("%s is written and pulled in by containerd, not enabled: %+v", name, u)
 		}
 	}
-	if u := units[`var-lib-containerd\x2ddisk.mount`]; u.Contents == nil || !strings.Contains(*u.Contents, "What=/dev/sda\n") || !strings.Contains(*u.Contents, "Where=/var/lib/containerd-disk\n") {
+	if u := units[profile.BluefinContainerdFormatUnit]; u.Contents == nil || !strings.Contains(*u.Contents, "Requires=dev-sda.device\n") || !strings.Contains(*u.Contents, `Before=var-lib-containerd\x2ddisk.mount`+"\n") ||
+		!strings.Contains(*u.Contents, `Environment="DEVICE=/dev/sda"`+"\n") || !strings.Contains(*u.Contents, `Environment="STATE_DISK="`+"\n") || !strings.Contains(*u.Contents, `Environment="INSTALL_DISK="`+"\n") {
+		t.Fatalf("format unit: %+v", u)
+	}
+	if u := units[`var-lib-containerd\x2ddisk.mount`]; u.Contents == nil || !strings.Contains(*u.Contents, "What=/dev/sda\n") || !strings.Contains(*u.Contents, "Where=/var/lib/containerd-disk\n") ||
+		!strings.Contains(*u.Contents, "Requires="+profile.BluefinContainerdFormatUnit+"\nAfter="+profile.BluefinContainerdFormatUnit+"\n") || strings.Contains(*u.Contents, "never formatted") {
 		t.Fatalf("disk mount: %+v", u)
 	}
 	if u := units["var-lib-containerd.mount"]; u.Contents == nil || !strings.Contains(*u.Contents, "What=/var/lib/containerd-disk/bluefin\n") || !strings.Contains(*u.Contents, "Options=bind,nofail\n") {
@@ -127,6 +135,46 @@ func TestBluefinKubeadmWorkerNodeConfig(t *testing.T) {
 	_, _, units = bluefinNode(t, srv.URL, arenMAC, "?preview=1")
 	if _, ok := units["var-lib-containerd.mount"]; ok || len(units["containerd.service"].Dropins) != 0 {
 		t.Fatalf("without --containerdDisk containerd keeps its root in RAM: %v", units)
+	}
+	if _, ok := units[profile.BluefinContainerdFormatUnit]; ok {
+		t.Fatalf("without --containerdDisk nothing is formatted: %v", units)
+	}
+}
+
+func TestBluefinKubeadmWorkerContainerdDiskIsTheHostsDisk(t *testing.T) {
+	srv, dir := newTestServer(t)
+	installBluefinFixture(t, dir)
+	addKubeadmSysextToFixture(t, dir)
+	liveKubeadmFlags(t, dir)
+	viper.Set(config.KubeadmJoin, config.KubeadmJoinStatic)
+	viper.Set(config.JoinString, "kubeadm join 10.0.0.1:6443 --token t.s --discovery-token-ca-cert-hash sha256:abc")
+	register(t, srv.URL, `{"mac":"`+arenMAC+`","hostname":"aren","os":"bluefin","stateDisk":"/dev/sda"}`)
+	register(t, srv.URL, `{"mac":"aa:bb:cc:dd:ee:a2","hostname":"inst","os":"bluefin","installDisk":"/dev/sda"}`)
+	logs := captureLogs(t)
+
+	_, _, units := bluefinNode(t, srv.URL, arenMAC, "?preview=1")
+	u := units[profile.BluefinContainerdFormatUnit]
+	if u.Contents == nil || !strings.Contains(*u.Contents, `Environment="DEVICE=/dev/sda"`+"\n") || !strings.Contains(*u.Contents, `Environment="STATE_DISK=/dev/sda"`+"\n") {
+		t.Fatalf("the format unit carries the host's stateDisk for the script to refuse: %+v", u)
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "--containerdDisk is this host's stateDisk or installDisk; its containerd disk format unit will refuse it and containerd will not start") || !strings.Contains(logs.String(), "stateDisk=/dev/sda") {
+		t.Fatalf("a containerd disk that is the host's state disk is logged as an error:\n%s", logs)
+	}
+
+	logs.Reset()
+	_, _, units = bluefinNode(t, srv.URL, "aa:bb:cc:dd:ee:a2", "?preview=1")
+	if u := units[profile.BluefinContainerdFormatUnit]; u.Contents == nil || !strings.Contains(*u.Contents, `Environment="INSTALL_DISK=/dev/sda"`+"\n") {
+		t.Fatalf("the format unit carries the host's installDisk for the script to refuse: %+v", u)
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "installDisk=/dev/sda") {
+		t.Fatalf("a containerd disk that is the host's install disk is logged as an error:\n%s", logs)
+	}
+
+	logs.Reset()
+	register(t, srv.URL, `{"mac":"`+arenMAC+`","hostname":"aren","os":"bluefin","stateDisk":"/dev/sdb"}`)
+	bluefinNode(t, srv.URL, arenMAC, "?preview=1")
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("a different state disk is fine:\n%s", logs)
 	}
 }
 

@@ -54,10 +54,16 @@ func addBluefinKubeadmWorker(ctx context.Context, cfg *ign36.Config, mac string,
 	}
 	addBluefinExtensions(cfg, mac, release, []string{versions.BluefinSysextKubeadm})
 	join, _ := kubeadmJoinString(ctx, mac, host, mint)
+	containerdDisk := viper.GetString(config.ContainerdDisk)
+	if containerdDisk != "" && (containerdDisk == host.StateDisk || containerdDisk == host.InstallDisk) {
+		slog.Error("--containerdDisk is this host's stateDisk or installDisk; its containerd disk format unit will refuse it and containerd will not start", "mac", mac, "containerdDisk", containerdDisk, "stateDisk", host.StateDisk, "installDisk", host.InstallDisk)
+	}
 	worker := profile.BluefinKubeadmWorker(profile.BluefinWorkerOptions{
 		Hostname:       host.Hostname,
 		JoinString:     join,
-		ContainerdDisk: viper.GetString(config.ContainerdDisk),
+		ContainerdDisk: containerdDisk,
+		StateDisk:      host.StateDisk,
+		InstallDisk:    host.InstallDisk,
 	})
 	for _, f := range worker.Files {
 		cfg.Storage.Files = append(cfg.Storage.Files, bluefinInlineFile(f.Path, f.Contents, f.Mode))
