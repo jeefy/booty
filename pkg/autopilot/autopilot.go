@@ -211,8 +211,8 @@ type Status struct {
 	Mode     string          `json:"mode"`
 	Cluster  actuator.Status `json:"cluster"`
 	Actuator string          `json:"actuator"`
-	// SSHUsers is per-OS only for the ssh actuator, which logs in as root
-	// on Bluefin and core elsewhere.
+	// SSHUsers is per-OS only for the ssh actuator, which logs in as core
+	// on every OS.
 	SSHUsers     map[string]string `json:"sshUsers,omitempty"`
 	DryRun       bool              `json:"dryRun"`
 	HealthWindow string            `json:"healthWindow,omitempty"`
