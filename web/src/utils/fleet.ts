@@ -1,4 +1,12 @@
-import type { BootyData, Host, Info } from '@/types'
+import {
+  BLUEFIN_NOT_DOWNLOADED,
+  fleetTargets,
+  hostReporting,
+  hostTarget,
+  type BootyData,
+  type Host,
+  type Info
+} from '@/types'
 
 export const IGNITION_PARTS = ['merged', 'user', 'builtin'] as const
 export type IgnitionPart = (typeof IGNITION_PARTS)[number]
@@ -50,19 +58,17 @@ export function pendingHosts(data: BootyData): Host[] {
     .sort((a, b) => (a.hostname || a.mac).localeCompare(b.hostname || b.mac))
 }
 
-export function targetVersion(host: Host, info: Info): string {
-  switch (host.os) {
-    case 'coreos':
-      return info.coreos?.version || ''
-    case 'bluefin':
-      return bluefinVersion(info)
-    default:
-      return info.flatcar?.pinnedVersion || info.flatcar?.version || ''
-  }
+export function noAgentHosts(data: BootyData, now: Date = new Date()): Host[] {
+  return Object.values(data.hosts)
+    .filter((host) => hostReporting(host, now) === 'never')
+    .sort((a, b) => (a.hostname || a.mac).localeCompare(b.hostname || b.mac))
 }
 
-const BLUEFIN_NOT_DOWNLOADED = '0.0.0'
+export function targetVersion(host: Host, info: Info): string {
+  return hostTarget(host, fleetTargets(info))
+}
 
+/** The cached Bluefin release (not the fleet target, which a hold may move). */
 export function bluefinVersion(info: Info): string {
   const version = info.bluefin?.version || ''
   return version === BLUEFIN_NOT_DOWNLOADED ? '' : version

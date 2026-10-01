@@ -92,6 +92,13 @@ export interface Host {
   /** Server-owned power state (see `HostPower`); read-only in the UI. */
   power?: RawHostPower
   /**
+   * Cached release of the host's OS Booty serves this MAC; "" means the
+   * fleet target. Set by the operator or the autopilot (`autopilot.pinned`).
+   */
+  targetVersion?: string
+  /** Server-owned: the last report from the node's booty-health.service, if any. */
+  health?: RawHostHealth | null
+  /**
    * Version the host last reported, or `image@digest` for ostree hosts.
    * "" if the host has never checked in.
    */
@@ -100,6 +107,71 @@ export interface Host {
   lastCheck: string
   /** True when the server has a newer version/image than the host is running. */
   rebootPending: boolean
+}
+
+/** POST /health body as stored on the host; only `receivedAt` matters to the UI. */
+export interface RawHostHealth {
+  receivedAt?: string
+  bootID?: string
+  running?: string
+  failedUnits?: string[]
+  journalErrors?: string[]
+  firmware?: string
+  kernel?: string
+}
+
+/** The OS a host boots; the server treats "" as flatcar. */
+export function hostOS(os: HostOS | '' | undefined): HostOS {
+  return OS_OPTIONS.includes(os as HostOS) ? (os as HostOS) : 'flatcar'
+}
+
+export const STALE_AFTER_MS = 30 * 60 * 1000
+
+/**
+ * Whether the host's agent (the `update`/`health` builtin units) has ever
+ * talked to Booty: `never` when nothing was recorded at all (booted before
+ * those units existed, or `--builtin=none`), `stale` when its last
+ * check-in is older than STALE_AFTER_MS, else `reporting`.
+ */
+export type HostReporting = 'reporting' | 'never' | 'stale'
+
+export function hostReporting(
+  host: Pick<Host, 'lastCheck' | 'booted' | 'health'>,
+  now: Date = new Date()
+): HostReporting {
+  if (!host.lastCheck && !host.booted && !host.health) return 'never'
+  if (!host.lastCheck) return 'reporting'
+  const last = new Date(host.lastCheck).getTime()
+  if (Number.isNaN(last)) return 'reporting'
+  return now.getTime() - last > STALE_AFTER_MS ? 'stale' : 'reporting'
+}
+
+/** GET /info `targets`: the fleet target per OS (`versions.FleetTarget`). */
+export type FleetTargets = Partial<Record<HostOS, string>>
+
+export type VersionMatch = 'match' | 'behind' | 'unknown'
+
+/** The release `versionMatch` compares against for host. */
+export function hostTarget(
+  host: Pick<Host, 'os' | 'targetVersion'>,
+  targets: FleetTargets
+): string {
+  return host.targetVersion || targets[hostOS(host.os)] || ''
+}
+
+/**
+ * Compares what the host runs with the release Booty would boot it into:
+ * its `targetVersion`, else the fleet target of its OS. `unknown` when
+ * either side is missing or the host runs an ostree image (`image@digest`,
+ * compared by digest on the server, not by version).
+ */
+export function versionMatch(
+  host: Pick<Host, 'os' | 'running' | 'targetVersion' | 'ostreeImage'>,
+  targets: FleetTargets
+): VersionMatch {
+  const target = hostTarget(host, targets)
+  if (!host.running || !target || host.ostreeImage || host.running.includes('@')) return 'unknown'
+  return host.running === target ? 'match' : 'behind'
 }
 
 export const POWER_STATES = [
@@ -401,9 +473,33 @@ export interface Info {
   bluefin?: { version?: string; pinnedVersion?: string }
   booty?: { version?: string; timestamp?: string }
   fleet?: FleetInfo
+  /** Fleet target per OS (hold-aware); older servers omit it. */
+  targets?: Partial<Record<HostOS, string | null>>
   secureBoot?: RawSecureBootInfo
   autopilot?: RawAutopilotInfo
   power?: Partial<PowerSummary>
+}
+
+export const BLUEFIN_NOT_DOWNLOADED = '0.0.0'
+
+/**
+ * The fleet target per OS: `/info.targets` when the server sends it, else
+ * the per-OS `version` blocks (a Flatcar pin wins; Bluefin's `0.0.0` means
+ * no release yet).
+ */
+export function fleetTargets(info: Info): FleetTargets {
+  const bluefin = info.bluefin?.version || ''
+  const fallback: FleetTargets = {
+    flatcar: info.flatcar?.pinnedVersion || info.flatcar?.version || '',
+    coreos: info.coreos?.version || '',
+    bluefin: bluefin === BLUEFIN_NOT_DOWNLOADED ? '' : bluefin
+  }
+  if (!info.targets) return fallback
+  const targets: FleetTargets = {}
+  for (const os of OS_OPTIONS) {
+    targets[os] = info.targets[os] || fallback[os] || ''
+  }
+  return targets
 }
 
 export interface PinState {
