@@ -23,6 +23,7 @@ import (
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	ign "github.com/jeefy/booty/pkg/ignition"
+	"github.com/jeefy/booty/pkg/power"
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
@@ -261,6 +262,7 @@ func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, plat
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
 		host.NetbootPlatform, host.NetbootVersion = platform, version
+		powerFetch(mac, power.FetchKernel)
 		autopilotFetch(mac, controller.FetchKernel)
 	}
 	if platform == hardware.PlatformEFI {
@@ -359,6 +361,7 @@ func serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) 
 		if err := hardware.MarkBooted(mac, remoteIP(r), time.Now()); err != nil {
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
+		powerFetch(mac, power.FetchIgnition)
 		autopilotFetch(mac, controller.FetchIgnition)
 		if bluefinInstallsNow(host) && viper.GetString(config.DoInstallClearOn) == config.ClearOnIgnition {
 			_, _ = markBluefinInstalled(mac, "ignition fetch")

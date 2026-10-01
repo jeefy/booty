@@ -14,6 +14,7 @@ import (
 	"github.com/jeefy/booty/pkg/autopilot"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/power"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
@@ -187,6 +188,7 @@ func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update host")
 		return
 	}
+	powerBooted(mac)
 	autopilotBooted(mac, strings.TrimSpace(r.URL.Query().Get("running")))
 	slog.Info("Host reported install complete", "mac", mac, "ip", ip)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "host": host})
@@ -250,6 +252,7 @@ type infoResponse struct {
 	} `json:"fleet"`
 	SecureBoot secureBootInfo    `json:"secureBoot"`
 	Autopilot  autopilot.Summary `json:"autopilot"`
+	Power      power.Summary     `json:"power"`
 }
 
 // secureBootInfo is the /info view of the UEFI HTTP Boot support: whether
@@ -312,6 +315,7 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	info.SecureBoot = currentSecureBootInfo(hosts)
 	info.Autopilot = pilot.Summary()
+	info.Power = powerSummary()
 	writeJSON(w, http.StatusOK, info)
 }
 

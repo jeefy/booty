@@ -85,6 +85,7 @@ func handleUpdateCheckRequest(w http.ResponseWriter, r *http.Request) {
 		resp.RebootRequired, resp.Reason = true, reason
 	}
 	recordUpdateCheck(mac, host, resp)
+	powerSeen(mac)
 	writeJSON(w, http.StatusOK, resp)
 }
 
