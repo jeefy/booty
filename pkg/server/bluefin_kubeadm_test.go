@@ -207,7 +207,7 @@ func TestBluefinKubeadmWorkerFailsClosedWithoutSysext(t *testing.T) {
 	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "Bluefin release has no kubeadm sysext; serving the node config without the kubeadm join") {
 		t.Fatalf("a release without the kubeadm sysext is logged as an error:\n%s", logs)
 	}
-	if len(units) != 1 || !*units["sshd.service"].Enabled || len(files) != 1 || files["/etc/hostname"].contents != "aren\n" || len(cfg.Passwd.Users) != 1 {
+	if len(units) != 1 || !*units["sshd.service"].Enabled || len(files) != 2 || files["/etc/hostname"].contents != "aren\n" || len(cfg.Passwd.Users) != 1 || cfg.Passwd.Users[0].Name != "core" {
 		t.Fatalf("the host still boots diskless with hostname and SSH, nothing kubeadm: %v %v", files, units)
 	}
 	if api.posts.Load() != 0 {

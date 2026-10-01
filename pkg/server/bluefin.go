@@ -52,6 +52,22 @@ const (
 	// writable on a diskless node, /opt is not guaranteed to be.
 	bluefinUpdateCheckScript  = "/etc/booty/update-check"
 	bluefinHealthReportScript = "/etc/booty/health-report"
+
+	// bluefinSSHUser is the login the sshkeys builtin provisions on a
+	// Bluefin node, the same name Flatcar and CoreOS use, so the SSH
+	// actuator and operators treat every OS alike. The image ships root
+	// locked ("!unprovisioned", projectbluefin/server #275, 26.10) and its
+	// sshd runs without PAM, which refuses key logins to a locked account,
+	// so root's authorized_keys are useless.
+	bluefinSSHUser = "core"
+	// bluefinSudoersFile grants core passwordless sudo, as upstream's
+	// developer-mode recipe does (/etc/sudoers.d/50-<user>, 0440); the
+	// image's sudo includes /etc/sudoers.d.
+	bluefinSudoersFile = "/etc/sudoers.d/booty-core"
+	// bluefinNoPassword is the shadow field of an account with no password
+	// login that is not locked: useradd's default "!" locks the account,
+	// which sshd (UsePAM no) refuses even for keys.
+	bluefinNoPassword = "*"
 )
 
 // bluefinBootURL is the UEFI HTTP Boot URL of mac's netboot UKI. The MAC is
@@ -429,11 +445,7 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 			slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 		}
 		if len(keys) > 0 {
-			root := ign36.PasswdUser{Name: "root"}
-			for _, k := range keys {
-				root.SSHAuthorizedKeys = append(root.SSHAuthorizedKeys, ign36.SSHAuthorizedKey(k))
-			}
-			cfg.Passwd.Users = append(cfg.Passwd.Users, root)
+			addBluefinCoreUser(&cfg, keys)
 			// Bluefin ships sshd disabled by preset; keys are useless without it.
 			cfg.Systemd.Units = append(cfg.Systemd.Units, ign36.Unit{Name: "sshd.service", Enabled: boolPtr(true)})
 		}
@@ -490,6 +502,22 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 		return cfg, err
 	}
 	return v3_6.Merge(cfg, child), nil
+}
+
+// addBluefinCoreUser provisions core (wheel, bash, no password login) with
+// keys and a passwordless sudoers drop-in.
+func addBluefinCoreUser(cfg *ign36.Config, keys []string) {
+	user := ign36.PasswdUser{
+		Name:         bluefinSSHUser,
+		Groups:       []ign36.Group{"wheel"},
+		Shell:        strPtr("/bin/bash"),
+		PasswordHash: strPtr(bluefinNoPassword),
+	}
+	for _, k := range keys {
+		user.SSHAuthorizedKeys = append(user.SSHAuthorizedKeys, ign36.SSHAuthorizedKey(k))
+	}
+	cfg.Passwd.Users = append(cfg.Passwd.Users, user)
+	cfg.Storage.Files = append(cfg.Storage.Files, bluefinInlineFile(bluefinSudoersFile, bluefinSSHUser+" ALL=(ALL) NOPASSWD: ALL\n", 0o440))
 }
 
 // addBluefinBootyUnits gives a Bluefin node the booted callback, the

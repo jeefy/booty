@@ -460,14 +460,27 @@ func TestBluefinNodeIgnitionBasics(t *testing.T) {
 	if f := files["/etc/hostname"]; f.contents != "srv1\n" || f.mode != 0o644 || !f.overwrite {
 		t.Fatalf("hostname: %+v", f)
 	}
-	if len(cfg.Passwd.Users) != 1 || cfg.Passwd.Users[0].Name != "root" || len(cfg.Passwd.Users[0].SSHAuthorizedKeys) != 1 || cfg.Passwd.Users[0].SSHAuthorizedKeys[0] != "ssh-ed25519 AAAA... dogfood" {
-		t.Fatalf("root keys: %+v", cfg.Passwd.Users)
+	if len(cfg.Passwd.Users) != 1 {
+		t.Fatalf("exactly one user, core (root ships locked): %+v", cfg.Passwd.Users)
+	}
+	core := cfg.Passwd.Users[0]
+	if core.Name != "core" || len(core.SSHAuthorizedKeys) != 1 || core.SSHAuthorizedKeys[0] != "ssh-ed25519 AAAA... dogfood" {
+		t.Fatalf("core keys: %+v", core)
+	}
+	if len(core.Groups) != 1 || core.Groups[0] != "wheel" || core.Shell == nil || *core.Shell != "/bin/bash" {
+		t.Fatalf("core is in wheel with a bash shell: %+v", core)
+	}
+	if core.PasswordHash == nil || *core.PasswordHash != "*" {
+		t.Fatalf("core must carry passwordHash \"*\": a locked (\"!\") account is refused by the image's PAM-less sshd even for keys: %+v", core)
+	}
+	if f := files["/etc/sudoers.d/booty-core"]; f.contents != "core ALL=(ALL) NOPASSWD: ALL\n" || f.mode != 0o440 || !f.overwrite {
+		t.Fatalf("sudoers drop-in: %+v", f)
 	}
 	if u, ok := units["sshd.service"]; !ok || u.Enabled == nil || !*u.Enabled || u.Contents != nil {
 		t.Fatalf("SSH keys enable the image's sshd.service: %v", units)
 	}
-	if len(cfg.Storage.Disks) != 0 || len(cfg.Storage.Filesystems) != 0 || len(units) != 1 || len(files) != 1 {
-		t.Fatalf("a plain diskless host touches no disk and adds only sshd: %+v %v", cfg.Storage, units)
+	if len(cfg.Storage.Disks) != 0 || len(cfg.Storage.Filesystems) != 0 || len(units) != 1 || len(files) != 2 {
+		t.Fatalf("a plain diskless host touches no disk and adds only sshd and the sudoers drop-in: %+v %v", cfg.Storage, units)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bluefin", "current")); err != nil {
 		t.Fatal(err)
@@ -524,6 +537,14 @@ func TestBluefinNodeIgnitionStateDiskMatchesUpstreamFixture(t *testing.T) {
 		t.Fatalf("SSH keys enable sshd ahead of the fixture's units: %+v", got.Systemd.Units)
 	}
 	got.Systemd.Units = got.Systemd.Units[1:]
+	// The fixture provisions root's keys, which the image's locked root
+	// cannot use (see TestBluefinNodeIgnitionBasics); only the disk layout
+	// is compared.
+	if len(got.Passwd.Users) != 1 || got.Passwd.Users[0].Name != "core" || len(got.Storage.Files) != 1 || got.Storage.Files[0].Path != bluefinSudoersFile {
+		t.Fatalf("core and its sudoers drop-in: %+v %+v", got.Passwd.Users, got.Storage.Files)
+	}
+	got.Passwd, want.Passwd = ign36.Passwd{}, ign36.Passwd{}
+	got.Storage.Files = nil
 	gotJSON, _ := json.Marshal(got)
 	wantJSON, _ := json.Marshal(want)
 	if string(gotJSON) != string(wantJSON) {
