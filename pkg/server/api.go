@@ -250,9 +250,28 @@ type infoResponse struct {
 		Hosts          int `json:"hosts"`
 		PendingReboots int `json:"pendingReboots"`
 	} `json:"fleet"`
+	// Targets is the release hosts of each OS boot and are compared
+	// against in /update-check (versions.FleetTarget): current, or the
+	// release the autopilot holds the fleet at; "" while none is cached.
+	// The UI compares a host's running version with it.
+	Targets    fleetTargets      `json:"targets"`
 	SecureBoot secureBootInfo    `json:"secureBoot"`
 	Autopilot  autopilot.Summary `json:"autopilot"`
 	Power      power.Summary     `json:"power"`
+}
+
+type fleetTargets struct {
+	Flatcar string `json:"flatcar"`
+	CoreOS  string `json:"coreos"`
+	Bluefin string `json:"bluefin"`
+}
+
+func currentFleetTargets() fleetTargets {
+	return fleetTargets{
+		Flatcar: versions.FleetTarget(versions.OSFlatcar),
+		CoreOS:  versions.FleetTarget(versions.OSCoreOS),
+		Bluefin: versions.FleetTarget(versions.OSBluefin),
+	}
 }
 
 // secureBootInfo is the /info view of the UEFI HTTP Boot support: whether
@@ -313,6 +332,7 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 			info.Fleet.PendingReboots++
 		}
 	}
+	info.Targets = currentFleetTargets()
 	info.SecureBoot = currentSecureBootInfo(hosts)
 	info.Autopilot = pilot.Summary()
 	info.Power = powerSummary()
