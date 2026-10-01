@@ -29,13 +29,21 @@ const (
 	KubeletExtraArgs = "--cgroup-driver=systemd --fail-swap-on=false"
 
 	// BluefinContainerdDiskPath is where a Bluefin worker mounts
-	// --containerdDisk as it is, never formatting it: the disk keeps the
-	// Flatcar node's containerd root at its top level, and Bluefin's lives
-	// in BluefinContainerdSubdir, bind-mounted onto /var/lib/containerd.
-	BluefinContainerdDiskPath = "/var/lib/containerd-disk"
-	BluefinContainerdSubdir   = BluefinContainerdDiskPath + "/bluefin"
-	BluefinContainerdDirUnit  = "booty-containerd-disk-dir.service"
-	BluefinContainerdDropin   = "10-booty-containerd-disk.conf"
+	// --containerdDisk. BluefinContainerdFormatUnit formats the device
+	// ext4 (label ContainerdDiskLabel) once, if and only if it carries no
+	// filesystem and no partition table; whatever is already on it is
+	// mounted as it is and never wiped. There is nothing to preserve from
+	// a Flatcar worker that shared the disk (it reformats --containerdDisk
+	// on every boot), and the disk could be an installed system's by
+	// mistake. Bluefin's containerd root lives in BluefinContainerdSubdir,
+	// bind-mounted onto /var/lib/containerd, so the top level stays
+	// whatever another OS left there.
+	BluefinContainerdDiskPath   = "/var/lib/containerd-disk"
+	BluefinContainerdSubdir     = BluefinContainerdDiskPath + "/bluefin"
+	BluefinContainerdFormatUnit = "booty-containerd-disk-format.service"
+	BluefinFormatScript         = "/etc/booty/containerd-disk-format.sh"
+	BluefinContainerdDirUnit    = "booty-containerd-disk-dir.service"
+	BluefinContainerdDropin     = "10-booty-containerd-disk.conf"
 )
 
 // BluefinFile is a file of the Bluefin worker config.
@@ -68,11 +76,14 @@ type BluefinWorker struct {
 
 // BluefinWorkerOptions are the per-host inputs: the registered hostname
 // (the Node name), the join string (as for Flatcar: static or minted, empty
-// when unavailable) and --containerdDisk.
+// when unavailable), --containerdDisk, and the host's stateDisk and
+// installDisk, which the containerd disk format unit refuses to touch.
 type BluefinWorkerOptions struct {
 	Hostname       string
 	JoinString     string
 	ContainerdDisk string
+	StateDisk      string
+	InstallDisk    string
 }
 
 // BluefinKubeadmWorker renders the Bluefin kubeadm worker.
@@ -84,7 +95,9 @@ func BluefinKubeadmWorker(o BluefinWorkerOptions) BluefinWorker {
 	containerd := BluefinUnit{Name: "containerd.service", Enabled: true}
 	if o.ContainerdDisk != "" {
 		diskMount := SystemdEscapePath(BluefinContainerdDiskPath) + ".mount"
+		w.Files = append(w.Files, BluefinFile{Path: BluefinFormatScript, Mode: 0o755, Contents: bluefinFormatScript})
 		w.Units = append(w.Units,
+			BluefinUnit{Name: BluefinContainerdFormatUnit, Contents: bluefinDiskFormat(o, diskMount)},
 			BluefinUnit{Name: diskMount, Contents: bluefinDiskMount(o.ContainerdDisk)},
 			BluefinUnit{Name: BluefinContainerdDirUnit, Contents: bluefinDiskDir(diskMount)},
 			BluefinUnit{Name: ContainerdMountUnit, Contents: bluefinBindMount},
@@ -99,12 +112,80 @@ func BluefinKubeadmWorker(o BluefinWorkerOptions) BluefinWorker {
 	return w
 }
 
-// bluefinDiskMount mounts the containerd disk as it is. nofail keeps it
-// out of local-fs.target: only containerd.service pulls it in, so a
-// missing disk fails the join, never the boot.
+// bluefinDiskFormat runs bluefinFormatScript once per boot, before the
+// disk mount, which Requires= it. DefaultDependencies=no: it is ordered
+// before a mount unit. The device unit is what the mount itself waits for
+// and is active once udev has processed the device, so it stands in for
+// the deprecated systemd-udev-settle.service.
+func bluefinDiskFormat(o BluefinWorkerOptions, diskMount string) string {
+	device := SystemdEscapePath(o.ContainerdDisk) + ".device"
+	return `[Unit]
+Description=Booty: format the containerd disk ` + o.ContainerdDisk + ` once if it is blank
+DefaultDependencies=no
+Requires=` + device + `
+After=` + device + `
+Before=` + diskMount + `
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment="DEVICE=` + systemdQuote(o.ContainerdDisk) + `"
+Environment="LABEL=` + ContainerdDiskLabel + `"
+Environment="STATE_DISK=` + systemdQuote(o.StateDisk) + `"
+Environment="INSTALL_DISK=` + systemdQuote(o.InstallDisk) + `"
+ExecStart=/usr/bin/bash ` + BluefinFormatScript + `
+`
+}
+
+// bluefinFormatScript formats the containerd disk if and only if blkid's
+// low-level probe finds nothing on it: exit status 2 with no output, which
+// is also what a missing device gets, hence the -b check first. A
+// filesystem or a partition table (exit 0), an ambivalent result (8) or an
+// error (4) all leave the device alone; only the ambivalent and error
+// cases fail the unit. The state and install disks are compared by
+// canonical path, so a by-id alias of either is refused too.
+const bluefinFormatScript = `#!/bin/bash
+set -uo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+if [ ! -b "${DEVICE}" ]; then
+  echo "${DEVICE} is not a block device; cannot use it as the containerd disk" >&2
+  exit 1
+fi
+dev=$(readlink -f "${DEVICE}")
+for protected in "stateDisk=${STATE_DISK:-}" "installDisk=${INSTALL_DISK:-}"; do
+  path=${protected#*=}
+  [ -n "${path}" ] || continue
+  if [ "${dev}" = "$(readlink -f "${path}")" ]; then
+    echo "refusing to use ${DEVICE} as the containerd disk: it is this host's ${protected%%=*} (${path})" >&2
+    exit 1
+  fi
+done
+signature=$(blkid -p -o export "${dev}")
+case $? in
+  0)
+    echo "${DEVICE} already carries a filesystem or partition table; leaving it as it is:"
+    printf '%s\n' "${signature}" | grep -E '^(TYPE|PTTYPE|LABEL)='
+    exit 0
+    ;;
+  2) ;;
+  *)
+    echo "blkid -p ${dev} failed; not touching ${DEVICE}" >&2
+    exit 1
+    ;;
+esac
+echo "${DEVICE} carries no filesystem or partition table; formatting it ext4 with label ${LABEL}"
+exec mkfs.ext4 -F -L "${LABEL}" "${dev}"
+`
+
+// bluefinDiskMount mounts the containerd disk as it is, once the format
+// unit has made sure it carries a filesystem. nofail keeps it out of
+// local-fs.target: only containerd.service pulls it in, so a missing disk
+// fails the join, never the boot.
 func bluefinDiskMount(device string) string {
 	return `[Unit]
-Description=Booty: containerd disk ` + device + ` (never formatted)
+Description=Booty: containerd disk ` + device + `
+Requires=` + BluefinContainerdFormatUnit + `
+After=` + BluefinContainerdFormatUnit + `
 
 [Mount]
 What=` + device + `
