@@ -38,9 +38,9 @@ const hostB: Host = {
 
 const hostC: Host = {
   mac: 'aa:bb:cc:dd:ee:03',
-  hostname: 'charlie-never',
+  hostname: 'charlie-booting',
   ip: '',
-  booted: '',
+  booted: '2026-09-24T11:55:00Z',
   os: 'coreos',
   installDisk: '',
   running: '',
@@ -120,8 +120,8 @@ describe('HostsView', () => {
     const alpha = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"]')
     expect(alpha.find('[data-testid="host-status"]').text()).toBe('Up to date')
     expect(alpha.find('[data-testid="host-status"]').classes()).toContain('text-bg-success')
-    expect(alpha.find('[data-testid="host-running"]').text()).toBe('3815.2.0')
-    expect(alpha.find('[data-testid="host-running"] .mono').exists()).toBe(true)
+    expect(alpha.find('[data-testid="host-running"] .mono').text()).toBe('3815.2.0')
+    expect(alpha.find('[data-testid="host-running"]').attributes('data-reporting')).toBe('stale')
     expect(alpha.find('[data-testid="host-last-check"]').text()).toContain('ago')
 
     const bravo = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"]')
@@ -363,7 +363,7 @@ describe('HostsView', () => {
     expect(requestBody<Host>(register!.init)).not.toHaveProperty('role')
   })
 
-  it('treats hosts from an old server without fleet fields as Unknown', async () => {
+  it('treats hosts from an old server without fleet fields as never reported', async () => {
     const { wrapper } = mountWithData({
       hosts: { 'aa:bb:cc:dd:ee:10': { mac: 'aa:bb:cc:dd:ee:10', hostname: 'legacy' } },
       unknownHosts: {}
@@ -371,9 +371,144 @@ describe('HostsView', () => {
     await flushPromises()
 
     const row = wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:10"]')
-    expect(row.find('[data-testid="host-status"]').text()).toBe('Unknown')
-    expect(row.find('[data-testid="host-running"]').text()).toBe('—')
+    expect(row.find('[data-testid="host-status"]').exists()).toBe(false)
+    expect(row.find('[data-testid="host-running"]').text()).toBe('no agent yet')
     expect(row.find('[data-testid="host-last-check"]').text()).toBe('never')
+  })
+
+  describe('reporting states in the Running cell', () => {
+    const now = new Date('2026-10-01T12:00:00Z')
+    const info = {
+      flatcar: { version: '4593.2.1', pinnedVersion: '4593.2.1' },
+      coreos: { version: '44.1' },
+      bluefin: { version: '26.10.816', pinnedVersion: '' },
+      targets: { flatcar: '4593.2.1', coreos: '44.1', bluefin: '26.10.816' }
+    }
+    const never: Host = {
+      mac: 'aa:bb:cc:dd:ee:20',
+      hostname: 'yghitan',
+      ip: '192.168.50.31',
+      booted: '',
+      os: 'flatcar',
+      installDisk: '',
+      running: '',
+      lastCheck: '',
+      rebootPending: false,
+      health: null,
+      power: { state: 'up' }
+    }
+    const onTarget: Host = {
+      ...never,
+      mac: 'aa:bb:cc:dd:ee:21',
+      hostname: 'aren',
+      os: 'bluefin',
+      booted: '2026-10-01T05:01:33Z',
+      running: '26.10.816',
+      lastCheck: new Date(now.getTime() - 5 * 60_000).toISOString()
+    }
+    const behind: Host = {
+      ...onTarget,
+      mac: 'aa:bb:cc:dd:ee:22',
+      hostname: 'old-flatcar',
+      os: 'flatcar',
+      running: '4500.0.0',
+      rebootPending: true
+    }
+    const stale: Host = {
+      ...onTarget,
+      mac: 'aa:bb:cc:dd:ee:23',
+      hostname: 'quiet',
+      lastCheck: new Date(now.getTime() - 45 * 60_000).toISOString()
+    }
+
+    function mountStates(hosts: Host[]) {
+      vi.useFakeTimers({ now, toFake: ['Date'] })
+      return mountWithData(
+        { hosts: Object.fromEntries(hosts.map((h) => [h.mac, h])), unknownHosts: {} },
+        { '/info': () => jsonResponse(info) }
+      )
+    }
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('shows a muted "no agent yet" badge instead of Unknown for a host that never reported', async () => {
+      const { wrapper, calls } = mountStates([never])
+      await flushPromises()
+
+      expect(calls.some((c) => c.url === '/info')).toBe(true)
+      const row = wrapper.find(`tr[data-mac="${never.mac}"]`)
+      const cell = row.find('[data-testid="host-running"]')
+      expect(cell.attributes('data-reporting')).toBe('never')
+      const badge = cell.find('[data-testid="host-no-agent"]')
+      expect(badge.text()).toBe('no agent yet')
+      expect(badge.attributes('title')).toContain("Booted before Booty's update/health units existed")
+      expect(badge.attributes('title')).toContain('reports every 10 min')
+      expect(badge.classes()).toContain('badge')
+      expect(row.find('[data-testid="host-status"]').exists()).toBe(false)
+      expect(row.text()).not.toContain('Unknown')
+      expect(row.find('[data-testid="host-power"]').exists()).toBe(true)
+    })
+
+    it('shows the running version with a match tick, or a "behind <target>" warning', async () => {
+      const { wrapper } = mountStates([onTarget, behind])
+      await flushPromises()
+
+      const aren = wrapper.find(`tr[data-mac="${onTarget.mac}"] [data-testid="host-running"]`)
+      expect(aren.attributes('data-reporting')).toBe('reporting')
+      expect(aren.find('.mono').text()).toBe('26.10.816')
+      const tick = aren.find('[data-testid="host-version-match"]')
+      expect(tick.attributes('data-match')).toBe('match')
+      expect(tick.attributes('title')).toContain('26.10.816')
+      expect(tick.classes()).toContain('version-match--ok')
+      expect(aren.find('[data-testid="host-stale"]').exists()).toBe(false)
+
+      const old = wrapper.find(`tr[data-mac="${behind.mac}"] [data-testid="host-running"]`)
+      expect(old.find('.mono').text()).toBe('4500.0.0')
+      const warn = old.find('[data-testid="host-version-match"]')
+      expect(warn.attributes('data-match')).toBe('behind')
+      expect(warn.text()).toBe('behind 4593.2.1')
+      expect(warn.classes()).toContain('text-bg-warning')
+    })
+
+    it('shows the running version plus "last seen" in warning colour when the last check is stale', async () => {
+      const { wrapper } = mountStates([stale])
+      await flushPromises()
+
+      const cell = wrapper.find(`tr[data-mac="${stale.mac}"] [data-testid="host-running"]`)
+      expect(cell.attributes('data-reporting')).toBe('stale')
+      expect(cell.find('.mono').text()).toBe('26.10.816')
+      const seen = cell.find('[data-testid="host-stale"]')
+      expect(seen.text()).toBe('last seen 45m ago')
+      expect(seen.classes()).toContain('version-stale')
+      expect(cell.find('[data-testid="host-no-agent"]').exists()).toBe(false)
+    })
+
+    it('falls back to the per-OS version blocks when /info has no targets, and to no indicator when /info fails', async () => {
+      const { wrapper } = mountStates([onTarget, behind])
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="host-version-match"]')).toHaveLength(2)
+
+      vi.useRealTimers()
+      const withoutTargets = { flatcar: info.flatcar, coreos: info.coreos, bluefin: info.bluefin }
+      const fallback = mountWithData(
+        { hosts: { [behind.mac]: behind }, unknownHosts: {} },
+        { '/info': () => jsonResponse(withoutTargets) }
+      )
+      await flushPromises()
+      expect(
+        fallback.wrapper.find('[data-testid="host-version-match"]').text()
+      ).toBe('behind 4593.2.1')
+
+      const failing = mountWithData(
+        { hosts: { [behind.mac]: behind }, unknownHosts: {} },
+        { '/info': () => jsonResponse({ error: 'boom' }, 500) }
+      )
+      await flushPromises()
+      expect(failing.wrapper.find('[data-testid="host-version-match"]').exists()).toBe(false)
+      expect(failing.wrapper.find('[data-testid="host-running"] .mono').text()).toBe('4500.0.0')
+    })
   })
 
   it('shows empty states and tolerates missing maps in the payload', async () => {

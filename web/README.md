@@ -31,10 +31,23 @@ Each `Host` carries three fleet fields reported by the running machine:
 value in the tooltip) and a relative **Last check** column; Ignition file,
 OSTree image and the install flag are folded into the Host cell to keep the
 table readable at 1280px. Hosts from older servers that omit the fields are
-normalised to `""`/`false` in `types.ts` and render as `Unknown`. The Overview
+normalised to `""`/`false` in `types.ts`. `hostReporting(host, now)` in
+`types.ts` derives `never` (no `lastCheck`, `booted` or `health` at all: the
+host booted before the `update`/`health` builtin units existed, or with
+`--builtin=none`), `stale` (`lastCheck` older than 30 min) or `reporting`;
+`versionMatch(host, targets)` compares `running` (or the host's
+`targetVersion`) with the per-OS fleet target from `GET /info`'s `targets`
+block (`fleetTargets(info)` falls back to the `version` blocks for older
+servers). The Running cell renders a muted **no agent yet** badge
+(`NoAgentBadge`, tooltip explains the reboot) for `never` and hides the Status
+badge, the version with a green ✓ or a `behind <target>` warning when
+reporting, and the version plus `last seen Xm ago` in warning colour when
+stale; `—`/`Unknown` only remain for a reporting host without a version. The
+host form repeats the badge on its read-only Running line. The Overview
 page's Fleet panel takes `hosts`/`pendingReboots` from `GET /info`'s `fleet`
 block when present and derives them from `/booty.json` otherwise, listing every
-host pending reboot with its running and target version. The MAC link in the
+host pending reboot with its running and target version, and adds a muted
+`N hosts have no agent yet` line when any host is in that state. The MAC link in the
 Hosts table opens the merged Ignition preview
 (`/ignition.json?mac=<mac>&preview=1&part=merged`); the small "user config" and
 "builtin" links underneath open `part=user` and `part=builtin`.
@@ -93,7 +106,7 @@ npm run dev          # http://localhost:5173/ui/
 
 The dev server proxies every backend route (`/booty.json`, `/info`,
 `/flatcar/*`, `/registry`, `/register`, `/unregister`, `/hosts`,
-`/ignition.json`, `/cluster`, `/autopilot`, `/config`, `/healthz`,
+`/ignition.json`, `/cluster`, `/autopilot`, `/power`, `/config`, `/healthz`,
 `/version.json`, `/data`) to a running Go
 server. It defaults to `http://localhost:8080`; override with
 `VITE_API_TARGET=http://host:port npm run dev`.

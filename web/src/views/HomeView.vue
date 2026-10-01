@@ -17,6 +17,7 @@ import {
 import {
   bluefinVersion,
   fleetSummary,
+  noAgentHosts,
   pendingHosts,
   splitRunning,
   targetVersion
@@ -60,6 +61,7 @@ const power = computed(() =>
     : summarizePower(Object.values(hostData.value.hosts))
 )
 const powerText = computed(() => powerSummaryText(power.value))
+const noAgent = computed(() => noAgentHosts(hostData.value))
 const pending = computed(() =>
   pendingHosts(hostData.value).map((host) => ({
     mac: host.mac,
@@ -290,6 +292,19 @@ onUnmounted(() => {
             <template v-if="fleet.fromServer">Reported by /info</template>
             <template v-else>Derived from host records</template>
           </div>
+        </div>
+        <div
+          v-if="noAgent.length"
+          class="fleet-no-agent small text-secondary"
+          :title="noAgent.map((h) => h.hostname || h.mac).join(', ')"
+          data-testid="fleet-no-agent"
+        >
+          <RouterLink to="/hosts">
+            {{ noAgent.length }} {{ noAgent.length === 1 ? 'host has' : 'hosts have' }} no agent yet
+          </RouterLink>
+          <span class="fleet-no-agent-hint">
+            booted before Booty's update/health units existed; a reboot picks them up
+          </span>
         </div>
         <table v-if="pending.length" class="table table-sm fleet-table mb-0" data-testid="fleet-list">
           <thead>
@@ -594,6 +609,28 @@ onUnmounted(() => {
 .fleet-source {
   margin-left: auto;
   margin-top: 0;
+}
+
+.fleet-no-agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--booty-space-1) var(--booty-space-2);
+  padding: 0 var(--booty-space-3) var(--booty-space-3);
+}
+
+.fleet-no-agent a {
+  color: var(--booty-muted);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.fleet-no-agent a:hover {
+  text-decoration: underline;
+}
+
+.fleet-no-agent-hint {
+  color: var(--booty-muted);
 }
 
 .fleet-pending {

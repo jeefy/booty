@@ -5,6 +5,7 @@ import {
   fleetSummary,
   hostStatus,
   ignitionPreviewUrl,
+  noAgentHosts,
   pendingHosts,
   splitRunning,
   targetVersion
@@ -104,7 +105,7 @@ describe('bluefinVersion', () => {
   })
 })
 
-describe('pendingHosts / fleetSummary', () => {
+describe('pendingHosts / noAgentHosts / fleetSummary', () => {
   const data: BootyData = {
     hosts: {
       b: host({ mac: 'b', hostname: 'bravo', rebootPending: true }),
@@ -116,6 +117,20 @@ describe('pendingHosts / fleetSummary', () => {
 
   it('lists pending hosts sorted by hostname', () => {
     expect(pendingHosts(data).map((h) => h.hostname)).toEqual(['alpha', 'bravo'])
+  })
+
+  it('lists hosts that never reported, sorted by hostname', () => {
+    const now = new Date('2026-10-01T12:00:00Z')
+    const never: BootyData = {
+      hosts: {
+        y: host({ mac: 'y', hostname: 'yghitan' }),
+        e: host({ mac: 'e', hostname: 'ehrlitan' }),
+        a: host({ mac: 'a', hostname: 'aren', running: '26.10.816', lastCheck: now.toISOString() }),
+        b: host({ mac: 'b', hostname: 'booted-only', booted: now.toISOString() })
+      },
+      unknownHosts: {}
+    }
+    expect(noAgentHosts(never, now).map((h) => h.hostname)).toEqual(['ehrlitan', 'yghitan'])
   })
 
   it('derives counts when /info has no fleet block and prefers the server values otherwise', () => {

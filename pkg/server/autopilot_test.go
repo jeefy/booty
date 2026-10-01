@@ -233,12 +233,20 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 			Quarantine int      `json:"quarantined"`
 			NeedsHands int      `json:"needsHands"`
 		} `json:"autopilot"`
+		Targets struct {
+			Flatcar string `json:"flatcar"`
+			CoreOS  string `json:"coreos"`
+			Bluefin string `json:"bluefin"`
+		} `json:"targets"`
 	}
 	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
 		t.Fatal(err)
 	}
 	if info.Autopilot.Mode != "guard" || info.Autopilot.Actuator != "none" || len(info.Autopilot.Held) != 1 || info.Autopilot.Held[0] != "flatcar" {
 		t.Fatalf("/info.autopilot: %+v", info.Autopilot)
+	}
+	if info.Targets.Flatcar != "4757.2.0" || info.Targets.CoreOS != "" || info.Targets.Bluefin != "" {
+		t.Fatalf("/info.targets must follow the fleet hold: %+v", info.Targets)
 	}
 
 	for path, want := range map[string]int{

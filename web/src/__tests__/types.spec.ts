@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   OS_OPTIONS,
   ROLE_OPTIONS,
+  STALE_AFTER_MS,
   acceptsInstallDisk,
+  fleetTargets,
+  hostOS,
+  hostReporting,
   hostRole,
+  hostTarget,
   normalizeBootyData,
   normalizeClusterInfo,
   normalizeEffectiveConfig,
@@ -13,8 +18,112 @@ import {
   normalizeSecureBootInfo,
   normalizeTemplateDocument,
   normalizeTemplateValidation,
-  registerPayload
+  registerPayload,
+  versionMatch
 } from '@/types'
+
+const NOW = new Date('2026-10-01T12:00:00Z')
+
+function minutesAgo(minutes: number): string {
+  return new Date(NOW.getTime() - minutes * 60_000).toISOString()
+}
+
+describe('hostReporting', () => {
+  it('is never when lastCheck, booted and health are all empty', () => {
+    expect(hostReporting({ lastCheck: '', booted: '', health: null }, NOW)).toBe('never')
+    expect(hostReporting({ lastCheck: '', booted: '', health: undefined }, NOW)).toBe('never')
+  })
+
+  it('is reporting once anything was recorded and the last check is fresh', () => {
+    expect(hostReporting({ lastCheck: minutesAgo(5), booted: '', health: null }, NOW)).toBe(
+      'reporting'
+    )
+    expect(hostReporting({ lastCheck: '', booted: minutesAgo(2), health: null }, NOW)).toBe(
+      'reporting'
+    )
+    expect(
+      hostReporting({ lastCheck: '', booted: '', health: { receivedAt: minutesAgo(1) } }, NOW)
+    ).toBe('reporting')
+  })
+
+  it('is stale when the last check is older than 30 minutes', () => {
+    expect(hostReporting({ lastCheck: minutesAgo(31), booted: '', health: null }, NOW)).toBe(
+      'stale'
+    )
+    expect(hostReporting({ lastCheck: minutesAgo(30), booted: '', health: null }, NOW)).toBe(
+      'reporting'
+    )
+    expect(STALE_AFTER_MS).toBe(30 * 60 * 1000)
+  })
+
+  it('treats an unparseable lastCheck as reporting rather than stale', () => {
+    expect(hostReporting({ lastCheck: 'garbage', booted: '', health: null }, NOW)).toBe('reporting')
+  })
+})
+
+describe('hostOS', () => {
+  it('defaults "" and unknown values to flatcar', () => {
+    expect(hostOS('')).toBe('flatcar')
+    expect(hostOS(undefined)).toBe('flatcar')
+    expect(hostOS('bluefin')).toBe('bluefin')
+    expect(hostOS('coreos')).toBe('coreos')
+  })
+})
+
+describe('versionMatch / hostTarget', () => {
+  const targets = { flatcar: '4593.2.1', coreos: '44.1', bluefin: '26.10.816' }
+
+  it('matches running against the fleet target of the host OS', () => {
+    expect(versionMatch({ os: 'flatcar', running: '4593.2.1' }, targets)).toBe('match')
+    expect(versionMatch({ os: '', running: '4593.2.1' }, targets)).toBe('match')
+    expect(versionMatch({ os: 'bluefin', running: '26.10.816' }, targets)).toBe('match')
+    expect(versionMatch({ os: 'bluefin', running: '26.09.747' }, targets)).toBe('behind')
+  })
+
+  it('prefers the host targetVersion over the fleet target', () => {
+    const host = { os: 'flatcar' as const, running: '4593.2.1', targetVersion: '4500.0.0' }
+    expect(hostTarget(host, targets)).toBe('4500.0.0')
+    expect(versionMatch(host, targets)).toBe('behind')
+    expect(versionMatch({ ...host, running: '4500.0.0' }, targets)).toBe('match')
+  })
+
+  it('is unknown without a running version, without a target, or for ostree images', () => {
+    expect(versionMatch({ os: 'flatcar', running: '' }, targets)).toBe('unknown')
+    expect(versionMatch({ os: 'coreos', running: '44.1' }, {})).toBe('unknown')
+    expect(
+      versionMatch(
+        { os: 'coreos', running: 'ghcr.io/x/y@sha256:abc', ostreeImage: 'ghcr.io/x/y:stable' },
+        targets
+      )
+    ).toBe('unknown')
+    expect(versionMatch({ os: 'coreos', running: 'ghcr.io/x/y@sha256:abc' }, targets)).toBe(
+      'unknown'
+    )
+  })
+})
+
+describe('fleetTargets', () => {
+  const info = {
+    flatcar: { version: '4593.2.1', pinnedVersion: '' },
+    coreos: { version: '44.1' },
+    bluefin: { version: '26.10.816', pinnedVersion: '' }
+  }
+
+  it('uses /info.targets when present and fills gaps from the version blocks', () => {
+    expect(
+      fleetTargets({ ...info, targets: { flatcar: '4500.0.0', coreos: '', bluefin: null } })
+    ).toEqual({ flatcar: '4500.0.0', coreos: '44.1', bluefin: '26.10.816' })
+  })
+
+  it('falls back to the version blocks for older servers, preferring a Flatcar pin', () => {
+    expect(fleetTargets(info)).toEqual({ flatcar: '4593.2.1', coreos: '44.1', bluefin: '26.10.816' })
+    expect(fleetTargets({ ...info, flatcar: { version: '4593.2.1', pinnedVersion: '4500.0.0' } }).flatcar).toBe(
+      '4500.0.0'
+    )
+    expect(fleetTargets({ bluefin: { version: '0.0.0' } })).toEqual({ flatcar: '', coreos: '', bluefin: '' })
+    expect(fleetTargets({})).toEqual({ flatcar: '', coreos: '', bluefin: '' })
+  })
+})
 
 describe('normalizeHost', () => {
   it('fills the fleet fields with empty defaults when an old server omits them', () => {

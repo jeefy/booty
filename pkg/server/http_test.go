@@ -608,9 +608,14 @@ func TestInfoAndVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.body), &info); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"flatcar", "coreos", "bluefin", "booty", "fleet", "secureBoot"} {
+	for _, key := range []string{"flatcar", "coreos", "bluefin", "booty", "fleet", "targets", "secureBoot"} {
 		if _, ok := info[key]; !ok {
 			t.Fatalf("info missing %q: %s", key, r.body)
+		}
+	}
+	for _, osName := range []string{"flatcar", "coreos", "bluefin"} {
+		if v, ok := info["targets"][osName]; !ok || v != "" {
+			t.Fatalf("info.targets.%s must be present and empty while nothing is cached: %s", osName, r.body)
 		}
 	}
 	if sb := info["secureBoot"]; sb["enabled"] != false || sb["ready"] != false || sb["bundleVersion"] != "" || sb["flatcarCA"] != nil {
