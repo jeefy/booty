@@ -23,6 +23,7 @@ const (
 	FeatureBooted   = "booted"
 	FeatureSSHKeys  = "sshkeys"
 	FeatureHealth   = "health"
+	FeatureWoL      = "wol"
 	FeatureNone     = "none"
 
 	BootedUnitName    = "booty-booted.service"
@@ -43,6 +44,7 @@ var knownFeatures = map[string]bool{
 	FeatureBooted:   true,
 	FeatureSSHKeys:  true,
 	FeatureHealth:   true,
+	FeatureWoL:      true,
 }
 
 // Features is the set of enabled builtin fragments.
@@ -80,11 +82,12 @@ func knownList() string {
 func (f Features) Enabled() bool { return len(f) > 0 }
 
 // Input is everything the fragment depends on. Server is the host[:port]
-// clients use to reach Booty.
+// clients use to reach Booty; MAC is the host's, for the wol builtin.
 type Input struct {
 	Hostname string
 	Server   string
 	SSHKeys  []string
+	MAC      string
 }
 
 // Fragment builds Booty's Ignition config for a host. It is always a valid
@@ -117,6 +120,9 @@ func Fragment(in Input, f Features) types.Config {
 	if f[FeatureHealth] {
 		cfg.Storage.Files = append(cfg.Storage.Files, InlineFile(HealthReportScriptPath, HealthReportScript(in.Server), 0o755))
 		cfg.Systemd.Units = append(cfg.Systemd.Units, Unit(HealthUnitName, true, HealthUnit(HealthReportScriptPath)))
+	}
+	if f[FeatureWoL] && in.MAC != "" {
+		cfg.Storage.Files = append(cfg.Storage.Files, InlineFile(WoLLinkPath, WoLLink(in.MAC), 0o644))
 	}
 	return cfg
 }

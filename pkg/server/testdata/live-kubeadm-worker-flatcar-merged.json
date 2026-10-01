@@ -57,6 +57,16 @@
       },
       {
         "group": {},
+        "path": "/etc/systemd/network/10-booty-wol.link",
+        "user": {},
+        "contents": {
+          "source": "data:,%5BMatch%5D%0AMACAddress=aa:bb:cc:dd:ee:01%0A%0A%5BLink%5D%0AWakeOnLan=magic%0A",
+          "verification": {}
+        },
+        "mode": 420
+      },
+      {
+        "group": {},
         "path": "/opt/booty/cni.sh",
         "user": {},
         "contents": {

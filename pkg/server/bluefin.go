@@ -438,7 +438,7 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 			cfg.Systemd.Units = append(cfg.Systemd.Units, ign36.Unit{Name: "sshd.service", Enabled: boolPtr(true)})
 		}
 	}
-	addBluefinBootyUnits(&cfg, features)
+	addBluefinBootyUnits(&cfg, mac, features)
 	if host.StateDisk != "" {
 		addBluefinStateDisk(&cfg, host.StateDisk)
 	}
@@ -493,10 +493,10 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 }
 
 // addBluefinBootyUnits gives a Bluefin node the booted callback, the
-// update-check timer and the health report the Flatcar/CoreOS builtin
-// fragment carries, honouring the same --builtin toggles; the scripts are
-// inline files under /etc/booty.
-func addBluefinBootyUnits(cfg *ign36.Config, features ign.Features) {
+// update-check timer, the health report and the Wake-on-LAN .link file
+// the Flatcar/CoreOS builtin fragment carries, honouring the same
+// --builtin toggles; the scripts are inline files under /etc/booty.
+func addBluefinBootyUnits(cfg *ign36.Config, mac string, features ign.Features) {
 	server := config.ServerHostPort()
 	if features[ign.FeatureBooted] {
 		cfg.Systemd.Units = append(cfg.Systemd.Units, bluefinUnit(ign.BootedUnitName, ign.BootedUnit(server)))
@@ -511,6 +511,9 @@ func addBluefinBootyUnits(cfg *ign36.Config, features ign.Features) {
 	if features[ign.FeatureHealth] {
 		cfg.Storage.Files = append(cfg.Storage.Files, bluefinInlineFile(bluefinHealthReportScript, ign.HealthReportScript(server), 0o755))
 		cfg.Systemd.Units = append(cfg.Systemd.Units, bluefinUnit(ign.HealthUnitName, ign.HealthUnit(bluefinHealthReportScript)))
+	}
+	if features[ign.FeatureWoL] && mac != "" {
+		cfg.Storage.Files = append(cfg.Storage.Files, bluefinInlineFile(ign.WoLLinkPath, ign.WoLLink(mac), 0o644))
 	}
 }
 

@@ -425,7 +425,7 @@ func builtinFragment(ctx context.Context, host *hardware.Host, features ign.Feat
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
-	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys}, features)
+	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys, MAC: host.MAC}, features)
 	return appendProfile(ctx, cfg, host, joinString, mint)
 }
 
