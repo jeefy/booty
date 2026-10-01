@@ -15,6 +15,7 @@ const API_ROUTES = [
   '/hosts',
   '/cluster',
   '/autopilot',
+  '/power',
   '/config',
   '/ignition.json',
   '/healthz',

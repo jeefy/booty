@@ -93,7 +93,7 @@ npm run dev          # http://localhost:5173/ui/
 
 The dev server proxies every backend route (`/booty.json`, `/info`,
 `/flatcar/*`, `/registry`, `/register`, `/unregister`, `/hosts`,
-`/ignition.json`, `/cluster`, `/autopilot`, `/config`, `/healthz`,
+`/ignition.json`, `/cluster`, `/autopilot`, `/power`, `/config`, `/healthz`,
 `/version.json`, `/data`) to a running Go
 server. It defaults to `http://localhost:8080`; override with
 `VITE_API_TARGET=http://host:port npm run dev`.
