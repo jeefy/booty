@@ -85,7 +85,7 @@ func TestPowerPodManifestCarriesPoweroff(t *testing.T) {
 
 func TestSSHPowerOffCommand(t *testing.T) {
 	s := &SSH{}
-	if got := s.PowerOffCommand("bluefin"); got != "systemctl poweroff" {
+	if got := s.PowerOffCommand("bluefin"); got != "sudo systemctl poweroff" {
 		t.Fatalf("bluefin: %q", got)
 	}
 	if got := s.PowerOffCommand("flatcar"); got != "sudo systemctl poweroff" {

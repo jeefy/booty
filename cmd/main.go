@@ -114,7 +114,7 @@ func init() {
 	flags.String(config.AutopilotNamespace, "", "Namespace the autopilot's API actuator creates reboot Pods in; defaults to Booty's own (the POD_NAMESPACE downward-API variable), else kube-system")
 	flags.String(config.AutopilotImage, "", "Image of the reboot Pods (must be Booty's own, it runs 'booty node-reboot'); defaults to the BOOTY_IMAGE environment variable, and the API actuator refuses to run without one")
 	flags.Duration(config.AutopilotDrainTO, config.DefaultAutopilotDrainTimeout, "How long the API actuator keeps retrying evictions refused by a PodDisruptionBudget before it gives up on draining a node")
-	flags.String(config.RebootSSHKey, "", "Private key for the SSH actuator (root on Bluefin, core with sudo on Flatcar/CoreOS; host keys pinned on first use in --dataDir/autopilot/known_hosts); reboots go through kured when it runs in the cluster, else this key, else the Kubernetes API; empty disables it")
+	flags.String(config.RebootSSHKey, "", "Private key for the SSH actuator (as core with sudo on every OS; host keys pinned on first use in --dataDir/autopilot/known_hosts); reboots go through kured when it runs in the cluster, else this key, else the Kubernetes API; empty disables it")
 
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)

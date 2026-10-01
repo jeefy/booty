@@ -16,10 +16,11 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-// SSH reboots over SSH with the --rebootSSHKey private key: as root on
-// Bluefin, as core with sudo on Flatcar and CoreOS. Host keys are pinned
-// on first use into KnownHosts (trust-on-first-use) and must match after
-// that. Prepare drains through Drain when a cluster client exists.
+// SSH reboots over SSH with the --rebootSSHKey private key, as core with
+// sudo on every OS: Booty provisions that user on Flatcar, CoreOS and
+// Bluefin (whose image ships root locked since 26.10). Host keys are
+// pinned on first use into KnownHosts (trust-on-first-use) and must match
+// after that. Prepare drains through Drain when a cluster client exists.
 type SSH struct {
 	KeyPath    string
 	KnownHosts string
@@ -39,29 +40,20 @@ var ErrHostKeyChanged = errors.New("ssh host key changed since it was pinned")
 
 func (s *SSH) Name() string { return NameSSH }
 
-// User is the login for os: root on Bluefin, core elsewhere.
-func (s *SSH) User(os string) string {
-	if os == "bluefin" {
-		return "root"
-	}
-	return "core"
-}
+// User is the login for os: core everywhere.
+func (s *SSH) User(string) string { return "core" }
 
-// Command is what runs on the host: systemctl reboot, through sudo for
-// the core user.
+// Command is what runs on the host: systemctl reboot through sudo.
 func (s *SSH) Command(os string) string {
 	return s.command(os, "reboot")
 }
 
-// PowerOffCommand is systemctl poweroff, through sudo for the core user.
+// PowerOffCommand is systemctl poweroff through sudo.
 func (s *SSH) PowerOffCommand(os string) string {
 	return s.command(os, "poweroff")
 }
 
-func (s *SSH) command(os, verb string) string {
-	if s.User(os) == "root" {
-		return "systemctl " + verb
-	}
+func (s *SSH) command(string, verb string) string {
 	return "sudo systemctl " + verb
 }
 

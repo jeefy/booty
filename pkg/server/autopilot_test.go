@@ -115,7 +115,7 @@ func TestAutopilotEndpointIsReadOnly(t *testing.T) {
 	}
 	setAutopilot(dead)
 	st = getAutopilot(t)
-	if st.Cluster.Reachable || st.Cluster.Kured || st.Cluster.Nodes != 0 || st.Actuator != actuator.NameSSH || st.Cluster.Error == "" || st.SSHUsers["bluefin"] != "root" || st.SSHUsers["flatcar"] != "core" || st.DryRun {
+	if st.Cluster.Reachable || st.Cluster.Kured || st.Cluster.Nodes != 0 || st.Actuator != actuator.NameSSH || st.Cluster.Error == "" || st.SSHUsers["bluefin"] != "core" || st.SSHUsers["flatcar"] != "core" || st.DryRun {
 		t.Fatalf("bogus server: %+v", st)
 	}
 

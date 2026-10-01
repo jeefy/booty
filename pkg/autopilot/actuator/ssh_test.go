@@ -149,10 +149,10 @@ func TestSSHRebootPinsHostKeyAndRunsTheRightCommand(t *testing.T) {
 	srv.mu.Lock()
 	users, commands := srv.users, srv.commands
 	srv.mu.Unlock()
-	if strings.Join(users, ",") != "core,root,core" {
+	if strings.Join(users, ",") != "core,core,core" {
 		t.Fatalf("users: %v", users)
 	}
-	if strings.Join(commands, "|") != "sudo systemctl reboot|systemctl reboot|sudo systemctl reboot" {
+	if strings.Join(commands, "|") != "sudo systemctl reboot|sudo systemctl reboot|sudo systemctl reboot" {
 		t.Fatalf("commands: %v", commands)
 	}
 	pinned, err := os.ReadFile(known)
