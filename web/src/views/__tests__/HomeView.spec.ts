@@ -640,4 +640,49 @@ describe('HomeView', () => {
     expect(derived.wrapper.find('[data-testid="fleet-power"]').text()).toContain('1 up · 1 off · 0 unreachable')
     expect(derived.wrapper.find('[data-testid="fleet-power-inflight"]').exists()).toBe(false)
   })
+
+  it('counts hosts that never reported as "no agent yet" on the fleet card', async () => {
+    const never = (mac: string, hostname: string) => ({
+      mac,
+      hostname,
+      booted: '',
+      running: '',
+      lastCheck: '',
+      health: null,
+      power: { state: 'up' }
+    })
+    const { wrapper } = mountHome({
+      '/booty.json': () =>
+        jsonResponse({
+          hosts: {
+            a: { mac: 'a', hostname: 'aren', booted: '2026-10-01T05:01:33Z', running: '26.10.816', lastCheck: '2026-10-01T18:00:43Z' },
+            y: never('y', 'yghitan'),
+            g: never('g', 'gredfallan'),
+            t: never('t', 'tristram'),
+            e: never('e', 'ehrlitan')
+          },
+          unknownHosts: {}
+        })
+    })
+    await flushPromises()
+    const line = wrapper.find('[data-testid="fleet-no-agent"]')
+    expect(line.text()).toContain('4 hosts have no agent yet')
+    expect(line.attributes('title')).toBe('ehrlitan, gredfallan, tristram, yghitan')
+    expect(line.find('a').attributes('href')).toBe('/hosts')
+    expect(wrapper.find('[data-testid="fleet-card"]').classes()).not.toContain('fleet-panel--alert')
+
+    const one = mountHome({
+      '/booty.json': () => jsonResponse({ hosts: { y: never('y', 'yghitan') }, unknownHosts: {} })
+    })
+    await flushPromises()
+    expect(one.wrapper.find('[data-testid="fleet-no-agent"]').text()).toContain('1 host has no agent yet')
+  })
+
+  it('omits the "no agent yet" line when every host has reported', async () => {
+    const { wrapper } = mountHome({
+      '/booty.json': () => jsonResponse({ hosts: fleetHosts, unknownHosts: {} })
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="fleet-no-agent"]').exists()).toBe(false)
+  })
 })
