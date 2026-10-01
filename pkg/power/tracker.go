@@ -440,7 +440,7 @@ func (t *Tracker) settle(p *hardware.HostPower, probe *probeResult, now time.Tim
 		t.set(p, hardware.PowerUp, prefix+"answers on "+probe.method, now)
 	case probe != nil && seen && ago < StaleAfter:
 		if p.State != hardware.PowerUp {
-			t.set(p, hardware.PowerUp, prefix+"no answer on the probe but seen "+ago.Round(time.Second).String()+" ago", now)
+			t.set(p, hardware.PowerUp, prefix+"no answer on the probe but seen recently", now)
 		}
 	case probe != nil:
 		if p.State != hardware.PowerUnreachable {
@@ -448,7 +448,9 @@ func (t *Tracker) settle(p *hardware.HostPower, probe *probeResult, now time.Tim
 			return []string{"host is unreachable: no answer on " + portsText() + " and nothing seen for " + staleText(ago, seen)}
 		}
 	case seen && ago < StaleAfter:
-		t.set(p, hardware.PowerUp, prefix+"seen "+ago.Round(time.Second).String()+" ago (no IP to probe)", now)
+		if p.State != hardware.PowerUp {
+			t.set(p, hardware.PowerUp, prefix+"seen recently (no IP to probe)", now)
+		}
 	default:
 		if p.State != hardware.PowerUnknown {
 			t.set(p, hardware.PowerUnknown, prefix+"no IP to probe and nothing seen for "+staleText(ago, seen), now)

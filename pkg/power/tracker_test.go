@@ -877,3 +877,19 @@ func TestTCPProbe(t *testing.T) {
 		t.Fatal("port 1 must be closed")
 	}
 }
+
+func TestNoIPHostDoesNotChurnTheRecord(t *testing.T) {
+	h := newHarness(t)
+	h.host(macA, "alpha", "", nil)
+	h.tr.ObserveSeen(macA)
+	h.tick()
+	before := h.fleet.updates
+	h.advance(30 * time.Second)
+	h.tick()
+	h.advance(30 * time.Second)
+	h.tick()
+	if h.fleet.updates != before {
+		t.Fatalf("a quiet no-IP host must not be rewritten every tick (%d writes)", h.fleet.updates-before)
+	}
+	h.expectState(macA, hardware.PowerUp)
+}
