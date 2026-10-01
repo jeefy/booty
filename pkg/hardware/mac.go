@@ -56,10 +56,13 @@ type Host struct {
 	Canary bool `json:"canary,omitempty"`
 	// Autopilot is the controller's read-only summary of the host's
 	// current episode, kept on the record so /hosts and the UI show it.
-	Autopilot     *HostAutopilot `json:"autopilot,omitempty"`
-	Running       string         `json:"running"`
-	LastCheck     string         `json:"lastCheck"`
-	RebootPending bool           `json:"rebootPending"`
+	Autopilot *HostAutopilot `json:"autopilot,omitempty"`
+	// Power is the power tracker's read-only summary of the host (state,
+	// request in flight, last probe); pkg/power owns it.
+	Power         *HostPower `json:"power,omitempty"`
+	Running       string     `json:"running"`
+	LastCheck     string     `json:"lastCheck"`
+	RebootPending bool       `json:"rebootPending"`
 	// Health is the last report from the node's booty-health.service.
 	Health *Health `json:"health,omitempty"`
 }

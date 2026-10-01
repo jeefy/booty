@@ -83,9 +83,9 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing, ok := hardware.Get(h.MAC); ok {
-		h.Autopilot = existing.Autopilot
+		h.Autopilot, h.Power = existing.Autopilot, existing.Power
 	} else {
-		h.Autopilot = nil
+		h.Autopilot, h.Power = nil, nil
 	}
 
 	saved, err := hardware.Put(h)
