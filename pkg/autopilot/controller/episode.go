@@ -22,7 +22,7 @@ func (c *Controller) ObserveFetch(mac, kind string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	h, ok := c.opts.Fleet.Host(mac)
-	if !ok || h.Installed() {
+	if !ok || excluded(h) {
 		return
 	}
 	now := c.now()

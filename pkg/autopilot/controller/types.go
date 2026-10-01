@@ -186,6 +186,8 @@ const (
 	EventActuator = "actuator"
 	EventAlert    = "alert"
 	EventReport   = "report"
+	// EventPower is the power tracker's kind (pkg/power.EventKind).
+	EventPower = "power"
 )
 
 // Report is the stub P4's builder renders: everything the redacting

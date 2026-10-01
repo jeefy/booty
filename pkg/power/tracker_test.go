@@ -238,7 +238,6 @@ func (h *harness) host(mac, hostname, ip string, power *hardware.HostPower) {
 	h.fleet.add(hardware.Host{MAC: mac, Hostname: hostname, IP: ip, OS: "flatcar", Power: power})
 }
 
-
 func (h *harness) expectState(mac, want string) {
 	h.t.Helper()
 	if got := h.fleet.power(mac); got.State != want {
