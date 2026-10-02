@@ -85,7 +85,10 @@ fleet-target table per OS (fleet target with a **held** badge, `current`,
 class, and a **Clear** button on `quarantined`/`timeout` releases that POSTs
 `/autopilot/{os}/release/{version}/clear` and reloads), the per-host episode
 table (state badge, release → target, attempt, class, since, note; hostnames
-come from `/booty.json`), the reports and the event timeline (newest first,
+come from `/booty.json`; a **Clear** button on `needs-hands`, `retrying` and
+`rolled-back` rows opens an inline confirm and then POSTs
+`/autopilot/host/{mac}/clear`, showing a refusal on the row), the reports and
+the event timeline (newest first,
 `alert` events in red). Each report row carries a `draft`/`final` badge, a
 **View** button that fetches `report.path` (`/autopilot/reports/<os>-<version>.md`,
 via `apiGetText`) and shows the redacted Markdown in an inline `<pre>`, a raw
