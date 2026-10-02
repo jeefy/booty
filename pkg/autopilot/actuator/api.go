@@ -30,8 +30,25 @@ type API struct {
 
 // RebootPodPrefix names reboot Pods: RebootPodPrefix + node name. The
 // previous run's Pod of the same name is deleted before a new one is
-// created, which is the whole cleanup.
+// created and again by Finish once the node is back, so a Pod the reboot
+// left Failed never lingers.
 const RebootPodPrefix = "booty-node-reboot-"
+
+// Labels of every reboot/poweroff Pod; IsPowerPod recognises them.
+const (
+	PodNameLabel       = "app.kubernetes.io/name"
+	PodNameValue       = "booty"
+	PodComponentLabel  = "app.kubernetes.io/component"
+	PodComponentReboot = "node-reboot"
+)
+
+// IsPowerPod reports whether a pod is one of Booty's own reboot/poweroff
+// Pods, by name or by label. Such a Pod legitimately ends Failed or Error:
+// the node it signalled reboots underneath it, so no health check should
+// count it as a workload.
+func IsPowerPod(name string, labels map[string]string) bool {
+	return strings.HasPrefix(name, RebootPodPrefix) || labels[PodComponentLabel] == PodComponentReboot
+}
 
 // RebootPodDeadline is activeDeadlineSeconds of a reboot Pod: the node
 // reboots within seconds, the deadline only bounds a Pod that could not.
@@ -185,7 +202,8 @@ func (a *API) runPod(ctx context.Context, host Host, poweroff bool) error {
 	return nil
 }
 
-// Finish uncordons the node.
+// Finish uncordons the node and removes its reboot Pod, which the reboot
+// left Failed.
 func (a *API) Finish(ctx context.Context, host Host) error {
 	node, err := Resolve(ctx, a.Client, host)
 	if err != nil {
@@ -195,6 +213,14 @@ func (a *API) Finish(ctx context.Context, host Host) error {
 		return fmt.Errorf("uncordon: %w", err)
 	}
 	slog.Info("Node uncordoned", "node", node.Name)
+	if a.Namespace == "" {
+		return nil
+	}
+	name := RebootPodName(node.Name)
+	if err := a.Client.DeletePod(ctx, a.Namespace, name); err != nil {
+		return fmt.Errorf("reboot pod: removing %s: %w", name, err)
+	}
+	slog.Info("Reboot pod removed", "node", node.Name, "pod", a.Namespace+"/"+name)
 	return nil
 }
 
@@ -224,7 +250,7 @@ func PowerPodManifest(namespace, name, nodeName, image string, poweroff bool) ([
 		"metadata": map[string]any{
 			"name":      name,
 			"namespace": namespace,
-			"labels":    map[string]string{"app.kubernetes.io/name": "booty", "app.kubernetes.io/component": "node-reboot", "booty.jeefy.dev/node": nodeName},
+			"labels":    map[string]string{PodNameLabel: PodNameValue, PodComponentLabel: PodComponentReboot, "booty.jeefy.dev/node": nodeName},
 		},
 		"spec": map[string]any{
 			"nodeName":                      nodeName,

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,10 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 		"/autopilot/flatcar/release/4800.0.0/nope":  http.StatusNotFound,
 		"/autopilot/nacl/release/4800.0.0/clear":    http.StatusBadRequest,
 		"/autopilot/flatcar/release/v..1/clear":     http.StatusBadRequest,
+		"/autopilot/host/aa:bb:cc:dd:ee:99/clear":   http.StatusNotFound,
+		"/autopilot/host/not-a-mac/clear":           http.StatusBadRequest,
+		"/autopilot/host/" + mac + "/nope":          http.StatusNotFound,
+		"/autopilot/host/" + mac:                    http.StatusNotFound,
 	} {
 		if r := do(t, http.MethodPost, srv.URL+path, ""); r.status != want {
 			t.Fatalf("POST %s: %d (%s), want %d", path, r.status, r.body, want)
@@ -261,6 +266,56 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 	}
 	if r := do(t, http.MethodGet, srv.URL+"/autopilot/flatcar/release/4800.0.0/clear", ""); r.status != http.StatusMethodNotAllowed {
 		t.Fatalf("GET clear: %+v", r)
+	}
+	if r := do(t, http.MethodGet, srv.URL+"/autopilot/host/"+mac+"/clear", ""); r.status != http.StatusMethodNotAllowed {
+		t.Fatalf("GET host clear: %+v", r)
+	}
+
+	// The operator clears the retrying host: its episode ends idle, the pin
+	// and the hold go, update-check stops asking for the reboot, and a
+	// second clear has nothing to end.
+	if r := do(t, http.MethodPost, srv.URL+"/autopilot/host/"+strings.ToUpper(mac)+"/clear", ""); r.status != 200 || !strings.Contains(r.body, `"mac":"`+mac+`"`) {
+		t.Fatalf("host clear: %+v", r)
+	}
+	st = getAutopilot(t)
+	if e := st.Hosts[0].Episode; e == nil || e.State != hardware.AutopilotIdle || e.Attempt != 2 || e.Class != controller.ClassFailedUnits {
+		t.Fatalf("episode after the host clear: %+v", e)
+	}
+	if st.OS["flatcar"].Held || st.OS["flatcar"].FleetTarget != "4800.0.0" {
+		t.Fatalf("the hold the retry caused must go with it: %+v", st.OS["flatcar"])
+	}
+	h, _ = hardware.Get(mac)
+	if h.TargetVersion != "" || h.Autopilot == nil || h.Autopilot.State != hardware.AutopilotIdle || h.Autopilot.Pinned {
+		t.Fatalf("host after the clear: targetVersion=%q autopilot=%+v", h.TargetVersion, h.Autopilot)
+	}
+	r = do(t, http.MethodGet, srv.URL+"/update-check?mac="+mac+"&os=flatcar&version=4800.0.0", "")
+	if err := json.Unmarshal([]byte(r.body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.RebootRequired {
+		t.Fatalf("update-check must stop asking for the reboot once the episode is cleared: %+v", resp)
+	}
+	if r := do(t, http.MethodPost, srv.URL+"/autopilot/host/"+mac+"/clear", ""); r.status != http.StatusConflict {
+		t.Fatalf("second host clear: %+v", r)
+	}
+	if !slices.ContainsFunc(st.Events, func(ev struct{ Text string }) bool {
+		return strings.Contains(ev.Text, "episode cleared by the operator")
+	}) {
+		t.Fatalf("events: %+v", st.Events)
+	}
+
+	// Back on the road: the next boot of 4800.0.0 is gated afresh and the
+	// plan's fail-fail-rollback sequence runs from there.
+	register(t, srv.URL, `{"mac":"`+mac+`","hostname":"n1","os":"flatcar","targetVersion":"4800.0.0"}`)
+	if r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+mac, ""); r.status != 200 {
+		t.Fatalf("%+v", r)
+	}
+	do(t, http.MethodGet, srv.URL+"/ignition.json?mac="+mac, "")
+	do(t, http.MethodPost, srv.URL+"/booted?mac="+mac, "")
+	do(t, http.MethodPost, srv.URL+"/health?mac="+mac, `{"running":"4800.0.0","failedUnits":["kubelet.service"],"firmware":"bios"}`)
+	st = getAutopilot(t)
+	if e := st.Hosts[0].Episode; e == nil || e.State != hardware.AutopilotRetrying || e.Attempt != 2 {
+		t.Fatalf("episode after the clear and a new failed boot: %+v", e)
 	}
 
 	if r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+mac, ""); r.status != 200 {

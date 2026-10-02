@@ -1,5 +1,5 @@
 {"kind":"PodList","apiVersion":"v1","items":[
- {"metadata":{"name":"cilium-abc12","namespace":"kube-system","ownerReferences":[{"kind":"DaemonSet","name":"cilium","controller":true}]},
+ {"metadata":{"name":"cilium-abc12","namespace":"kube-system","labels":{"k8s-app":"cilium","app.kubernetes.io/name":"cilium-agent"},"ownerReferences":[{"kind":"DaemonSet","name":"cilium","controller":true}]},
   "spec":{"nodeName":"ehrlitan","containers":[{"name":"cilium-agent"}]},
   "status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":2,"state":{"running":{}}}]}},
  {"metadata":{"name":"web-7d9f-x1","namespace":"default","ownerReferences":[{"kind":"ReplicaSet","name":"web-7d9f","controller":true}]},

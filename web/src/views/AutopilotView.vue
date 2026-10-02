@@ -32,6 +32,9 @@ const loading = ref(true)
 const error = ref('')
 const clearing = reactive<Record<string, boolean>>({})
 const clearErrors = reactive<Record<string, string>>({})
+const hostConfirm = ref('')
+const hostClearing = reactive<Record<string, boolean>>({})
+const hostClearErrors = reactive<Record<string, string>>({})
 const openReport = ref('')
 const reportText = ref('')
 const reportLoading = ref(false)
@@ -81,6 +84,22 @@ function canClear(r: AutopilotRelease): boolean {
   return r.state === 'quarantined' || r.state === 'timeout'
 }
 
+const HOST_CLEARABLE = new Set(['needs-hands', 'retrying', 'rolled-back'])
+
+function canClearHost(h: AutopilotHost): boolean {
+  return h.episode !== null && HOST_CLEARABLE.has(h.episode.state)
+}
+
+const HOST_CLEAR_HINT: Record<string, string> = {
+  'needs-hands': 'Acknowledge the alert: the episode ends, the host is idle again.',
+  retrying: 'Stop the second attempt: the host keeps what it runs, the fleet hold goes.',
+  'rolled-back': 'End the rollback episode: the host stays on lastGood, the release keeps its verdict.'
+}
+
+function hostClearHint(h: AutopilotHost): string {
+  return HOST_CLEAR_HINT[h.episode?.state ?? ''] ?? ''
+}
+
 function episodeState(h: AutopilotHost) {
   return AUTOPILOT_HOST_LABEL[h.episode?.state ?? 'idle']
 }
@@ -120,6 +139,21 @@ async function clear(r: AutopilotRelease) {
     clearErrors[key] = errorMessage(err)
   } finally {
     clearing[key] = false
+  }
+}
+
+async function clearHost(h: AutopilotHost) {
+  const mac = h.mac
+  hostConfirm.value = ''
+  hostClearing[mac] = true
+  hostClearErrors[mac] = ''
+  try {
+    await apiPost<StatusResponse>(`/autopilot/host/${encodeURIComponent(mac)}/clear`, {})
+    await load()
+  } catch (err) {
+    hostClearErrors[mac] = errorMessage(err)
+  } finally {
+    hostClearing[mac] = false
   }
 }
 
@@ -353,6 +387,7 @@ onMounted(() => {
                 <th scope="col">Class</th>
                 <th scope="col">Since</th>
                 <th scope="col">Note</th>
+                <th scope="col" class="text-end">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -400,6 +435,54 @@ onMounted(() => {
                   </span>
                 </td>
                 <td class="small text-secondary note">{{ h.episode?.note || '' }}</td>
+                <td class="text-end">
+                  <template v-if="canClearHost(h)">
+                    <button
+                      v-if="hostConfirm !== h.mac"
+                      type="button"
+                      class="btn btn-sm btn-outline-danger"
+                      :disabled="hostClearing[h.mac]"
+                      :title="hostClearHint(h)"
+                      data-action="clear-host"
+                      @click="hostConfirm = h.mac"
+                    >
+                      <span
+                        v-if="hostClearing[h.mac]"
+                        class="spinner-border spinner-border-sm me-1"
+                        aria-hidden="true"
+                      ></span>
+                      Clear
+                    </button>
+                    <span v-else class="host-confirm" data-testid="clear-host-confirm">
+                      <span class="small text-secondary">
+                        End the episode on {{ hostLabel(h.mac) }}? {{ hostClearHint(h) }}
+                      </span>
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-outline-secondary"
+                        data-action="clear-host-cancel"
+                        @click="hostConfirm = ''"
+                      >
+                        Keep
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-danger"
+                        data-action="clear-host-confirm"
+                        @click="clearHost(h)"
+                      >
+                        Clear episode
+                      </button>
+                    </span>
+                  </template>
+                  <div
+                    v-if="hostClearErrors[h.mac]"
+                    class="row-error"
+                    data-testid="clear-host-error"
+                  >
+                    {{ hostClearErrors[h.mac] }}
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -555,6 +638,15 @@ onMounted(() => {
 
 .note {
   max-width: 24rem;
+}
+
+.host-confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--booty-space-2);
+  max-width: 28rem;
 }
 
 .report-links {

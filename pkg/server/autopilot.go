@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -65,13 +66,17 @@ const autopilotClearPrefix = "/autopilot/"
 
 // handleAutopilotRequest is GET /autopilot ({mode, cluster, actuator,
 // dryRun, os, hosts, events, reports}), GET /autopilot/reports/<os>-<version>.md
-// (the rendered, redacted report; .json for its twin) and POST
-// /autopilot/{os}/release/{version}/clear, which un-quarantines a release.
-// Like /register, the write has no authentication beyond reaching the
-// port.
+// (the rendered, redacted report; .json for its twin), POST
+// /autopilot/{os}/release/{version}/clear, which un-quarantines a release,
+// and POST /autopilot/host/{mac}/clear, which ends a host's episode. Like
+// /register, the writes have no authentication beyond reaching the port.
 func handleAutopilotRequest(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, controller.ReportsPath) {
 		handleAutopilotReport(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, autopilotClearPrefix+"host/") {
+		handleAutopilotHostClear(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, autopilotClearPrefix) {
@@ -159,4 +164,36 @@ func handleAutopilotClear(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("Autopilot release cleared via API", "os", osName, "version", version, "remote", r.RemoteAddr)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "os": osName, "version": version})
+}
+
+func handleAutopilotHostClear(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, autopilotClearPrefix+"host/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != "clear" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mac, err := hardware.NormalizeMAC(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	c := autopilotController()
+	if c == nil {
+		writeError(w, http.StatusConflict, "autopilot is off")
+		return
+	}
+	switch err := c.ClearHost(mac); {
+	case errors.Is(err, controller.ErrUnknownHost):
+		writeError(w, http.StatusNotFound, "host not registered")
+		return
+	case err != nil:
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	slog.Info("Autopilot host episode cleared via API", "mac", mac, "remote", r.RemoteAddr)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "mac": mac})
 }

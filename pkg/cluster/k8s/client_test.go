@@ -67,10 +67,10 @@ func TestPods(t *testing.T) {
 	if len(pods) != 5 {
 		t.Fatalf("pods: %d", len(pods))
 	}
-	if c := byName["cilium-abc12"]; c.Owner != "DaemonSet" || c.OwnerName != "cilium" || c.Restarts != 2 || c.Ready != 1 || c.Containers != 1 || !c.Healthy() {
+	if c := byName["cilium-abc12"]; c.Owner != "DaemonSet" || c.OwnerName != "cilium" || c.Restarts != 2 || c.Ready != 1 || c.Containers != 1 || !c.Healthy() || c.Labels["k8s-app"] != "cilium" || len(c.Labels) != 2 {
 		t.Fatalf("cilium: %+v", c)
 	}
-	if w := byName["web-7d9f-x1"]; w.Owner != "ReplicaSet" || w.Containers != 2 || w.Ready != 2 || !w.Healthy() {
+	if w := byName["web-7d9f-x1"]; w.Owner != "ReplicaSet" || w.Containers != 2 || w.Ready != 2 || !w.Healthy() || w.Labels != nil {
 		t.Fatalf("web: %+v", w)
 	}
 	if j := byName["backup-29001-k7"]; j.Owner != "Job" || j.Phase != "Pending" || j.Waiting != "ContainerCreating" || j.Healthy() {

@@ -272,8 +272,9 @@ type gateResult struct {
 // evaluateL2 is the cluster side of the gate: Node Ready and stable, its
 // osImage not naming another cached release, DaemonSet pods Ready, and
 // no pod newly in CrashLoopBackOff/Error/ImagePullBackOff or Pending for
-// longer than PendingGrace. Without a cluster or a hostname L2 passes with
-// a note.
+// longer than PendingGrace. Job pods, finished pods and Booty's own reboot
+// Pods (Failed by design once the node went down under them) never count.
+// Without a cluster or a hostname L2 passes with a note.
 func (c *Controller) evaluateL2(ctx context.Context, e *Episode) gateResult {
 	node := c.nodeName(e.MAC)
 	if c.opts.Cluster == nil {
@@ -299,7 +300,7 @@ func (c *Controller) evaluateL2(ctx context.Context, e *Episode) gateResult {
 	}
 	for _, key := range slices.Sorted(maps.Keys(s.Pods)) {
 		p := s.Pods[key]
-		if p.Owner == "Job" || p.Phase == "Succeeded" {
+		if p.Owner == "Job" || p.Phase == "Succeeded" || actuator.IsPowerPod(p.Name, p.Labels) {
 			continue
 		}
 		var base *k8s.Pod

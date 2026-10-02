@@ -283,8 +283,21 @@ func TestAPIReboot(t *testing.T) {
 	if c.Image != "ghcr.io/jeefy/booty:main" || strings.Join(c.Command, " ") != "/booty node-reboot" || !c.SecurityContext.Privileged {
 		t.Fatalf("container: %s", created[0])
 	}
-	if pod.Metadata.Labels["booty.jeefy.dev/node"] != "ehrlitan" {
+	if pod.Metadata.Labels["booty.jeefy.dev/node"] != "ehrlitan" || !IsPowerPod(pod.Metadata.Name, pod.Metadata.Labels) || !IsPowerPod("other", pod.Metadata.Labels) {
 		t.Fatalf("labels: %v", pod.Metadata.Labels)
+	}
+	if IsPowerPod("cilium-abc12", map[string]string{"app.kubernetes.io/name": "cilium"}) || IsPowerPod("kured-x", nil) {
+		t.Fatal("IsPowerPod must only match Booty's own pods")
+	}
+
+	if err := a.Finish(ctx, host); err != nil {
+		t.Fatal(err)
+	}
+	if p := api.Patches["/api/v1/nodes/ehrlitan"]; len(p) != 1 || p[0] != `{"spec":{"unschedulable":false}}` {
+		t.Fatalf("uncordon: %v", p)
+	}
+	if len(api.Deleted) != 2 || api.Deleted[1] != "kube-system/booty-node-reboot-ehrlitan" {
+		t.Fatalf("Finish must remove the reboot pod the reboot left behind: %v", api.Deleted)
 	}
 }
 
