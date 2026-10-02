@@ -6,7 +6,9 @@ import { flushPromises, jsonResponse, mockFetch, requestBody } from '@/__tests__
 const hosts = {
   hosts: {
     'aa:bb:cc:dd:ee:01': { mac: 'aa:bb:cc:dd:ee:01', hostname: 'ehrlitan', os: 'flatcar' },
-    'aa:bb:cc:dd:ee:02': { mac: 'aa:bb:cc:dd:ee:02', hostname: 'aren', os: 'bluefin' }
+    'aa:bb:cc:dd:ee:02': { mac: 'aa:bb:cc:dd:ee:02', hostname: 'aren', os: 'bluefin' },
+    'aa:bb:cc:dd:ee:03': { mac: 'aa:bb:cc:dd:ee:03', hostname: 'gredfallan', os: 'flatcar' },
+    'aa:bb:cc:dd:ee:04': { mac: 'aa:bb:cc:dd:ee:04', hostname: 'kalam', os: 'flatcar' }
   },
   unknownHosts: {}
 }
@@ -68,7 +70,41 @@ const guard = {
         attempts: []
       }
     },
-    { mac: 'aa:bb:cc:dd:ee:02', os: 'bluefin', healthyOn: '26.09.673', episode: null }
+    { mac: 'aa:bb:cc:dd:ee:02', os: 'bluefin', healthyOn: '26.09.673', episode: null },
+    {
+      mac: 'aa:bb:cc:dd:ee:03',
+      os: 'flatcar',
+      healthyOn: '4757.2.0',
+      pinned: true,
+      episode: {
+        os: 'flatcar',
+        release: '4800.0.0',
+        target: '4800.0.0',
+        attempt: 2,
+        state: 'retrying',
+        class: 'workloads-unhealthy',
+        since: '2026-09-28T12:40:00Z',
+        note: 'waiting for the host to reboot (api)',
+        signals: {},
+        attempts: []
+      }
+    },
+    {
+      mac: 'aa:bb:cc:dd:ee:04',
+      os: 'flatcar',
+      healthyOn: '4757.2.0',
+      episode: {
+        os: 'flatcar',
+        release: '4800.0.0',
+        target: '4800.0.0',
+        attempt: 1,
+        state: 'gating',
+        since: '2026-09-28T12:45:00Z',
+        note: 'waiting for the health report',
+        signals: {},
+        attempts: []
+      }
+    }
   ],
   events: [
     {
@@ -268,6 +304,82 @@ describe('AutopilotView', () => {
     await wrapper.find('[data-release="4800.0.0"] [data-action="clear"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="clear-error"]').text()).toContain('nothing to clear')
+  })
+
+  it('offers Clear on needs-hands, retrying and rolled-back hosts only', async () => {
+    const needsHands = {
+      ...guard,
+      hosts: [
+        {
+          mac: 'aa:bb:cc:dd:ee:02',
+          os: 'bluefin',
+          healthyOn: '',
+          episode: {
+            os: 'bluefin',
+            release: '26.09.700',
+            target: '26.09.673',
+            attempt: 3,
+            state: 'needs-hands',
+            class: 'hung',
+            since: '2026-09-28T13:00:00Z',
+            done: true,
+            signals: {},
+            attempts: []
+          }
+        },
+        ...guard.hosts
+      ]
+    }
+    const { wrapper } = mountView(needsHands)
+    await flushPromises()
+    const table = wrapper.find('[data-testid="autopilot-hosts-table"]')
+    const button = (mac: string) => table.find(`tr[data-mac="${mac}"] [data-action="clear-host"]`)
+    expect(button('aa:bb:cc:dd:ee:02').exists()).toBe(true)
+    expect(button('aa:bb:cc:dd:ee:03').exists()).toBe(true)
+    expect(button('aa:bb:cc:dd:ee:01').exists()).toBe(true)
+    expect(button('aa:bb:cc:dd:ee:04').exists()).toBe(false)
+    expect(button('aa:bb:cc:dd:ee:03').attributes('title')).toContain('second attempt')
+  })
+
+  it('asks for confirmation, then POSTs the host clear endpoint and reloads', async () => {
+    const { wrapper, spy } = mountView(guard)
+    await flushPromises()
+    const row = wrapper.find('[data-testid="autopilot-hosts-table"] tr[data-mac="aa:bb:cc:dd:ee:03"]')
+    await row.find('[data-action="clear-host"]').trigger('click')
+    expect(spy.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+    const confirm = row.find('[data-testid="clear-host-confirm"]')
+    expect(confirm.text()).toContain('gredfallan')
+    expect(confirm.text()).toContain('second attempt')
+
+    await confirm.find('[data-action="clear-host-cancel"]').trigger('click')
+    expect(row.find('[data-testid="clear-host-confirm"]').exists()).toBe(false)
+    expect(row.find('[data-action="clear-host"]').exists()).toBe(true)
+    expect(spy.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+
+    await row.find('[data-action="clear-host"]').trigger('click')
+    await row.find('[data-action="clear-host-confirm"]').trigger('click')
+    await flushPromises()
+    const post = spy.mock.calls.find(([, init]) => init?.method === 'POST')
+    expect(post?.[0]).toBe('/autopilot/host/aa%3Abb%3Acc%3Add%3Aee%3A03/clear')
+    expect(requestBody(post?.[1])).toEqual({})
+    expect(spy.mock.calls.filter(([url]) => url === '/autopilot')).toHaveLength(2)
+    expect(wrapper.find('[data-testid="clear-host-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="clear-host-confirm"]').exists()).toBe(false)
+  })
+
+  it('shows the server error on the host row when the host clear is refused', async () => {
+    const { wrapper } = mountView(guard, (url) =>
+      url.startsWith('/autopilot/host/')
+        ? jsonResponse({ error: 'host has no episode to clear' }, 409)
+        : jsonResponse({ status: 'ok' })
+    )
+    await flushPromises()
+    const row = wrapper.find('[data-testid="autopilot-hosts-table"] tr[data-mac="aa:bb:cc:dd:ee:03"]')
+    await row.find('[data-action="clear-host"]').trigger('click')
+    await row.find('[data-action="clear-host-confirm"]').trigger('click')
+    await flushPromises()
+    expect(row.find('[data-testid="clear-host-error"]').text()).toContain('no episode to clear')
+    expect(wrapper.find('[data-testid="clear-error"]').exists()).toBe(false)
   })
 
   it('lists reports with draft/final badges, the Markdown link, the issue link and post failures', async () => {
