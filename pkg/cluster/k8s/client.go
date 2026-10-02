@@ -131,6 +131,9 @@ type Pod struct {
 	// Waiting is the waiting reason of the first container not running
 	// (CrashLoopBackOff, ImagePullBackOff, ...), empty when all run.
 	Waiting string `json:"waiting,omitempty"`
+	// Labels are the pod's metadata.labels; the health gate reads them to
+	// tell Booty's own reboot Pods apart from workloads.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // Key is namespace/name.
@@ -240,6 +243,7 @@ func (p podObject) toPod() Pod {
 		NodeName:   p.Spec.NodeName,
 		Phase:      p.Status.Phase,
 		Containers: len(p.Spec.Containers),
+		Labels:     p.Metadata.Labels,
 	}
 	_, pod.Mirror = p.Metadata.Annotations["kubernetes.io/config.mirror"]
 	for _, o := range p.Metadata.OwnerReferences {
