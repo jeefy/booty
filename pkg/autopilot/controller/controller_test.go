@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -179,6 +180,7 @@ func (a *fakeActuator) wait(t *testing.T, n int) []string {
 type podFixture struct {
 	ns, name, owner, phase, waiting string
 	ready, containers               int
+	labels                          map[string]string
 }
 
 type harness struct {
@@ -249,7 +251,7 @@ func (h *harness) node(name string, ready bool, readySince time.Time, osImage st
 			containers[i] = map[string]string{"name": fmt.Sprintf("c%d", i)}
 		}
 		items = append(items, map[string]any{
-			"metadata": map[string]any{"name": p.name, "namespace": p.ns, "ownerReferences": owners},
+			"metadata": map[string]any{"name": p.name, "namespace": p.ns, "ownerReferences": owners, "labels": p.labels},
 			"spec":     map[string]any{"nodeName": name, "containers": containers},
 			"status":   map[string]any{"phase": p.phase, "containerStatuses": statuses},
 		})
@@ -552,6 +554,119 @@ func TestBaselineExcludesPreexistingFailures(t *testing.T) {
 	if got := h.release("flatcar", "4800.0.0").Healthy; len(got) != 1 || got[0] != macA {
 		t.Fatalf("healthy list: %v", got)
 	}
+}
+
+// TestOwnRebootPodNeverFailsTheGate is the live incident: the API
+// actuator's reboot Pod ends Failed when the node reboots under it, and
+// the gate must not read that as an unhealthy workload, whether it is
+// recognised by name or only by label.
+func TestOwnRebootPodNeverFailsTheGate(t *testing.T) {
+	byName := podFixture{ns: "kube-system", name: actuator.RebootPodName("ehrlitan"), phase: "Failed", containers: 1}
+	byLabel := podFixture{ns: "booty", name: "renamed-reboot-pod", phase: "Running", ready: 0, containers: 1, waiting: "Error", labels: map[string]string{actuator.PodNameLabel: actuator.PodNameValue, actuator.PodComponentLabel: actuator.PodComponentReboot}}
+	for _, tc := range []struct {
+		name string
+		pod  podFixture
+	}{{"by name", byName}, {"by label", byLabel}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, config.AutopilotGuard)
+			h.flatcarHost(macA, "ehrlitan")
+			h.healthyNode("ehrlitan", "Flatcar 4757.2.0")
+			h.fetch(macA)
+			h.up(macA, "4800.0.0")
+			h.node("ehrlitan", true, h.time().Add(-10*time.Minute), "Flatcar 4800.0.0", tc.pod, podFixture{ns: "kube-system", name: "cilium-1", owner: "DaemonSet", phase: "Running", ready: 1, containers: 1})
+			h.tick()
+			e := h.episode(macA)
+			if e.State != hardware.AutopilotIdle || !e.Done || e.Class != "" {
+				t.Fatalf("Booty's own reboot pod must not fail the gate: %+v (%s)", e, e.Note)
+			}
+		})
+	}
+
+	t.Run("other failed pods still count", func(t *testing.T) {
+		h := newHarness(t, config.AutopilotGuard)
+		h.flatcarHost(macA, "ehrlitan")
+		h.healthyNode("ehrlitan", "Flatcar 4757.2.0")
+		h.fetch(macA)
+		h.up(macA, "4800.0.0")
+		h.node("ehrlitan", true, h.time().Add(-10*time.Minute), "Flatcar 4800.0.0", podFixture{ns: "default", name: "worker-1", owner: "ReplicaSet", phase: "Failed", containers: 1})
+		h.tick()
+		if e := h.episode(macA); e.State != hardware.AutopilotGating || !strings.Contains(e.Note, "worker-1") {
+			t.Fatalf("a Failed workload must still hold the gate: %+v", e)
+		}
+	})
+}
+
+// TestClearHostEndsTheEpisode is the operator's acknowledgement: a host
+// stuck in needs-hands, or one the controller is about to reboot again,
+// goes idle, loses its pin, stops asking for a reboot and releases the
+// fleet hold it caused.
+func TestClearHostEndsTheEpisode(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.flatcarHost(macA, "ehrlitan")
+	h.healthyNode("ehrlitan", "Flatcar 4800.0.0")
+	if err := h.c.ClearHost(macA); !errors.Is(err, ErrNoEpisode) {
+		t.Fatalf("no episode: %v", err)
+	}
+	if err := h.c.ClearHost("ff:ff:ff:ff:ff:ff"); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("unknown host: %v", err)
+	}
+
+	h.fetch(macA)
+	h.up(macA, "4800.0.0", "kubelet.service")
+	h.wantState(macA, hardware.AutopilotRetrying, 2, ClassFailedUnits)
+	h.wantHold("flatcar", "4757.2.0")
+	h.wantPin(macA, "4800.0.0")
+	h.act.wait(t, 2)
+	if want, _ := h.c.RebootWanted(macA); !want {
+		t.Fatal("RebootWanted before the clear")
+	}
+
+	if err := h.c.ClearHost(macA); err != nil {
+		t.Fatal(err)
+	}
+	e := h.episode(macA)
+	if e == nil || e.State != hardware.AutopilotIdle || !e.Done || e.Attempt != 2 || e.Class != ClassFailedUnits {
+		t.Fatalf("cleared episode: %+v", e)
+	}
+	if want, _ := h.c.RebootWanted(macA); want {
+		t.Fatal("RebootWanted must be false after the clear")
+	}
+	if h.c.Driving(macA) {
+		t.Fatal("a cleared host is not driven")
+	}
+	h.wantPin(macA, "")
+	h.wantHold("flatcar", "4800.0.0")
+	if r := h.release("flatcar", "4800.0.0"); r.Failing || r.State != ReleaseRolling {
+		t.Fatalf("release after the clear: %+v", r)
+	}
+	if !h.hasEvent("episode cleared by the operator") {
+		t.Fatalf("events: %+v", h.c.Status().Events)
+	}
+	host, _ := h.fleet.Host(macA)
+	if host.Autopilot == nil || host.Autopilot.State != hardware.AutopilotIdle {
+		t.Fatalf("host summary must follow at once: %+v", host.Autopilot)
+	}
+	if err := h.c.ClearHost(macA); !errors.Is(err, ErrNoEpisode) {
+		t.Fatalf("second clear: %v", err)
+	}
+
+	h.act.name = actuator.NameKured
+	h.fetch(macA)
+	h.advance(30 * time.Second)
+	h.c.ObserveFetch(macA, FetchKernel)
+	h.advance(16 * time.Minute)
+	h.tick()
+	h.wantState(macA, hardware.AutopilotNeedsHands, 2, ClassHung)
+	if s := h.c.Summary(); s.NeedsHands != 1 {
+		t.Fatalf("summary: %+v", s)
+	}
+	if err := h.c.ClearHost(macA); err != nil {
+		t.Fatal(err)
+	}
+	if s := h.c.Summary(); s.NeedsHands != 0 {
+		t.Fatalf("needs-hands must drop after the clear: %+v", s)
+	}
+	h.wantState(macA, hardware.AutopilotIdle, 2, ClassHung)
 }
 
 func TestPendingPodCountsAfterGrace(t *testing.T) {

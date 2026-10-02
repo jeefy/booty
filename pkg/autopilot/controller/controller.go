@@ -476,6 +476,43 @@ func (c *Controller) Clear(osName, version string) error {
 	return nil
 }
 
+// ErrUnknownHost and ErrNoEpisode are ClearHost's refusals: the MAC is not
+// registered, or the host has no episode an operator could end.
+var (
+	ErrUnknownHost = errors.New("host not registered")
+	ErrNoEpisode   = errors.New("host has no episode to clear")
+)
+
+// ClearHost is the operator's acknowledgement of a host's episode: a
+// needs-hands the operator has dealt with, or a retry or rollback they do
+// not want. The episode ends as done and idle with no verdict on the
+// release, the pin the controller set is cleared, the release stops
+// counting the host as failing, and the fleet hold is recomputed. The
+// node is left as the actuator left it (cordoned, when it drained it).
+func (c *Controller) ClearHost(mac string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.opts.Fleet.Host(mac); !ok {
+		return ErrUnknownHost
+	}
+	hs := c.state.Hosts[mac]
+	if hs == nil || hs.Episode == nil || hs.Episode.State == hardware.AutopilotIdle {
+		return ErrNoEpisode
+	}
+	e := hs.Episode
+	was := e.State
+	e.State, e.Since, e.Done = hardware.AutopilotIdle, c.now(), true
+	e.Note = "cleared by the operator while " + was
+	c.release(e.OS, e.Release).Failing = false
+	c.dirty = true
+	c.event(EventEpisode, e.OS, e.Release, mac, "episode cleared by the operator while "+was)
+	c.unpin(mac)
+	c.applyHolds()
+	c.syncHostSummaries()
+	c.save()
+	return nil
+}
+
 // Driving reports whether the autopilot has an attempt in flight on mac
 // (rolling, gating, retrying or rolled-back): the power buttons refuse
 // such a host.
