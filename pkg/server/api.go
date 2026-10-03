@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,20 +98,7 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("Host registered", "mac", saved.MAC, "hostname", saved.Hostname, "os", saved.OS, "role", saved.Role, "targetVersion", saved.TargetVersion)
-
-	if saved.OSTreeImage != "" {
-		go pullImage(saved.OSTreeImage)
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "host": saved})
-}
-
-var pullImage = func(image string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	if _, err := versions.OSTreeImagePull(ctx, image); err != nil {
-		slog.Error("Error pulling OCI image", "image", image, "error", err)
-	}
 }
 
 func handleUnregistrationRequest(w http.ResponseWriter, r *http.Request) {
@@ -405,22 +391,3 @@ func handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleRegistryRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	images, err := versions.ListCachedImages(r.Context())
-	if err != nil {
-		var lre *versions.LocalRegistryError
-		if errors.As(err, &lre) {
-			slog.Error("Local registry query failed", "error", err)
-			writeError(w, http.StatusBadGateway, "could not query local registry")
-			return
-		}
-		slog.Error("Listing cached images failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not list cached images")
-		return
-	}
-	writeJSON(w, http.StatusOK, images)
-}

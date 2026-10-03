@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/jeefy/booty/pkg/autopilot"
 	"github.com/jeefy/booty/pkg/cluster"
 	"github.com/jeefy/booty/pkg/config"
@@ -25,7 +24,6 @@ import (
 	"github.com/jeefy/booty/pkg/kubeadm"
 	"github.com/jeefy/booty/pkg/power"
 	"github.com/jeefy/booty/pkg/tftp"
-	"github.com/jeefy/booty/pkg/versions"
 	"github.com/spf13/viper"
 )
 
@@ -131,12 +129,8 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/autopilot/", handleAutopilotRequest)
 	mux.HandleFunc("/power", handlePowerRequest)
 	mux.HandleFunc("/power/", handlePowerRequest)
-	mux.HandleFunc("/registry", handleRegistryRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
-
-	ociRegistry := registry.New(registry.WithBlobHandler(registry.NewDiskBlobHandler(versions.RegistryBlobDir())))
-	mux.Handle("/v2/", ociRegistry)
 
 	// /boot/ and /bluefin/ are routed before the mux: UEFI HTTP Boot
 	// firmware and shim never follow redirects, and http.ServeMux answers
@@ -185,7 +179,7 @@ func Start(o Options, errCh chan<- error) (*http.Server, error) {
 }
 
 func logRequest(handler http.Handler) http.Handler {
-	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/v2/", "/update-check"}
+	quiet := []string{"/healthz", "/ui/", "/data/", "/boot/", "/update-check"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		level := slog.LevelInfo
 		for _, prefix := range quiet {
@@ -212,8 +206,8 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // dataHandler serves DataDir read-only over /data/: no directory listings,
-// and Booty's own state files (hardware map, pin, temp files, registry
-// blobs, the cluster CA and tokens) are hidden.
+// and Booty's own state files (hardware map, pin, temp files, a leftover
+// registry/ blob cache, the cluster CA and tokens) are hidden.
 type dataHandler struct {
 	root  *os.Root
 	files http.Handler
