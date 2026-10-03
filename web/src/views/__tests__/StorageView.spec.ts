@@ -204,13 +204,18 @@ describe('StorageView', () => {
     expect(previous.find('[data-testid="hosts-pinned"]').text()).toBe('1 pinned')
 
     const orphan = bluefin.find('[data-release="2026.09.2"]')
-    expect(orphan.find('[data-testid="retained"]').text()).toBe('-')
+    expect(orphan.find('[data-testid="retained"]').text()).toBe('—')
     expect(orphan.find('[data-testid="retained"]').attributes('title')).toContain('prunes it')
+    expect(bluefin.find('thead').text()).toContain('Autopilot')
 
     const flatcar = wrapper.find('[data-testid="storage-os-flatcar"]')
     expect(flatcar.find('[data-release="4757.2.0"] [data-testid="hosts-running"]').text()).toBe(
       '1 running'
     )
+    expect(flatcar.find('thead').text()).not.toContain('Autopilot')
+    expect(flatcar.find('[data-testid="autopilot-cell"]').exists()).toBe(false)
+    expect(flatcar.findAll('thead th')).toHaveLength(6)
+    expect(bluefin.findAll('thead th')).toHaveLength(7)
     expect(wrapper.text()).toContain('channel stable')
     expect(wrapper.text()).toContain('pinned 4757.2.0')
     expect(wrapper.text()).toContain('projectbluefin/server')
@@ -233,7 +238,11 @@ describe('StorageView', () => {
     expect(old.classes()).toContain('pruned')
     expect(old.classes()).not.toContain('prominent')
     expect(old.find('[data-testid="pruned-badge"]').exists()).toBe(true)
+    expect(old.find('[data-state="good"]').text()).toBe('Good')
     expect(old.text()).toContain('—')
+    expect(bluefin.find('[data-release="2026.09.2"] [data-testid="autopilot-cell"]').text()).toBe(
+      '—'
+    )
 
     expect(bluefin.find('[data-release="26.09.678"]').classes()).not.toContain('pruned')
   })
@@ -244,9 +253,14 @@ describe('StorageView', () => {
     expect(wrapper.text()).toContain('not tracked · channel none')
     const coreos = wrapper.find('[data-testid="storage-os-coreos"]')
     const row = coreos.find('[data-release="44.20260829.3.1"]')
-    expect(row.find('[data-testid="ignored-badge"]').text()).toBe('ignored')
-    expect(row.find('[data-testid="retained"]').text()).toBe('-')
-    expect(row.find('[data-link="current"]').exists()).toBe(true)
+    expect(row.find('td:first-child [data-testid="ignored-badge"]').text()).toBe('ignored')
+    expect(row.find('[data-testid="retained"]').text()).toBe('untracked')
+    expect(row.find('[data-testid="retained"]').classes()).toContain('text-secondary')
+    const link = row.find('[data-link="current"]')
+    expect(link.classes()).toContain('link-ignored')
+    expect(link.classes()).not.toContain('text-bg-success')
+    expect(link.attributes('title')).toBe('links are kept but ignored while the OS is untracked')
+    expect(coreos.text()).not.toContain(' - ')
   })
 
   it('lists assets with kinds and the autopilot state line', async () => {

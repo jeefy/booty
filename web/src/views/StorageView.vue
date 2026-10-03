@@ -47,7 +47,19 @@ const RETAINED_HINT: Record<string, string> = {
   previous: 'Kept as the previous release',
   lastGood: 'Kept as lastGood',
   pinned: "Kept because a host's targetVersion names it",
-  '-': 'Nothing references it; the next sync of this OS prunes it'
+  '-': 'Nothing references it; the next sync of this OS prunes it',
+  untracked: 'This OS is not tracked: nothing is retained or pruned, the directory is left as it is'
+}
+
+const UNTRACKED_LINK_HINT = 'links are kept but ignored while the OS is untracked'
+
+function retainedLabel(os: HostOS, release: StorageRelease): string {
+  if (!storage.value.os[os].tracked) return 'untracked'
+  return release.retained === '-' ? '—' : release.retained
+}
+
+function retainedHint(os: HostOS, release: StorageRelease): string {
+  return RETAINED_HINT[storage.value.os[os].tracked ? release.retained : 'untracked'] ?? ''
 }
 
 /** A row of an OS card: a release on disk, an autopilot record, or both. */
@@ -118,6 +130,10 @@ function rows(os: HostOS): ReleaseRow[] {
     }
   }
   return [...byVersion.values()].sort((a, b) => compareVersions(a.version, b.version))
+}
+
+function hasRecords(os: HostOS): boolean {
+  return rows(os).some((row) => row.record !== null)
 }
 
 function osSummary(os: HostOS): string {
@@ -245,7 +261,16 @@ onMounted(() => {
           <span class="section-meta mono">{{ formatBytes(storage.os[os].bytes) }}</span>
         </div>
         <div class="panel table-panel fade-in" :data-testid="`storage-os-${os}`">
-          <table v-if="rows(os).length" class="table align-middle">
+          <table v-if="rows(os).length" class="table align-middle releases">
+            <colgroup>
+              <col class="col-version" />
+              <col class="col-size" />
+              <col class="col-age" />
+              <col class="col-links" />
+              <col class="col-retained" />
+              <col />
+              <col v-if="hasRecords(os)" class="col-autopilot" />
+            </colgroup>
             <thead>
               <tr>
                 <th scope="col">Version</th>
@@ -254,7 +279,7 @@ onMounted(() => {
                 <th scope="col">Links</th>
                 <th scope="col">Retained by</th>
                 <th scope="col">Hosts</th>
-                <th scope="col">Autopilot</th>
+                <th v-if="hasRecords(os)" scope="col">Autopilot</th>
               </tr>
             </thead>
             <tbody>
@@ -264,37 +289,39 @@ onMounted(() => {
                 :data-release="row.version"
                 :class="{ pruned: !row.release, prominent: !row.release && prominent(row.record) }"
               >
-                <td class="mono">
-                  {{ row.version }}
-                  <span
-                    v-if="!row.release"
-                    class="badge text-bg-light border ms-1"
-                    title="The autopilot remembers this release; its files were pruned"
-                    data-testid="pruned-badge"
-                    >files pruned</span
-                  >
-                  <span
-                    v-else-if="!row.release.cached"
-                    class="badge text-bg-light border ms-1"
-                    title="On disk but ignored: this OS is not tracked"
-                    data-testid="ignored-badge"
-                    >ignored</span
-                  >
+                <td>
+                  <span class="version-cell">
+                    <span class="mono">{{ row.version }}</span>
+                    <span
+                      v-if="!row.release"
+                      class="badge text-bg-light border"
+                      title="The autopilot remembers this release; its files were pruned"
+                      data-testid="pruned-badge"
+                      >files pruned</span
+                    >
+                    <span
+                      v-else-if="!row.release.cached"
+                      class="badge text-bg-light border"
+                      title="On disk but ignored: this OS is not tracked"
+                      data-testid="ignored-badge"
+                      >ignored</span
+                    >
+                  </span>
                 </td>
-                <td class="mono">
+                <td class="mono size-cell">
                   <template v-if="row.release">
                     {{ formatBytes(row.release.bytes) }}
                     <span class="small text-secondary"
                       >· {{ row.release.files }} file{{ row.release.files === 1 ? '' : 's' }}</span
                     >
                   </template>
-                  <span v-else>—</span>
+                  <span v-else class="text-secondary">—</span>
                 </td>
                 <td>
                   <span v-if="row.release" :title="formatAbsolute(row.release.modified)">{{
                     age(row.release.modified)
                   }}</span>
-                  <span v-else>—</span>
+                  <span v-else class="text-secondary">—</span>
                 </td>
                 <td>
                   <span class="d-inline-flex flex-wrap gap-1">
@@ -302,8 +329,13 @@ onMounted(() => {
                       v-for="link in row.release?.links ?? []"
                       :key="link"
                       class="badge"
-                      :class="link === 'current' ? 'text-bg-success' : 'text-bg-light border'"
-                      :title="LINK_HINT[link]"
+                      :class="[
+                        link === 'current' && storage.os[os].tracked
+                          ? 'text-bg-success'
+                          : 'text-bg-light border',
+                        { 'link-ignored': !storage.os[os].tracked }
+                      ]"
+                      :title="storage.os[os].tracked ? LINK_HINT[link] : UNTRACKED_LINK_HINT"
                       :data-link="link"
                       >{{ link }}</span
                     >
@@ -313,11 +345,13 @@ onMounted(() => {
                 <td>
                   <span
                     v-if="row.release"
-                    class="mono"
-                    :class="{ 'text-secondary': row.release.retained === '-' }"
-                    :title="RETAINED_HINT[row.release.retained]"
+                    :class="{
+                      mono: retainedLabel(os, row.release) !== '—',
+                      'text-secondary': row.release.retained === '-' || !storage.os[os].tracked
+                    }"
+                    :title="retainedHint(os, row.release)"
                     data-testid="retained"
-                    >{{ row.release.retained }}</span
+                    >{{ retainedLabel(os, row.release) }}</span
                   >
                   <span v-else class="text-secondary">—</span>
                 </td>
@@ -345,20 +379,15 @@ onMounted(() => {
                   </span>
                   <span v-else class="text-secondary">—</span>
                 </td>
-                <td>
-                  <template v-if="row.record">
-                    <span
-                      class="badge"
-                      :class="RELEASE_STATE_LABEL[row.record.state].badge"
-                      :data-state="row.record.state"
-                      >{{ RELEASE_STATE_LABEL[row.record.state].text }}</span
-                    >
-                    <span
-                      class="small text-secondary ms-1"
-                      :title="formatAbsolute(row.record.since)"
-                      >since {{ formatRelative(row.record.since) }}</span
-                    >
-                  </template>
+                <td v-if="hasRecords(os)" data-testid="autopilot-cell">
+                  <span
+                    v-if="row.record"
+                    class="badge"
+                    :class="RELEASE_STATE_LABEL[row.record.state].badge"
+                    :data-state="row.record.state"
+                    :title="`since ${formatRelative(row.record.since)} (${formatAbsolute(row.record.since)})`"
+                    >{{ RELEASE_STATE_LABEL[row.record.state].text }}</span
+                  >
                   <span v-else class="text-secondary">—</span>
                 </td>
               </tr>
@@ -477,7 +506,7 @@ onMounted(() => {
 }
 
 .usage-coreos {
-  background: #3b9ddd;
+  background: #1f9d8a;
 }
 
 .usage-bluefin {
@@ -510,6 +539,49 @@ onMounted(() => {
 
 .section-meta:last-child {
   margin-left: auto;
+}
+
+.releases {
+  table-layout: fixed;
+}
+
+.col-version {
+  width: 15rem;
+}
+
+.col-size {
+  width: 12rem;
+}
+
+.col-age {
+  width: 6rem;
+}
+
+.col-links {
+  width: 13rem;
+}
+
+.col-retained {
+  width: 7.5rem;
+}
+
+.col-autopilot {
+  width: 8rem;
+}
+
+.releases .size-cell {
+  white-space: nowrap;
+}
+
+.version-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--booty-space-1);
+}
+
+.link-ignored {
+  opacity: 0.55;
 }
 
 tr.pruned td {
