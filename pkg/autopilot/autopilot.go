@@ -38,13 +38,16 @@ type Settings struct {
 	HealthWindow time.Duration
 	RetryAfter   time.Duration
 	// Issues is the owner/repo quarantined Bluefin reports are filed to
-	// with GitHubToken; empty keeps them on disk. CNI/CNIRelease name the
-	// network plugin for the report when Booty installs it (ManagedCNI).
-	Issues      string
-	GitHubToken string
-	CNI         string
-	CNIRelease  string
-	ManagedCNI  bool
+	// with GitHubToken; empty keeps them on disk. IssueTitlePrefix goes in
+	// front of every issue title and comment header, verbatim.
+	// CNI/CNIRelease name the network plugin for the report when Booty
+	// installs it (ManagedCNI).
+	Issues           string
+	IssueTitlePrefix string
+	GitHubToken      string
+	CNI              string
+	CNIRelease       string
+	ManagedCNI       bool
 }
 
 // FromConfig reads the flags. Namespace falls back to POD_NAMESPACE, then
@@ -52,19 +55,20 @@ type Settings struct {
 // actuator then refuses to build a reboot Pod, with a message naming both).
 func FromConfig() Settings {
 	s := Settings{
-		Mode:         viper.GetString(config.Autopilot),
-		Kubeconfig:   viper.GetString(config.Kubeconfig),
-		Namespace:    viper.GetString(config.AutopilotNamespace),
-		Image:        viper.GetString(config.AutopilotImage),
-		DrainTimeout: viper.GetDuration(config.AutopilotDrainTO),
-		SSHKey:       viper.GetString(config.RebootSSHKey),
-		HealthWindow: viper.GetDuration(config.AutopilotHealthWin),
-		RetryAfter:   viper.GetDuration(config.AutopilotRetryAfter),
-		Issues:       strings.Trim(strings.TrimSpace(viper.GetString(config.AutopilotIssues)), "/"),
-		GitHubToken:  strings.TrimSpace(viper.GetString(config.GithubToken)),
-		CNI:          viper.GetString(config.CNI),
-		CNIRelease:   viper.GetString(config.CNIRelease),
-		ManagedCNI:   cluster.Mode(viper.GetString(config.ControlPlane)) == cluster.Managed,
+		Mode:             viper.GetString(config.Autopilot),
+		Kubeconfig:       viper.GetString(config.Kubeconfig),
+		Namespace:        viper.GetString(config.AutopilotNamespace),
+		Image:            viper.GetString(config.AutopilotImage),
+		DrainTimeout:     viper.GetDuration(config.AutopilotDrainTO),
+		SSHKey:           viper.GetString(config.RebootSSHKey),
+		HealthWindow:     viper.GetDuration(config.AutopilotHealthWin),
+		RetryAfter:       viper.GetDuration(config.AutopilotRetryAfter),
+		Issues:           strings.Trim(strings.TrimSpace(viper.GetString(config.AutopilotIssues)), "/"),
+		IssueTitlePrefix: viper.GetString(config.AutopilotIssueTitlePrefix),
+		GitHubToken:      strings.TrimSpace(viper.GetString(config.GithubToken)),
+		CNI:              viper.GetString(config.CNI),
+		CNIRelease:       viper.GetString(config.CNIRelease),
+		ManagedCNI:       cluster.Mode(viper.GetString(config.ControlPlane)) == cluster.Managed,
 	}
 	if s.Namespace == "" {
 		s.Namespace = os.Getenv(config.PodNamespaceEnv)
@@ -130,7 +134,7 @@ func (s Settings) Poster() controller.Poster {
 	if s.Issues == "" {
 		return nil
 	}
-	return report.NewPoster(s.Issues, s.GitHubToken, "")
+	return report.NewPoster(s.Issues, s.GitHubToken, s.IssueTitlePrefix)
 }
 
 // Autopilot is the running instance: the settings, the cluster client (nil
@@ -277,7 +281,7 @@ func (a *Autopilot) LogStatus(ctx context.Context) {
 	}
 	slog.Info("Autopilot on: health gate, retry, rollback to lastGood and fleet hold for every OS"+map[bool]string{true: "; Bluefin canary-serial rollout, TIMEOUT/retry, quarantine and skip-to-next", false: ""}[st.Mode == config.AutopilotFull], attrs...)
 	if a.Settings.Issues != "" {
-		slog.Info("Autopilot files quarantined Bluefin releases as GitHub issues", "repo", a.Settings.Issues, "reports", config.AutopilotPath(config.AutopilotReportsDir))
+		slog.Info("Autopilot files quarantined Bluefin releases as GitHub issues", "repo", a.Settings.Issues, "titlePrefix", a.Settings.IssueTitlePrefix, "reports", config.AutopilotPath(config.AutopilotReportsDir))
 	} else {
 		slog.Info("Autopilot reports stay on disk (set --autopilotIssues=owner/repo to file Bluefin ones as issues)", "reports", config.AutopilotPath(config.AutopilotReportsDir))
 	}
