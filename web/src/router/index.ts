@@ -6,7 +6,8 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'home', component: HomeView },
     { path: '/hosts', name: 'hosts', component: () => import('../views/HostsView.vue') },
-    { path: '/cache', name: 'cache', component: () => import('../views/CacheView.vue') },
+    { path: '/storage', name: 'storage', component: () => import('../views/StorageView.vue') },
+    { path: '/cache', redirect: '/storage' },
     { path: '/config', name: 'config', component: () => import('../views/ConfigView.vue') },
     {
       path: '/autopilot',

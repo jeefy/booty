@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -173,30 +172,16 @@ func evaluateBluefin(host *hardware.Host, rep updateReport, resp updateCheckResp
 	return resp
 }
 
+// imageHostReason is the answer for a host that rebases onto an OSTree
+// image: Booty no longer mirrors images, so it has no digest to compare
+// against and leaves the reboot to the host's own rpm-ostree upgrade.
+const imageHostReason = "image hosts update through rpm-ostree; booty does not track image digests"
+
 func evaluateOSTree(host *hardware.Host, rep updateReport, resp updateCheckResponse) updateCheckResponse {
-	targetImage := host.OSTreeImage
-	if targetImage == "" {
-		targetImage = rep.Image
-	}
-	if targetImage != "" {
-		if localDigest := localImageDigest(targetImage); localDigest != "" {
-			resp.Target = targetImage + "@" + localDigest
-			switch rep.Digest {
-			case "":
-				resp.Reason = "host reported no image digest"
-			case localDigest:
-				resp.Reason = "image up to date"
-			default:
-				resp.RebootRequired = true
-				resp.Reason = "running image digest differs from cached " + targetImage
-			}
-			return resp
-		}
-		if host.OSTreeImage != "" {
-			resp.Target = targetImage
-			resp.Reason = "target image not cached yet"
-			return resp
-		}
+	if host.OSTreeImage != "" {
+		resp.Target = host.OSTreeImage
+		resp.Reason = imageHostReason
+		return resp
 	}
 	return evaluateCoreOSVersion(host, rep, resp)
 }
@@ -221,21 +206,11 @@ func evaluateCoreOSVersion(host *hardware.Host, rep updateReport, resp updateChe
 	return resp
 }
 
-func localImageDigest(image string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	digest, err := digestLookup(versions.LocalImageRef(image), versions.LocalOptions(ctx)...)
-	if err != nil {
-		slog.Debug("Image not in local cache", "image", image, "error", err)
-		return ""
-	}
-	return digest
-}
-
-// normalizeImageRef strips the rpm-ostree transport prefixes and Booty's own
-// client-facing registry so the reference matches what hosts are registered
-// with (e.g. ghcr.io/ublue-os/bazzite:stable, a Universal Blue image booted
-// as os=coreos).
+// normalizeImageRef strips the rpm-ostree transport prefixes and, for
+// hosts rebased while Booty still mirrored images, its old client-facing
+// registry, so the reference matches what hosts are registered with (e.g.
+// ghcr.io/ublue-os/bazzite:stable, a Universal Blue image booted as
+// os=coreos).
 func normalizeImageRef(image string) string {
 	image = strings.TrimSpace(image)
 	for _, prefix := range []string{"ostree-unverified-registry:", "ostree-image-signed:", "ostree-unverified-image:", "ostree-remote-image:", "docker://", "registry:"} {

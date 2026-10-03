@@ -9,7 +9,7 @@ const API_ROUTES = [
   '/booty.json',
   '/info',
   '/flatcar',
-  '/registry',
+  '/storage',
   '/register',
   '/unregister',
   '/hosts',

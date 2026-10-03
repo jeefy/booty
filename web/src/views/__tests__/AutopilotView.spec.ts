@@ -3,6 +3,11 @@ import { mount } from '@vue/test-utils'
 import AutopilotView from '@/views/AutopilotView.vue'
 import { flushPromises, jsonResponse, mockFetch, requestBody } from '@/__tests__/helpers'
 
+const RouterLinkStub = {
+  props: ['to'],
+  template: '<a :href="to"><slot /></a>'
+}
+
 const hosts = {
   hosts: {
     'aa:bb:cc:dd:ee:01': { mac: 'aa:bb:cc:dd:ee:01', hostname: 'ehrlitan', os: 'flatcar' },
@@ -36,7 +41,14 @@ const guard = {
           class: 'failed-units',
           report: 'flatcar-4800.0.0'
         },
-        { os: 'flatcar', version: '4757.2.0', state: 'good', since: '2026-09-20T12:00:00Z' }
+        { os: 'flatcar', version: '4757.2.0', state: 'good', since: '2026-09-20T12:00:00Z' },
+        {
+          os: 'flatcar',
+          version: '4700.0.0',
+          state: 'good',
+          since: '2026-09-01T12:00:00Z',
+          cached: false
+        }
       ]
     },
     bluefin: {
@@ -215,7 +227,7 @@ function mountView(
     }
     return jsonResponse({ error: `unexpected ${url}` }, 500)
   })
-  return { wrapper: mount(AutopilotView), spy }
+  return { wrapper: mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } }), spy }
 }
 
 afterEach(() => {
@@ -254,6 +266,14 @@ describe('AutopilotView', () => {
     expect(quarantined.text()).toContain('failed-units')
     expect(quarantined.find('[data-action="clear"]').exists()).toBe(true)
     expect(flatcar.find('[data-release="4757.2.0"] [data-action="clear"]').exists()).toBe(false)
+    expect(flatcar.find('[data-release="4757.2.0"] [data-testid="pruned-hint"]').exists()).toBe(
+      false
+    )
+    const pruned = flatcar.find('[data-release="4700.0.0"]')
+    expect(pruned.classes()).toContain('muted')
+    expect(pruned.find('[data-testid="pruned-hint"]').attributes('href')).toBe('/storage')
+    expect(quarantined.classes()).not.toContain('muted')
+    expect(wrapper.find('[data-testid="storage-link"]').attributes('href')).toBe('/storage')
     expect(wrapper.find('[data-testid="autopilot-os-table"] tr[data-os="coreos"]').exists()).toBe(
       false
     )

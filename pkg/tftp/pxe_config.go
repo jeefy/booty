@@ -119,6 +119,29 @@ exit
 reboot
 `,
 
+	"untracked.ipxe": `#!ipxe
+echo
+echo Booty: [[untracked-reason]]; nothing can be served to [[hostname]].
+echo Register this host as another OS, or start Booty with a channel for it.
+echo
+set menu-timeout 30000
+:start
+menu Booty - OS not tracked - [[hostname]]
+item --key d run-from-disk Boot from disk
+item --key r reboot        Reboot
+item --key s shell         iPXE shell
+choose --timeout ${menu-timeout} --default run-from-disk selected || goto run-from-disk
+set menu-timeout 0
+goto ${selected}
+:run-from-disk
+exit
+:reboot
+reboot
+:shell
+shell
+goto start
+`,
+
 	"secureboot-refused.ipxe": `#!ipxe
 echo
 echo Booty: this machine reached Booty through Secure Boot, and [[os-label]] cannot boot that way.
@@ -143,7 +166,10 @@ goto start
 `,
 }
 
-const secureBootRefusedKey = "secureboot-refused"
+const (
+	secureBootRefusedKey = "secureboot-refused"
+	untrackedKey         = "untracked"
+)
 
 var secureBootOSLabels = map[string]string{
 	"flatcar": "Flatcar",
@@ -162,6 +188,9 @@ type TemplateVars struct {
 	CoreOSArch    string
 	CoreOSVersion string
 	OSTreeImage   string
+	// UntrackedReason, when set, replaces the host's boot script with the
+	// refusal menu: its OS has no channel (--coreOSChannel=none).
+	UntrackedReason string
 	// SecureBoot is set when the client arrived through the signed iPXE
 	// (its autoexec.ipxe adds sb=1): kernels then go through firmware
 	// verification, so the coreos script loads Fedora's shim first.
@@ -365,6 +394,7 @@ func Render(template string, v TemplateVars) string {
 		"[[bluefin-chain-cmdline]]", v.BluefinChainCmdline,
 		"[[bluefin-bios]]", v.biosFragment(),
 		"[[secure-boot-shim]]", v.secureBootShim(),
+		"[[untracked-reason]]", v.UntrackedReason,
 	).Replace(template)
 }
 
@@ -395,6 +425,9 @@ func MenuDefaultForHost(host *hardware.Host) string {
 // menu when no template exists. Secure Boot clients whose OS cannot pass
 // firmware verification get the refusal menu (see SecureBootRefused).
 func IPXEScript(os string, v TemplateVars) string {
+	if v.UntrackedReason != "" {
+		return Render(PXEConfig[untrackedKey+".ipxe"], v)
+	}
 	if SecureBootRefused(os, v) {
 		return Render(strings.NewReplacer(
 			"[[os-label]]", secureBootOSLabels[os],

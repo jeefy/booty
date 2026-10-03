@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +43,9 @@ func validateHost(h *hardware.Host) error {
 	}
 	if h.OS != "" && !hardware.IsValidOS(h.OS) {
 		return fmt.Errorf("invalid os %q: must be one of %s", h.OS, hardware.ValidOSList())
+	}
+	if err := versions.ValidateHostOS(h); err != nil {
+		return err
 	}
 	h.InstallDisk = strings.TrimSpace(h.InstallDisk)
 	if err := hardware.ValidateInstallDisk(h.InstallDisk); err != nil {
@@ -96,20 +98,7 @@ func handleRegistrationRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("Host registered", "mac", saved.MAC, "hostname", saved.Hostname, "os", saved.OS, "role", saved.Role, "targetVersion", saved.TargetVersion)
-
-	if saved.OSTreeImage != "" {
-		go pullImage(saved.OSTreeImage)
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "host": saved})
-}
-
-var pullImage = func(image string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	if _, err := versions.OSTreeImagePull(ctx, image); err != nil {
-		slog.Error("Error pulling OCI image", "image", image, "error", err)
-	}
 }
 
 func handleUnregistrationRequest(w http.ResponseWriter, r *http.Request) {
@@ -222,12 +211,29 @@ func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	flatcar, coreos, bluefin := state.CurrentFlatcarVersion(), state.CurrentCoreOSVersion(), state.CurrentBluefinVersion()
+	flatcar, coreos, bluefin := trackedVersion(versions.OSFlatcar), trackedVersion(versions.OSCoreOS), trackedVersion(versions.OSBluefin)
 	if r.URL.Path == "/version.json" {
 		writeJSON(w, http.StatusOK, map[string]string{"flatcar": flatcar, "coreos": coreos, "bluefin": bluefin})
 		return
 	}
 	writeText(w, http.StatusOK, fmt.Sprintf("FLATCAR_VERSION=%s\nCOREOS_VERSION=%s\nBLUEFIN_VERSION=%s\n", flatcar, coreos, bluefin))
+}
+
+// trackedVersion is the recorded current version of osName, "" for an OS
+// Booty does not track (--coreOSChannel=none) whatever state remembers.
+func trackedVersion(osName string) string {
+	if !versions.OSTracked(osName) {
+		return ""
+	}
+	switch osName {
+	case versions.OSFlatcar:
+		return state.CurrentFlatcarVersion()
+	case versions.OSCoreOS:
+		return state.CurrentCoreOSVersion()
+	case versions.OSBluefin:
+		return state.CurrentBluefinVersion()
+	}
+	return ""
 }
 
 type infoResponse struct {
@@ -318,10 +324,10 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var info infoResponse
-	info.Flatcar.Version = state.CurrentFlatcarVersion()
+	info.Flatcar.Version = trackedVersion(versions.OSFlatcar)
 	info.Flatcar.PinnedVersion = state.FlatcarPin()
-	info.CoreOS.Version = state.CurrentCoreOSVersion()
-	info.Bluefin.Version = state.CurrentBluefinVersion()
+	info.CoreOS.Version = trackedVersion(versions.OSCoreOS)
+	info.Bluefin.Version = trackedVersion(versions.OSBluefin)
 	info.Bluefin.PinnedVersion = state.BluefinPin()
 	info.Booty.Version = viper.GetString(config.Version)
 	info.Booty.Timestamp = viper.GetString(config.Timestamp)
@@ -385,22 +391,10 @@ func handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleRegistryRequest(w http.ResponseWriter, r *http.Request) {
+func handleStorageRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	images, err := versions.ListCachedImages(r.Context())
-	if err != nil {
-		var lre *versions.LocalRegistryError
-		if errors.As(err, &lre) {
-			slog.Error("Local registry query failed", "error", err)
-			writeError(w, http.StatusBadGateway, "could not query local registry")
-			return
-		}
-		slog.Error("Listing cached images failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not list cached images")
-		return
-	}
-	writeJSON(w, http.StatusOK, images)
+	writeJSON(w, http.StatusOK, versions.CurrentStorage())
 }

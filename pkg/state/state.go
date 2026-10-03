@@ -16,7 +16,6 @@ var (
 	FlatcarUpdateMu sync.Mutex
 	CoreOSUpdateMu  sync.Mutex
 	BluefinUpdateMu sync.Mutex
-	OSTreeSyncMu    sync.Mutex
 )
 
 type runtimeState struct {
@@ -37,9 +36,14 @@ var s runtimeState
 // DataDir/version.txt and the pin from --flatcarVersion/FLATCAR_VERSION_PIN
 // or, failing that, the pin persisted by the Web UI.
 func Init() {
-	if v := LoadLocalFlatcarVersion(); v != "" {
+	if !config.FlatcarTracked() {
+		slog.Info("Flatcar is not tracked; its releases on disk are ignored", "flag", config.FlatcarChannel)
+	} else if v := LoadLocalFlatcarVersion(); v != "" {
 		SetCurrentFlatcarVersion(v)
 		slog.Info("Local Flatcar version found", "version", v)
+	}
+	if !config.CoreOSTracked() {
+		slog.Info("CoreOS is not tracked; its releases on disk are ignored", "flag", config.CoreOSChannel)
 	}
 
 	pin := strings.TrimSpace(viper.GetString(config.FlatcarVersion))

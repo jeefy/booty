@@ -15,23 +15,6 @@ passwd:
 systemd:
     units:
     - enabled: true
-      name: update-registry-config.service
-      contents: |
-        [Unit]
-        Description=Add Booty registry endpoint to /etc/containers/registries.conf
-        After=network-online.target
-        ConditionPathExists=!/root/.postRegistryConfig
-
-        [Service]
-        type=oneshot
-        ExecStartPre=/usr/bin/bash -c 'echo "[[registry]]" >> /etc/containers/registries.conf'
-        ExecStartPre=/usr/bin/bash -c 'echo "location = \"\\\"{{ .ServerIP }}\\\"\"" >> /etc/containers/registries.conf'
-        ExecStartPre=/usr/bin/bash -c 'echo "insecure = true" >> /etc/containers/registries.conf'
-        ExecStart=touch /root/.postRegistryConfig
-
-        [Install]
-        WantedBy=multi-user.target
-    - enabled: true
       name: rebase-custom.service
       contents: |
         [Unit]
@@ -39,7 +22,6 @@ systemd:
         # Only run on the firstboot
         After=network-online.target
         ConditionPathExists=!/root/.postRebase
-        ConditionPathExists=/root/.postRegistryConfig
 
         [Service]
         # This ordering is important

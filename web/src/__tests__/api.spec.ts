@@ -23,7 +23,7 @@ describe('apiGet', () => {
 
   it('falls back to HTTP <status> when the error body is not JSON', async () => {
     mockFetch(() => textResponse('<html>Bad Gateway</html>', 502))
-    const err = await apiGet('/registry').catch((e: unknown) => e)
+    const err = await apiGet('/storage').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ApiError)
     expect((err as ApiError).status).toBe(502)
     expect((err as ApiError).message).toBe('HTTP 502')

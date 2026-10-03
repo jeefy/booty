@@ -350,7 +350,6 @@ func TestSettingSourceAndValue(t *testing.T) {
 	for key, want := range map[string]string{
 		FlatcarChannel:    "beta",
 		TFTPPort:          "69",
-		OCIGC:             "true",
 		JoinTokenTTL:      "1h0m0s",
 		SSHAuthorizedKeys: "a, b",
 		ServerIP:          "",

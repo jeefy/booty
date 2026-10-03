@@ -22,7 +22,6 @@ import (
 	ignTypes "github.com/coreos/ignition/v2/config/v3_4/types"
 	v3_5 "github.com/coreos/ignition/v2/config/v3_5"
 	coreOSType "github.com/coreos/ignition/v2/config/v3_5/types"
-	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/j-keck/arping"
 	"github.com/jeefy/booty/pkg/autopilot/controller"
 	"github.com/jeefy/booty/pkg/config"
@@ -39,8 +38,6 @@ var arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
 	hw, _, err := arping.Ping(ip)
 	return hw, err
 }
-
-var digestLookup = crane.Digest
 
 // identifyClient returns the normalized MAC for the request, preferring the
 // ?mac= query parameter and falling back to an ARP lookup of RemoteAddr.
@@ -121,21 +118,13 @@ func autoRegister(mac, ip string) *hardware.Host {
 	return host
 }
 
-// resolveOSTreeImage prefers the locally cached copy of the host's OSTree
-// image when the embedded registry already has it.
-func resolveOSTreeImage(host *hardware.Host) string {
-	if host == nil || host.OSTreeImage == "" {
+// hostOSTreeImage is the image a host's rebase template gets: its
+// registered ostreeImage, fetched from its own registry.
+func hostOSTreeImage(host *hardware.Host) string {
+	if host == nil {
 		return ""
 	}
-	local := versions.LocalImageRef(host.OSTreeImage)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	digest, err := digestLookup(local, versions.LocalOptions(ctx)...)
-	if err != nil || digest == "" {
-		slog.Warn("OSTree image not in local cache yet, using upstream", "image", local, "error", err)
-		return host.OSTreeImage
-	}
-	return versions.ClientImageRef(host.OSTreeImage)
+	return host.OSTreeImage
 }
 
 func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +146,7 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		CoreOSChannel:            viper.GetString(config.CoreOSChannel),
 		CoreOSArch:               viper.GetString(config.CoreOSArchitecture),
 		CoreOSVersion:            state.CurrentCoreOSVersion(),
-		OSTreeImage:              resolveOSTreeImage(host),
+		OSTreeImage:              hostOSTreeImage(host),
 		SecureBoot:               secureBoot,
 		SecureBootTrustedFlatcar: secureBootTrustedFlatcar(),
 	}
@@ -169,7 +158,12 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		vars.FlatcarCASha256 = ca.Sha256
 	}
 	os := tftp.OSForHost(host)
+	if host != nil && !versions.OSTracked(os) {
+		vars.UntrackedReason = versions.UntrackedReason(os)
+	}
 	switch {
+	case vars.UntrackedReason != "":
+		slog.Warn("Host's OS is not tracked; serving the refusal menu", "mac", mac, "os", os)
 	case tftp.SecureBootRefused(os, vars):
 		slog.Warn("Secure Boot host cannot boot its OS; serving the refusal menu", "mac", mac, "os", os, "trustedFlatcar", vars.SecureBootTrustedFlatcar, "doInstall", host.DoInstall)
 	case os == "bluefin":
@@ -532,7 +526,7 @@ func templateDataFor(host *hardware.Host, joinString string) templateData {
 		JoinString:  joinString,
 		ServerIP:    config.ClientRegistry(),
 		Hostname:    host.Hostname,
-		OSTreeImage: resolveOSTreeImage(host),
+		OSTreeImage: hostOSTreeImage(host),
 	}
 }
 

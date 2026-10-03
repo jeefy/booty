@@ -9,12 +9,12 @@ output must exist before starting `booty`).
 ```
 src/
   api.ts          typed fetch helpers (apiGet / apiGetText / apiPost / apiPut) + ApiError from the JSON error envelope
-  types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, CachedImage) + normalisers
+  types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, Storage) + normalisers
   utils/time.ts   relative / absolute time formatting for RFC3339 timestamps
   utils/fleet.ts  fleet helpers: running-label splitting, host status, pending list, preview URLs
   components/     ErrorAlert, LoadingState, EmptyState, HostForm
-  views/          HomeView (status + Flatcar pin), HostsView, CacheView, AutopilotView, ConfigView, AboutView
-  router/         hash-based routes (/, /hosts, /cache, /autopilot, /config, /about)
+  views/          HomeView (status + Flatcar pin), HostsView, StorageView, AutopilotView, ConfigView, AboutView
+  router/         hash-based routes (/, /hosts, /storage, /autopilot, /config, /about)
   assets/main.css design tokens (CSS variables) layered on top of Bootstrap 5
 ```
 
@@ -108,7 +108,7 @@ npm run dev          # http://localhost:5173/ui/
 ```
 
 The dev server proxies every backend route (`/booty.json`, `/info`,
-`/flatcar/*`, `/registry`, `/register`, `/unregister`, `/hosts`,
+`/flatcar/*`, `/storage`, `/register`, `/unregister`, `/hosts`,
 `/ignition.json`, `/cluster`, `/autopilot`, `/power`, `/config`, `/healthz`,
 `/version.json`, `/data`) to a running Go
 server. It defaults to `http://localhost:8080`; override with

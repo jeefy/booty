@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { apiGet, apiGetText, apiPost, errorMessage } from '@/api'
 import {
   AUTOPILOT_HOST_LABEL,
@@ -67,9 +68,7 @@ const events = computed(() => {
   const extra = powerEvents.value
     .filter((e) => !seen.has(`${e.at}|${e.mac}|${e.text}`))
     .map((e) => ({ at: e.at, kind: e.kind, os: '', release: '', mac: e.mac, text: e.text }))
-  return [...status.value.events, ...extra]
-    .sort((a, b) => a.at.localeCompare(b.at))
-    .reverse()
+  return [...status.value.events, ...extra].sort((a, b) => a.at.localeCompare(b.at)).reverse()
 })
 
 function osReleases(os: HostOS): AutopilotRelease[] {
@@ -84,6 +83,11 @@ function canClear(r: AutopilotRelease): boolean {
   return r.state === 'quarantined' || r.state === 'timeout'
 }
 
+/** A pruned release stays prominent while its verdict still keeps hosts off it. */
+function muted(r: AutopilotRelease): boolean {
+  return !r.cached && !canClear(r)
+}
+
 const HOST_CLEARABLE = new Set(['needs-hands', 'retrying', 'rolled-back'])
 
 function canClearHost(h: AutopilotHost): boolean {
@@ -93,7 +97,8 @@ function canClearHost(h: AutopilotHost): boolean {
 const HOST_CLEAR_HINT: Record<string, string> = {
   'needs-hands': 'Acknowledge the alert: the episode ends, the host is idle again.',
   retrying: 'Stop the second attempt: the host keeps what it runs, the fleet hold goes.',
-  'rolled-back': 'End the rollback episode: the host stays on lastGood, the release keeps its verdict.'
+  'rolled-back':
+    'End the rollback episode: the host stays on lastGood, the release keeps its verdict.'
 }
 
 function hostClearHint(h: AutopilotHost): string {
@@ -250,10 +255,7 @@ onMounted(() => {
           <div class="stat-label">Attention</div>
           <div class="stat-value">
             <span class="d-inline-flex flex-wrap gap-1" data-testid="autopilot-attention">
-              <span
-                class="badge"
-                :class="status.needsHands ? 'text-bg-danger' : 'text-bg-success'"
-              >
+              <span class="badge" :class="status.needsHands ? 'text-bg-danger' : 'text-bg-success'">
                 {{ status.needsHands }} needs hands
               </span>
               <span
@@ -284,7 +286,12 @@ onMounted(() => {
       </template>
 
       <template v-else>
-        <div class="section-title">Fleet targets</div>
+        <div class="section-title">
+          Fleet targets
+          <RouterLink class="section-link" to="/storage" data-testid="storage-link"
+            >what is on disk →</RouterLink
+          >
+        </div>
         <div class="panel table-panel fade-in">
           <table class="table align-middle" data-testid="autopilot-os-table">
             <thead>
@@ -320,7 +327,9 @@ onMounted(() => {
                         v-for="r in osReleases(os)"
                         :key="r.version"
                         class="release"
+                        :class="{ muted: muted(r) }"
                         :data-release="r.version"
+                        :data-cached="r.cached"
                       >
                         <span class="mono">{{ r.version }}</span>
                         <span
@@ -330,6 +339,14 @@ onMounted(() => {
                         >
                           {{ RELEASE_STATE_LABEL[r.state].text }}
                         </span>
+                        <RouterLink
+                          v-if="!r.cached"
+                          class="badge text-bg-light border text-decoration-none"
+                          to="/storage"
+                          title="The release's files were pruned; the record is kept as history. Storage shows what is on disk."
+                          data-testid="pruned-hint"
+                          >files pruned</RouterLink
+                        >
                         <span class="small text-secondary" :title="formatAbsolute(r.since)">
                           since {{ formatRelative(r.since) }}
                         </span>
@@ -583,8 +600,7 @@ onMounted(() => {
                       tabindex="0"
                       aria-label="Redacted autopilot report"
                       data-testid="report-preview"
-                      >{{ reportText }}</pre
-                    >
+                      >{{ reportText }}</pre>
                   </td>
                 </tr>
               </template>
@@ -634,6 +650,27 @@ onMounted(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--booty-space-2);
+}
+
+.release.muted {
+  opacity: 0.6;
+}
+
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--booty-space-3);
+}
+
+.section-link {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.section-link:hover {
+  text-decoration: underline;
 }
 
 .note {

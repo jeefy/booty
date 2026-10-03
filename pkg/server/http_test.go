@@ -14,7 +14,6 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/spf13/viper"
@@ -94,13 +93,11 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 		t.Fatalf("hardware.Load: %v", err)
 	}
 
-	origARP, origDigest, origPull := arpLookup, digestLookup, pullImage
+	origARP := arpLookup
 	arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
 		return net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0xaa, 0xaa}, nil
 	}
-	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
-	pullImage = func(string) {}
-	t.Cleanup(func() { arpLookup, digestLookup, pullImage = origARP, origDigest, origPull })
+	t.Cleanup(func() { arpLookup = origARP })
 
 	srv := httptest.NewServer(NewHandler(Options{WebDir: dir, BootFiles: testBootFiles}))
 	t.Cleanup(srv.Close)
@@ -374,18 +371,6 @@ func TestIPXEAndIgnitionFlow(t *testing.T) {
 	if h, _ := hardware.Get("aa:bb:cc:dd:ee:ff"); !h.DoInstall {
 		t.Fatal("doInstall must not flip on the iPXE fetch")
 	}
-
-	digestLookup = func(ref string, _ ...crane.Option) (string, error) {
-		if ref != "127.0.0.1:18099/ghcr.io/ublue-os/bazzite:stable" {
-			t.Errorf("digest lookup must target the loopback registry, got %q", ref)
-		}
-		return "sha256:abc", nil
-	}
-	r = do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac=aa:bb:cc:dd:ee:ff", "")
-	if !strings.Contains(r.body, "set OSTREE_IMAGE 192.168.1.10:8080/ghcr.io/ublue-os/bazzite:stable") {
-		t.Fatalf("cached image must be rendered with the client-facing registry:\n%s", r.body)
-	}
-	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
 
 	r = do(t, http.MethodGet, srv.URL+"/ignition.json?mac=aa:bb:cc:dd:ee:ff&preview=1", "")
 	if r.status != 200 || !strings.Contains(r.body, "/ignition/user.json?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff") {

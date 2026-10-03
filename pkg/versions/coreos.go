@@ -33,6 +33,10 @@ func coreOSArtifactNames(version, arch string) map[string]string {
 // artifacts when they differ from the served version. Concurrent invocations
 // are skipped.
 func CoreOSVersionCheck() {
+	if !config.CoreOSTracked() {
+		slog.Debug("CoreOS is not tracked; skipping version check", "flag", config.CoreOSChannel)
+		return
+	}
 	if !state.CoreOSUpdateMu.TryLock() {
 		slog.Info("CoreOS update already in progress, skipping version check")
 		return

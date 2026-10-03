@@ -62,6 +62,11 @@ type Release struct {
 	Failing bool `json:"failing,omitempty"`
 	// Retried is set once the single TIMEOUT retry has been issued.
 	Retried bool `json:"retried,omitempty"`
+	// Cached says whether the release's files are still on disk. Records
+	// outlive their releases on purpose (the verdict is the history); Status
+	// computes it from the fleet's cached list, the persisted value is
+	// meaningless.
+	Cached bool `json:"cached"`
 }
 
 // Bad reports whether hosts should be kept off the release.

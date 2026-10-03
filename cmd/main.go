@@ -51,14 +51,14 @@ func init() {
 	flags.Int(config.TFTPPort, 69, "UDP port to use for the TFTP server")
 	flags.Int(config.TFTPBlockSize, 1468, "TFTP block size to negotiate with clients")
 	flags.Bool(config.Debug, false, "Enable debug logging")
-	flags.String(config.UpdateSchedule, "*/5 * * * *", "Cron schedule for the Flatcar/CoreOS/Bluefin version checks and OSTree image sync")
+	flags.String(config.UpdateSchedule, "*/5 * * * *", "Cron schedule for the Flatcar/CoreOS/Bluefin version checks")
 	flags.String(config.DataDir, "/data", "Directory to store stateful data")
 	flags.String(config.WebDir, "./web/dist", "Directory with the built Web UI, used when no UI is embedded in the binary")
 	flags.String(config.FlatcarArchitecture, "amd64", "Architecture to use for the Flatcar downloads")
 	flags.String(config.CoreOSArchitecture, "x86_64", "Architecture to use for CoreOS downloads")
-	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates")
+	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates, or 'none' to neither track nor download Flatcar (its hosts are refused)")
 	flags.String(config.FlatcarVersion, "", "Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel")
-	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
+	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates, or 'none' to neither track nor download CoreOS (its hosts are refused)")
 	flags.String(config.BluefinRepo, config.DefaultBluefinRepo, "GitHub repository whose v<version> releases provide the Bluefin Server netboot UKI, OS DDI and sysexts")
 	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 26.09.747, tag v26.09.747). When empty, tracks the newest v<version> release (or the OCI artifact's latest tag)")
 	flags.String(config.BluefinKeyring, "", "OpenPGP public keyring (binary as for gpgv --keyring, or armored) that must have signed a Bluefin release's SHA256SUMS (SHA256SUMS.gpg); the sync fails closed when set. Empty trusts SHA256SUMS from the release as-is")
@@ -69,8 +69,8 @@ func init() {
 	flags.String(config.Builtin, config.DefaultBuiltin, "Comma separated builtin Ignition fragments merged into every registered host's config (hostname, update, booted, sshkeys, health, wol), or 'none' to serve the user config as-is")
 	flags.String(config.SSHAuthorizedKeysFl, "", "File with SSH public keys (one per line) added to the 'core' user by the sshkeys builtin")
 	flags.StringSlice(config.SSHAuthorizedKeys, nil, "SSH public key added to the 'core' user by the sshkeys builtin (repeatable)")
-	flags.Bool(config.OCIGC, true, "Delete unreferenced OCI blobs from the local registry after a fully successful image sync")
-	flags.Bool(config.OCIGCEmpty, false, "Allow blob GC to wipe the whole OCI blob cache when no registered host references an ostree image")
+	flags.Bool(config.OCIGC, true, "No-op kept so an old command line still starts")
+	flags.Bool(config.OCIGCEmpty, false, "No-op kept so an old command line still starts")
 	flags.String(config.DoInstallClearOn, config.ClearOnIgnition, "When to clear a host's pending doInstall: 'ignition' (first Ignition fetch; Bluefin: the bluefin-node.ign carrying the install unit), 'booted' (only on POST /booted from the installed system; Bluefin behaves like 'next-boot') or 'next-boot' (Bluefin: the first netboot UKI fetch at least --installMinDuration after the install boot was served; other OSes behave like 'booted'). A Bluefin host whose doInstall clears becomes mode installed")
 	flags.Duration(config.InstallMinDuration, config.DefaultInstallMinDuration, "Minimum time between a Bluefin install boot and the netboot UKI fetch that counts as 'install finished' for --doInstallClearOn=next-boot/booted; earlier fetches install again")
 	flags.Bool(config.ProxyDHCP, false, "EXPERIMENTAL: answer PXE clients as a ProxyDHCP server (UDP 67 + 4011) so the network's DHCP server needs no next-server/filename")
@@ -117,6 +117,14 @@ func init() {
 	flags.Duration(config.AutopilotDrainTO, config.DefaultAutopilotDrainTimeout, "How long the API actuator keeps retrying evictions refused by a PodDisruptionBudget before it gives up on draining a node")
 	flags.String(config.RebootSSHKey, "", "Private key for the SSH actuator (as core with sudo on every OS; host keys pinned on first use in --dataDir/autopilot/known_hosts); reboots go through kured when it runs in the cluster, else this key, else the Kubernetes API; empty disables it")
 
+	for _, name := range []string{config.OCIGC, config.OCIGCEmpty} {
+		if err := flags.MarkDeprecated(name, "the OCI image cache was removed; the flag does nothing and goes away in the next release"); err != nil {
+			fmt.Fprintln(os.Stderr, "deprecating flag:", err)
+			os.Exit(1)
+		}
+		flags.Lookup(name).Hidden = false
+	}
+
 	if err := viper.BindPFlags(flags); err != nil {
 		fmt.Fprintln(os.Stderr, "binding flags:", err)
 		os.Exit(1)
@@ -151,6 +159,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	if err := hardware.ValidateAutoRegisterOS(viper.GetString(config.AutoRegister)); err != nil {
 		return fmt.Errorf("--%s: %w", config.AutoRegister, err)
+	}
+	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" && !versions.OSTracked(autoOS) {
+		return fmt.Errorf("--%s: %s", config.AutoRegister, versions.UntrackedReason(autoOS))
 	}
 	if _, err := hardware.ParseHostnameTemplate(viper.GetString(config.HostnameTemplate)); err != nil {
 		return fmt.Errorf("--%s: %w", config.HostnameTemplate, err)
@@ -240,6 +251,7 @@ func run(cmd *cobra.Command, argv []string) error {
 		}
 	}
 	versions.MigrateReleaseLayout()
+	versions.CleanupLegacyRegistry()
 	state.Init()
 	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {
@@ -282,12 +294,8 @@ func run(cmd *cobra.Command, argv []string) error {
 		return fmt.Errorf("embedded boot files: %w", err)
 	}
 	ensureBootFilesInDataDir(bootFiles)
-	if err := versions.EnsureOCIFolders(); err != nil {
-		slog.Warn("Could not prepare OCI registry folders", "error", err)
-	}
 
 	errCh := make(chan error, 4)
-	ready := make(chan struct{})
 
 	tftpServer, err := tftp.Start(tftp.Config{
 		Port:      viper.GetInt(config.TFTPPort),
@@ -321,7 +329,6 @@ func run(cmd *cobra.Command, argv []string) error {
 			return err
 		}
 	}
-	close(ready)
 
 	go pilot.LogStatus(ctx)
 	if pilot.Controller != nil {
@@ -334,9 +341,6 @@ func run(cmd *cobra.Command, argv []string) error {
 		versions.CoreOSVersionCheck()
 		versions.BluefinVersionCheck()
 		versions.SecureBootVersionCheck()
-		<-ready
-		versions.ReplayStoredManifests(ctx, "http://"+config.LocalRegistry())
-		versions.OSTreeImageSync()
 	}()
 
 	extraJobs := []versions.Job{{Name: "secureboot", Fn: versions.SecureBootVersionCheck}}

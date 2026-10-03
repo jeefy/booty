@@ -62,7 +62,7 @@ func versionIsSet(v string) bool {
 func VerifyLocalArtifacts() {
 	dataDir := viper.GetString(config.DataDir)
 
-	if v := state.CurrentFlatcarVersion(); versionIsSet(v) {
+	if v := state.CurrentFlatcarVersion(); versionIsSet(v) && config.FlatcarTracked() {
 		if missing := MissingFlatcarArtifacts(dataDir); len(missing) > 0 {
 			slog.Warn("Flatcar artifacts missing on disk; version reset to 0.0.0 so the next check re-downloads them",
 				"version", v, "missing", missing)
@@ -78,6 +78,9 @@ func VerifyLocalArtifacts() {
 		}
 	}
 
+	if !config.CoreOSTracked() {
+		return
+	}
 	arch := viper.GetString(config.CoreOSArchitecture)
 	v := state.CurrentCoreOSVersion()
 	if v == "" {

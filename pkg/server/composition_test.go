@@ -10,7 +10,6 @@ import (
 	"time"
 
 	v3_5 "github.com/coreos/ignition/v2/config/v3_5"
-	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	ign "github.com/jeefy/booty/pkg/ignition"
@@ -372,32 +371,22 @@ func TestUpdateCheckOSTree(t *testing.T) {
 	}
 
 	resp := get("mac=aa:bb:cc:dd:ee:01&os=coreos&version=42.20250101.0.0&image=ostree-unverified-registry:ghcr.io/ublue-os/bazzite:stable&digest=sha256:old")
-	if resp.RebootRequired || resp.Reason != "target image not cached yet" {
-		t.Fatalf("uncached target must fail closed: %+v", resp)
+	if resp.RebootRequired || resp.Reason != imageHostReason || resp.Target != "ghcr.io/ublue-os/bazzite:stable" {
+		t.Fatalf("an image host is never told to reboot by booty: %+v", resp)
 	}
 	if resp.Running != "ghcr.io/ublue-os/bazzite:stable@sha256:old" {
 		t.Fatalf("running should be image@digest with transport stripped: %+v", resp)
 	}
-
-	digestLookup = func(ref string, _ ...crane.Option) (string, error) {
-		if ref != "127.0.0.1:18099/ghcr.io/ublue-os/bazzite:stable" {
-			t.Errorf("digest lookup must target the local registry, got %q", ref)
-		}
-		return "sha256:new", nil
-	}
 	resp = get("mac=aa:bb:cc:dd:ee:01&os=coreos&image=ostree-image-signed:docker://192.168.1.10:8080/ghcr.io/ublue-os/bazzite:stable&digest=sha256:old")
-	if !resp.RebootRequired || resp.Target != "ghcr.io/ublue-os/bazzite:stable@sha256:new" {
-		t.Fatalf("digest mismatch against cached image must reboot: %+v", resp)
+	if resp.RebootRequired || resp.Running != "ghcr.io/ublue-os/bazzite:stable@sha256:old" {
+		t.Fatalf("a host rebased through the old mirror reports the upstream reference: %+v", resp)
 	}
-	resp = get("mac=aa:bb:cc:dd:ee:01&os=coreos&image=ghcr.io/ublue-os/bazzite:stable&digest=sha256:new")
-	if resp.RebootRequired || resp.Reason != "image up to date" {
-		t.Fatalf("matching digest must not reboot: %+v", resp)
+	state.SetCurrentCoreOSVersion("42.20250202.0.0")
+	resp = get("mac=aa:bb:cc:dd:ee:01&os=coreos&version=42.20250101.0.0")
+	if resp.RebootRequired || resp.Reason != imageHostReason {
+		t.Fatalf("an image host is not compared against the CoreOS release either: %+v", resp)
 	}
-	resp = get("mac=aa:bb:cc:dd:ee:01&os=coreos&image=ghcr.io/ublue-os/bazzite:stable")
-	if resp.RebootRequired {
-		t.Fatalf("missing digest must fail closed: %+v", resp)
-	}
-	digestLookup = func(string, ...crane.Option) (string, error) { return "", os.ErrNotExist }
+	state.SetCurrentCoreOSVersion("")
 
 	resp = get("mac=aa:bb:cc:dd:ee:02&os=coreos&version=42.20250101.0.0")
 	if resp.RebootRequired || !strings.Contains(resp.Reason, "no coreos version") {

@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/state"
 	"github.com/opencontainers/go-digest"
@@ -67,8 +65,7 @@ func pushBluefinArtifact(t *testing.T, host string, rel *fakeBluefinRelease, tag
 }
 
 func TestBluefinVersionCheckFromOCI(t *testing.T) {
-	reg := httptest.NewServer(registry.New())
-	t.Cleanup(reg.Close)
+	reg := newFakeRegistry(t)
 	host := strings.TrimPrefix(reg.URL, "http://")
 
 	old := newFakeRelease(t, "20260926.200", nil)

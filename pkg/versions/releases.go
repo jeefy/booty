@@ -1,6 +1,7 @@
 package versions
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -39,11 +40,38 @@ func ReleaseDir(osName, version string) string {
 	return config.DataPath(osName, version)
 }
 
+// OSTracked reports whether Booty follows releases of osName at all:
+// false for Flatcar or CoreOS when its channel flag is config.ChannelNone.
+// An untracked OS has no cached releases as far as every caller here is
+// concerned, whatever is left in its directory.
+func OSTracked(osName string) bool {
+	switch osName {
+	case OSFlatcar:
+		return config.FlatcarTracked()
+	case OSCoreOS:
+		return config.CoreOSTracked()
+	}
+	return true
+}
+
+// UntrackedReason explains why an untracked OS is refused.
+func UntrackedReason(osName string) string {
+	flag := config.CoreOSChannel
+	if osName == OSFlatcar {
+		flag = config.FlatcarChannel
+	}
+	return fmt.Sprintf("%s is not tracked by this Booty (--%s=%s)", osName, flag, config.ChannelNone)
+}
+
 // ReleaseCached reports whether version of osName is on disk.
 func ReleaseCached(osName, version string) bool {
-	if version == "" || !hardware.IsValidOS(osName) || hardware.ValidateTargetVersion(version) != nil {
+	if version == "" || !hardware.IsValidOS(osName) || hardware.ValidateTargetVersion(version) != nil || !OSTracked(osName) {
 		return false
 	}
+	return releaseDirExists(osName, version)
+}
+
+func releaseDirExists(osName, version string) bool {
 	info, err := os.Stat(ReleaseDir(osName, version))
 	return err == nil && info.IsDir()
 }
@@ -54,6 +82,15 @@ func CompareVersions(a, b string) int { return compareVersions(a, b) }
 
 // CachedReleases lists the release directories of osName, newest first.
 func CachedReleases(osName string) []string {
+	if !OSTracked(osName) {
+		return nil
+	}
+	return releaseDirs(osName)
+}
+
+// releaseDirs lists what is in DataDir/<os>/ regardless of tracking (the
+// storage view shows an untracked OS's leftovers so they can be deleted).
+func releaseDirs(osName string) []string {
 	entries, err := os.ReadDir(config.DataPath(osName))
 	if err != nil {
 		return nil
@@ -113,6 +150,7 @@ func linkRelease(osName, version string) error {
 	if err := config.ReplaceSymlink(version, config.DataPath(osName, CurrentLink)); err != nil {
 		return fmt.Errorf("linking %s current: %w", osName, err)
 	}
+	InvalidateStorage()
 	return ensureLastGood(osName)
 }
 
@@ -160,6 +198,7 @@ func hostOS(h *hardware.Host) string {
 // pruneReleases removes every release directory of osName that
 // retainedReleases does not name.
 func pruneReleases(osName string) {
+	defer InvalidateStorage()
 	keep := retainedReleases(osName)
 	root := config.DataPath(osName)
 	entries, err := os.ReadDir(root)
@@ -249,6 +288,9 @@ func FleetTarget(osName string) string {
 
 // CurrentTarget is the OS's current release regardless of any hold.
 func CurrentTarget(osName string) string {
+	if !OSTracked(osName) {
+		return ""
+	}
 	var v string
 	switch osName {
 	case OSFlatcar:
@@ -288,8 +330,19 @@ func ValidateTargetVersion(host *hardware.Host) error {
 		return err
 	}
 	osName := hostOS(host)
+	if !OSTracked(osName) {
+		return fmt.Errorf("%w %q: %s", hardware.ErrInvalidTargetVersion, host.TargetVersion, UntrackedReason(osName))
+	}
 	if !ReleaseCached(osName, host.TargetVersion) {
 		return fmt.Errorf("%w %q: not a cached %s release (have %v)", hardware.ErrInvalidTargetVersion, host.TargetVersion, osName, CachedReleases(osName))
+	}
+	return nil
+}
+
+// ValidateHostOS refuses a host whose OS Booty does not track.
+func ValidateHostOS(host *hardware.Host) error {
+	if osName := hostOS(host); !OSTracked(osName) {
+		return errors.New(UntrackedReason(osName))
 	}
 	return nil
 }

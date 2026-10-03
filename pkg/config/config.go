@@ -49,6 +49,8 @@ const (
 	CrictlVersion       = "crictlVersion"
 	ContainerdDisk      = "containerdDisk"
 	KubeletUnitsURL     = "kubeletUnitsURL"
+	// OCIGC and OCIGCEmpty configured the OCI image cache that no longer
+	// exists; they are accepted as deprecated no-ops for one release.
 	OCIGC               = "ociGC"
 	OCIGCEmpty          = "ociGCEmpty"
 	DoInstallClearOn    = "doInstallClearOn"
@@ -348,6 +350,18 @@ const (
 	ClearOnNextBoot = "next-boot"
 )
 
+// ChannelNone as --flatcarChannel or --coreOSChannel tells Booty not to
+// track that OS at all: no version checks, no downloads, and whatever
+// release directories are on disk are treated as if they were not cached
+// (hosts of that OS are refused at registration, /update-check answers
+// without a target). The default channels are unchanged.
+const ChannelNone = "none"
+
+// FlatcarTracked and CoreOSTracked report whether the OS has a channel to
+// follow, i.e. its flag is not ChannelNone.
+func FlatcarTracked() bool { return !strings.EqualFold(viper.GetString(FlatcarChannel), ChannelNone) }
+func CoreOSTracked() bool  { return !strings.EqualFold(viper.GetString(CoreOSChannel), ChannelNone) }
+
 // ValidateDoInstallClearOn rejects anything but the known modes.
 func ValidateDoInstallClearOn(v string) error {
 	switch v {
@@ -437,8 +451,6 @@ func LoadConfig() {
 	viper.SetDefault(TFTPPort, 69)
 	viper.SetDefault(TFTPBlockSize, 1468)
 	viper.SetDefault(WebDir, "./web/dist")
-	viper.SetDefault(OCIGC, true)
-	viper.SetDefault(OCIGCEmpty, false)
 	viper.SetDefault(DoInstallClearOn, ClearOnIgnition)
 	viper.SetDefault(Builtin, DefaultBuiltin)
 	viper.SetDefault(HttpPort, 8080)
@@ -584,8 +596,10 @@ func LocalRegistry() string {
 	return fmt.Sprintf("127.0.0.1:%d", viper.GetInt(HttpPort))
 }
 
-// ClientRegistry is the registry address rendered into Ignition/iPXE for
-// booting machines.
+// ClientRegistry is Booty's client-facing host:port as the Ignition
+// templates' .ServerIP; it was also the mirror registry hosts rebased
+// through before the OCI cache was removed, which /update-check still
+// strips from reported image references.
 func ClientRegistry() string {
 	return fmt.Sprintf("%s:%d", viper.GetString(ServerIP), EffectiveServerHttpPort())
 }

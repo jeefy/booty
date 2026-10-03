@@ -30,6 +30,10 @@ var flatcarArtifacts = []string{flatcarInitrd, flatcarKernel}
 // (if set) or the channel's latest version. Concurrent invocations are
 // skipped.
 func FlatcarVersionCheck() {
+	if !config.FlatcarTracked() {
+		slog.Debug("Flatcar is not tracked; skipping version check", "flag", config.FlatcarChannel)
+		return
+	}
 	if !state.FlatcarUpdateMu.TryLock() {
 		slog.Info("Flatcar update already in progress, skipping version check")
 		return

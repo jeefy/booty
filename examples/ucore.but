@@ -39,32 +39,14 @@ systemd:
       ExecStart=/bin/bash -c 'PATH=/opt/bin/:/opt/bin/cni/:$PATH exec /opt/bin/join.sh'
       ExecStartPost=touch /root/.kubeJoin
   - enabled: true
-    name: update-registry-config.service
-    contents: |
-      [Unit]
-      Description=Add Booty registry endpoint to /etc/containers/registries.conf
-      After=network-online.target
-      ConditionPathExists=!/root/.postRegistryConfig
-
-      [Service]
-      Type=oneshot
-      ExecStart=/usr/bin/bash -c 'echo "[[registry]]" >> /etc/containers/registries.conf'
-      ExecStart=/usr/bin/bash -c 'echo "location = \"\\\"{{ .ServerIP }}\\\"\"" >> /etc/containers/registries.conf'
-      ExecStart=/usr/bin/bash -c 'echo "insecure = true" >> /etc/containers/registries.conf'
-      ExecStartPost=touch /root/.postRegistryConfig
-
-      [Install]
-      WantedBy=multi-user.target
-  - enabled: true
     name: rebase-custom.service
     contents: |
       [Unit]
       Description=Fetch and deploy target image
       # Only run on the firstboot
       Requires=network-online.target
-      After=network-online.target update-registry-config.service
+      After=network-online.target
       ConditionPathExists=!/root/.postRebase
-      ConditionPathExists=/root/.postRegistryConfig
 
       [Service]
       # This ordering is important
