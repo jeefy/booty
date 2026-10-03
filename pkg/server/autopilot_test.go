@@ -383,6 +383,77 @@ func TestAutopilotSignalsReachTheController(t *testing.T) {
 	}
 }
 
+// TestKernelFetchCountsOnlyFromTheHost is the live incident: an operator's
+// curl of /booty.ipxe?mac=… from a workstation started a "reboot
+// observed" episode on a healthy node. A kernel fetch is L0 only when it
+// comes from the host's recorded IP; a host without one is trusted on its
+// first fetch and learns its IP from it.
+func TestKernelFetchCountsOnlyFromTheHost(t *testing.T) {
+	srv, dir := newTestServer(t)
+	t.Cleanup(func() {
+		setAutopilot(nil)
+		versions.HoldFleetTarget("flatcar", "")
+		state.SetCurrentFlatcarVersion("")
+	})
+	for _, v := range []string{"4800.0.0", "4757.2.0"} {
+		writeRelease(t, dir, "flatcar", v, "flatcar_production_pxe.vmlinuz", "flatcar_production_pxe_image.cpio.gz")
+	}
+	if err := os.Symlink("4800.0.0", filepath.Join(dir, "flatcar", "current")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("4757.2.0", filepath.Join(dir, "flatcar", "lastGood")); err != nil {
+		t.Fatal(err)
+	}
+	state.SetCurrentFlatcarVersion("4800.0.0")
+	ctrl, err := controller.New(controller.Options{Mode: config.AutopilotGuard, Fleet: controller.LiveFleet{}, StatePath: filepath.Join(dir, "autopilot", "state.json"), HealthWindow: 15 * time.Minute, RetryAfter: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAutopilot(&autopilot.Autopilot{Settings: autopilot.Settings{Mode: config.AutopilotGuard}, Controller: ctrl})
+
+	const mac = "aa:bb:cc:dd:ee:01"
+	register(t, srv.URL, `{"mac":"`+mac+`","hostname":"n1","os":"flatcar","ip":"10.0.0.9"}`)
+	for _, path := range []string{"/booty.ipxe?mac=" + mac, "/booty.ipxe?mac=" + mac + "&sb=1"} {
+		if r := do(t, http.MethodGet, srv.URL+path, ""); r.status != 200 || !strings.Contains(r.body, "#!ipxe") {
+			t.Fatalf("a foreign fetch is still served: %+v", r)
+		}
+	}
+	if st := getAutopilot(t); len(st.Hosts) != 0 {
+		t.Fatalf("a kernel fetch from an address that is not the host's must start no episode: %+v", st.Hosts)
+	}
+	if h, _ := hardware.Get(mac); h.IP != "10.0.0.9" || h.Booted != "" {
+		t.Fatalf("a foreign fetch must not move the host's IP or stamp booted: %+v", h)
+	}
+
+	register(t, srv.URL, `{"mac":"`+mac+`","hostname":"n1","os":"flatcar","ip":"127.0.0.1"}`)
+	if r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+mac, ""); r.status != 200 {
+		t.Fatalf("%+v", r)
+	}
+	st := getAutopilot(t)
+	if len(st.Hosts) != 1 || st.Hosts[0].Episode == nil || st.Hosts[0].Episode.State != hardware.AutopilotGating {
+		t.Fatalf("a kernel fetch from the host's own IP is L0: %+v", st.Hosts)
+	}
+
+	const fresh = "aa:bb:cc:dd:ee:02"
+	register(t, srv.URL, `{"mac":"`+fresh+`","hostname":"n2","os":"flatcar"}`)
+	if r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+fresh+"&preview=1", ""); r.status != 200 {
+		t.Fatalf("%+v", r)
+	}
+	if h, _ := hardware.Get(fresh); h.IP != "" {
+		t.Fatalf("a preview must not teach the host an IP: %+v", h)
+	}
+	if r := do(t, http.MethodGet, srv.URL+"/booty.ipxe?mac="+fresh, ""); r.status != 200 {
+		t.Fatalf("%+v", r)
+	}
+	if h, _ := hardware.Get(fresh); h.IP != "127.0.0.1" {
+		t.Fatalf("the first fetch of a host without an IP teaches it one: %+v", h)
+	}
+	st = getAutopilot(t)
+	if len(st.Hosts) != 2 || st.Hosts[1].MAC != fresh || st.Hosts[1].Episode == nil || st.Hosts[1].Episode.State != hardware.AutopilotGating {
+		t.Fatalf("first boot with an unknown IP is L0: %+v", st.Hosts)
+	}
+}
+
 func writeBogusKubeconfig(t *testing.T) string {
 	t.Helper()
 	path := t.TempDir() + "/kubeconfig"

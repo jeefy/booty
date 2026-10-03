@@ -223,7 +223,8 @@ func (drivingAutopilot) Driving(string) bool                { return true }
 func (drivingAutopilot) Event(string, string, string)       {}
 
 // TestBootSignalsReachThePowerTracker: the kernel, Ignition, /booted,
-// /health and /update-check handlers feed the tracker.
+// /health and /update-check handlers feed the tracker. The kernel fetch
+// counts only when it comes from the host's own address.
 func TestBootSignalsReachThePowerTracker(t *testing.T) {
 	base, _ := newPowerTestServer(t, nil)
 	mac := "aa:bb:cc:dd:ee:01"
@@ -233,6 +234,15 @@ func TestBootSignalsReachThePowerTracker(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	h, _ := hardware.Get(mac)
+	if h.Power.State != hardware.PowerOff || h.Power.Request != hardware.PowerRequestShutdown || h.IP != "10.0.0.1" {
+		t.Fatalf("a kernel fetch from an address that is not the host's (10.0.0.1) must change nothing: %+v ip=%s", h.Power, h.IP)
+	}
+
+	register(t, base, `{"mac":"`+mac+`","hostname":"worker","os":"flatcar","ip":"127.0.0.1"}`)
+	if r := do(t, http.MethodGet, base+"/booty.ipxe?mac="+mac, ""); r.status != 200 {
+		t.Fatalf("%+v", r)
+	}
+	h, _ = hardware.Get(mac)
 	if h.Power.State != hardware.PowerBooting || h.Power.Request != "" {
 		t.Fatalf("kernel fetch: %+v", h.Power)
 	}

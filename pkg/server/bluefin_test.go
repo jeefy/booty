@@ -326,13 +326,21 @@ func TestBluefinRoutes(t *testing.T) {
 func TestBluefinUKIFetchRecordsBoot(t *testing.T) {
 	srv, dir := newTestServer(t)
 	installBluefinFixture(t, dir)
-	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin","ip":"10.0.0.9"}`)
 
 	head(t, srv.URL+bluefinBootPath)
 	do(t, http.MethodGet, srv.URL+bluefinBootPath+"?preview=1", "")
-	if h, _ := hardware.Get(bluefinMAC); h.Booted != "" {
+	if h, _ := hardware.Get(bluefinMAC); h.Booted != "" || h.NetbootVersion != "" {
 		t.Fatalf("HEAD and previews record nothing: %+v", h)
 	}
+	if r := do(t, http.MethodGet, srv.URL+bluefinBootPath, ""); r.status != 200 {
+		t.Fatalf("a fetch from an address that is not the host's is still served: %+v", r)
+	}
+	if h, _ := hardware.Get(bluefinMAC); h.Booted != "" || h.IP != "10.0.0.9" || h.NetbootVersion != bluefinTestVersion || h.NetbootPlatform != hardware.PlatformEFI {
+		t.Fatalf("a foreign GET names the release served but neither stamps booted nor moves the IP: %+v", h)
+	}
+
+	register(t, srv.URL, `{"mac":"`+bluefinMAC+`","hostname":"srv1","os":"bluefin"}`)
 	do(t, http.MethodGet, srv.URL+bluefinBootPath, "")
 	if h, _ := hardware.Get(bluefinMAC); h.Booted == "" || h.IP != "127.0.0.1" {
 		t.Fatalf("the firmware's GET records boot and IP: %+v", h)
