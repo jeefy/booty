@@ -438,6 +438,8 @@ An **episode** is the attempts of one host into one release; an **attempt** is o
 
 Without a cluster client (or a host without a hostname) the gate is L1 only and says so in the episode note. Job pods, pods that were already unhealthy before the reboot, and Booty's own `booty-node-reboot-<node>` Pods (label `app.kubernetes.io/component=node-reboot`; the API actuator's reboot Pod legitimately ends `Failed` when the node reboots underneath it) never count.
 
+**Only the host's own kernel fetch is L0.** `/booty.ipxe?mac=…` and the Bluefin UKI/`.linux` count as a boot (for the gate and for the [Power](#power) tracker) only when the request comes from the host's recorded `ip`, or while Booty knows no IP for the host yet -- a first boot, which then teaches it the address. A `curl` of the same URL from a workstation is served as usual but starts no gate, changes no power state and leaves the host's IP alone (`?preview=1` never counts either). The rule is address-only, so two things follow: while a host has no IP any address passes, and a host whose DHCP lease changed has that boot's kernel fetch ignored until its Ignition fetch or `POST /booted` relearns the address (its next boot is gated normally; if it was mid-episode, see the re-gate below).
+
 ### State machine
 
 ```
@@ -569,7 +571,7 @@ Every host carries a `power` block (`/hosts`, `/booty.json`, `GET /power`): `{st
 | `unknown` | no IP to probe and nothing seen for 15 min (or never) | start-up, a quiet host without an IP |
 | `off` | a requested shutdown was satisfied (the host stopped answering), or a wake-up that did not wake within 10 min | `shutting-down`, `powering-on` |
 | `powering-on` | a magic packet was sent; waiting up to 10 min for the kernel fetch | *Power on* |
-| `booting` | kernel/UKI (or Ignition) fetched | `/booty.ipxe`, the Bluefin UKI, `/ignition.json`, `bluefin-node.ign` |
+| `booting` | kernel/UKI (or Ignition) fetched | `/booty.ipxe`, the Bluefin UKI (from the host's own address only, see [the health gate](#the-health-gate)), `/ignition.json`, `bluefin-node.ign` |
 | `up` | `/booted`, `/health` or `/update-check` arrived, the node is `Ready`, or the probe answers | any |
 | `draining` | cordon + drain in progress before a reboot or shutdown | *Reboot*, *Shutdown* |
 | `rebooting` | an operator reboot (10 min window) or an autopilot attempt waiting for its reboot | *Reboot*, the controller's `RebootWanted` |
@@ -642,7 +644,7 @@ Everything lands in `data/bluefin/<version>/` with a `manifest.json` (`version`,
 ### How a Bluefin host boots
 
 1. The firmware broadcasts a DHCPDISCOVER with option 60 `HTTPClient` and architecture `0x0010` (x86-64 HTTP). With `--proxyDHCP`, Booty answers a registered `os: bluefin` host (or any unknown MAC under `--autoRegister=bluefin`) with a proxy OFFER: option 60 `HTTPClient` and the boot file URL `http://<serverIP>:<port>/bluefin/<mac>/bluefin-server-netboot.efi` (MAC with dashes). This works with or without `--secureBoot`; all other HTTP Boot clients keep the [Secure Boot](#secure-boot-uefi-http-boot) behaviour. Without `--proxyDHCP`, give each Bluefin host that URL as its HTTP Boot file in your DHCP server.
-2. `GET /bluefin/<mac>/<anything>.efi` returns the host's target release's netboot UKI -- its `targetVersion`, else `current` (`bluefin-server-netboot_<version>.efi` returns that release's for any retained release, and 404 for any other version) (`application/efi`, `HEAD` answered like `GET`). The fetch records the host's `booted`/`ip` for the fleet view.
+2. `GET /bluefin/<mac>/<anything>.efi` returns the host's target release's netboot UKI -- its `targetVersion`, else `current` (`bluefin-server-netboot_<version>.efi` returns that release's for any retained release, and 404 for any other version) (`application/efi`, `HEAD` answered like `GET`). The fetch records the release served and, when it comes from the host's own address (see [the health gate](#the-health-gate)), the host's `booted`/`ip` for the fleet view.
 3. The initrd fetches `bluefin-server_<version>.raw`, `SHA256SUMS` and `SHA256SUMS.gpg` from the same directory: `/bluefin/<mac>/` serves the DDI of any retained release (404 for any other version) and the checksum files of the release whose UKI or kernel this host fetched last (`netbootVersion` on the host record; its target release until it has netbooted, or when that release was pruned), so an initrd keeps verifying against its own release even when the autopilot repoints the host while it boots.
 4. With no Ignition credential set, the initrd `HEAD`s `/bluefin/<mac>/bluefin-node.ign` and, if it exists, runs Ignition with it (below), rendered for the same netbooted release (a `preview=1` shows the target's). 404 means nothing to configure.
 
