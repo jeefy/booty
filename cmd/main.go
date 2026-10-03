@@ -251,6 +251,7 @@ func run(cmd *cobra.Command, argv []string) error {
 		}
 	}
 	versions.MigrateReleaseLayout()
+	versions.CleanupLegacyRegistry()
 	state.Init()
 	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {
