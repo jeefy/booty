@@ -44,6 +44,7 @@ func (c *Controller) observeKernelFetch(h *hardware.Host, e *Episode, now time.T
 	target := c.opts.Fleet.EffectiveTarget(h)
 	if e == nil {
 		if target == "" || target == c.healthyOn(h) {
+			c.noteFetch(h.MAC, target, now)
 			return
 		}
 		e = c.startEpisode(h, target, "host booted a release it has not passed the gate on")
@@ -67,6 +68,26 @@ func (c *Controller) observeKernelFetch(h *hardware.Host, e *Episode, now time.T
 		}
 		c.startGate(e, now)
 	}
+}
+
+// noteFetch remembers a kernel fetch the controller takes no action on
+// because the host already counts as healthy on what it boots: on a
+// needs-hands episode into that same release it is the reboot a later
+// regate starts its clock from, and it voids any /booted noted before it.
+func (c *Controller) noteFetch(mac, target string, now time.Time) {
+	e := c.episode(mac)
+	if e == nil || e.State != hardware.AutopilotNeedsHands || e.Target != target {
+		return
+	}
+	e.T0, e.Signals.Booted = now, time.Time{}
+	c.dirty = true
+}
+
+func (c *Controller) episode(mac string) *Episode {
+	if hs := c.state.Hosts[mac]; hs != nil {
+		return hs.Episode
+	}
+	return nil
 }
 
 func (c *Controller) startEpisode(h *hardware.Host, release, why string) *Episode {
@@ -132,29 +153,43 @@ func classifyErr(err error) string {
 }
 
 func (c *Controller) timeline(e *Episode, what string) {
+	c.timelineAt(e, c.now(), what)
+}
+
+func (c *Controller) timelineAt(e *Episode, at time.Time, what string) {
 	if len(e.Signals.Timeline) >= maxTimelineEntries {
 		return
 	}
 	rel := time.Duration(0)
 	if !e.T0.IsZero() {
-		rel = c.now().Sub(e.T0).Round(time.Second)
+		rel = at.Sub(e.T0).Round(time.Second)
 	}
 	e.Signals.Timeline = append(e.Signals.Timeline, fmt.Sprintf("t+%s %s", rel, what))
 	c.dirty = true
 }
 
 // ObserveBooted is L1: POST /booted from the running OS. running is the
-// version the node reports when it says so (optional).
+// version the node reports when it says so (optional). On an episode the
+// controller stopped watching (canRegate) it only notes that the OS came
+// up; the health report decides whether that is the host back on target.
 func (c *Controller) ObserveBooted(mac, running string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.activeEpisode(mac)
-	if e == nil || e.State != hardware.AutopilotGating {
+	e := c.episode(mac)
+	switch {
+	case e == nil:
 		return
-	}
-	if e.Signals.Booted.IsZero() {
-		e.Signals.Booted = c.now()
-		c.timeline(e, "OS up (booted)")
+	case e.canRegate():
+		if !e.Signals.Booted.After(e.Since) {
+			e.Signals.Booted = c.now()
+		}
+	case e.State != hardware.AutopilotGating || e.Done:
+		return
+	default:
+		if e.Signals.Booted.IsZero() {
+			e.Signals.Booted = c.now()
+			c.timeline(e, "OS up (booted)")
+		}
 	}
 	if running != "" {
 		e.Signals.Running = running
@@ -164,18 +199,29 @@ func (c *Controller) ObserveBooted(mac, running string) {
 }
 
 // ObserveHealth is the rest of L1: the node's health report. Failed units
-// fail the attempt at once; otherwise the gate waits for L2.
+// fail the attempt at once; otherwise the gate waits for L2. A report that
+// says the host runs the target of an episode the controller stopped
+// watching, with no failed units, reopens that episode's gate (regate).
 func (c *Controller) ObserveHealth(mac string, report *hardware.Health) {
 	if report == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.activeEpisode(mac)
-	if e == nil || e.State != hardware.AutopilotGating {
+	e := c.episode(mac)
+	if e == nil {
 		return
 	}
 	now := c.now()
+	switch {
+	case e.canRegate():
+		if report.Running != e.Target || len(report.FailedUnits) > 0 {
+			return
+		}
+		c.regate(e, now)
+	case e.State != hardware.AutopilotGating || e.Done:
+		return
+	}
 	if e.Signals.Booted.IsZero() {
 		e.Signals.Booted = now
 		c.timeline(e, "OS up (health report)")
@@ -193,6 +239,46 @@ func (c *Controller) ObserveHealth(mac string, report *hardware.Health) {
 		c.applyHolds()
 	}
 	c.save()
+}
+
+// regate reopens the gate of an episode the controller had stopped
+// watching, because the host came back on the episode's target and
+// reports itself healthy: a reboot the controller requested but never saw
+// begin (the kernel fetch missed or discounted, see the server's
+// fromHost), or a needs-hands host that hands were applied to. The attempt
+// in flight keeps its number; a concluded episode gets a new one. t0 is
+// the boot's kernel fetch when one was noted after the episode's current
+// state began, else its /booted, else now; evaluateGates finishes the
+// attempt from there exactly as usual, so healthy closes the episode and
+// advances healthyOn and lastGood, a rollback that passes still blames the
+// release, and a failure takes the usual next step.
+func (c *Controller) regate(e *Episode, now time.Time) {
+	was := e.State
+	booted := e.Signals.Booted
+	if !booted.After(e.Since) {
+		booted = now
+	}
+	t0, fetched := booted, e.T0.After(e.Since) && !e.T0.After(booted)
+	if fetched {
+		t0 = e.T0
+	}
+	if e.Done {
+		e.Attempt++
+		e.Done = false
+	}
+	e.Signals = Signals{}
+	e.T0, e.State, e.Since, e.Note = t0, hardware.AutopilotGating, now, ""
+	if fetched {
+		e.Signals.Fetches = 1
+		c.timelineAt(e, t0, "kernel fetched")
+	}
+	e.Signals.Booted = booted
+	c.timelineAt(e, booted, "OS up (booted)")
+	if e.Baseline == nil {
+		c.takeBaseline(e)
+	}
+	c.dirty = true
+	c.event(EventEpisode, e.OS, e.Release, e.MAC, fmt.Sprintf("host came back on %s: re-gating (attempt %d, was %s)", e.Target, e.Attempt, was))
 }
 
 // evaluateGates is the time-driven half of the gate: no-ignition, the

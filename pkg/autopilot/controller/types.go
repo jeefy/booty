@@ -149,6 +149,24 @@ func (e *Episode) Active() bool {
 	return false
 }
 
+// canRegate reports whether the host can revive the episode by coming
+// back healthy on its target: a reboot the controller requested and has
+// not seen begin (rolling, retrying, rolled-back), or a needs-hands
+// verdict. A rolled-back episode that is done (healthy on lastGood) is
+// terminal.
+func (e *Episode) canRegate() bool {
+	if e == nil {
+		return false
+	}
+	switch e.State {
+	case hardware.AutopilotRolling, hardware.AutopilotRetrying, hardware.AutopilotRolledBack:
+		return !e.Done
+	case hardware.AutopilotNeedsHands:
+		return true
+	}
+	return false
+}
+
 // HostState is the controller's per-host record.
 type HostState struct {
 	// HealthyOn is the release the host last passed the gate on.
