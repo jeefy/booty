@@ -17,7 +17,7 @@ var Keys = []string{
 	TFTPPort, TFTPBlockSize, WebDir, DataDir, FlatcarURL, CoreOSURL, ServerIP,
 	ServerHttpPort, JoinString, JoinStringFile, KubeadmJoin, JoinTokenTTL,
 	Profile, K8sVersion, CNIVersion, CrictlVersion, ContainerdDisk,
-	KubeletUnitsURL, OCIGC, OCIGCEmpty, DoInstallClearOn, Builtin,
+	KubeletUnitsURL, DoInstallClearOn, Builtin,
 	SSHAuthorizedKeys, SSHAuthorizedKeysFl, ProxyDHCP, ProxyDHCPListen,
 	ProxyDHCPRelay, ProxyDHCPPorts, Version, Timestamp, AutoRegister,
 	HostnameTemplate, BluefinRepo, BluefinVersion, BluefinKeyring,

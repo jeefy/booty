@@ -49,6 +49,8 @@ const (
 	CrictlVersion       = "crictlVersion"
 	ContainerdDisk      = "containerdDisk"
 	KubeletUnitsURL     = "kubeletUnitsURL"
+	// OCIGC and OCIGCEmpty configured the OCI image cache that no longer
+	// exists; they are accepted as deprecated no-ops for one release.
 	OCIGC               = "ociGC"
 	OCIGCEmpty          = "ociGCEmpty"
 	DoInstallClearOn    = "doInstallClearOn"
@@ -449,8 +451,6 @@ func LoadConfig() {
 	viper.SetDefault(TFTPPort, 69)
 	viper.SetDefault(TFTPBlockSize, 1468)
 	viper.SetDefault(WebDir, "./web/dist")
-	viper.SetDefault(OCIGC, true)
-	viper.SetDefault(OCIGCEmpty, false)
 	viper.SetDefault(DoInstallClearOn, ClearOnIgnition)
 	viper.SetDefault(Builtin, DefaultBuiltin)
 	viper.SetDefault(HttpPort, 8080)
@@ -596,8 +596,10 @@ func LocalRegistry() string {
 	return fmt.Sprintf("127.0.0.1:%d", viper.GetInt(HttpPort))
 }
 
-// ClientRegistry is the registry address rendered into Ignition/iPXE for
-// booting machines.
+// ClientRegistry is Booty's client-facing host:port as the Ignition
+// templates' .ServerIP; it was also the mirror registry hosts rebased
+// through before the OCI cache was removed, which /update-check still
+// strips from reported image references.
 func ClientRegistry() string {
 	return fmt.Sprintf("%s:%d", viper.GetString(ServerIP), EffectiveServerHttpPort())
 }

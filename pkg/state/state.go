@@ -16,7 +16,6 @@ var (
 	FlatcarUpdateMu sync.Mutex
 	CoreOSUpdateMu  sync.Mutex
 	BluefinUpdateMu sync.Mutex
-	OSTreeSyncMu    sync.Mutex
 )
 
 type runtimeState struct {
