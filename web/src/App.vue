@@ -39,7 +39,7 @@ watch(
             <RouterLink class="nav-link" to="/hosts">Hosts</RouterLink>
           </li>
           <li class="nav-item">
-            <RouterLink class="nav-link" to="/cache">OCI Cache</RouterLink>
+            <RouterLink class="nav-link" to="/storage">Storage</RouterLink>
           </li>
           <li class="nav-item">
             <RouterLink class="nav-link" to="/autopilot">Autopilot</RouterLink>

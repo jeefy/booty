@@ -5,6 +5,7 @@ import {
   STALE_AFTER_MS,
   acceptsInstallDisk,
   fleetTargets,
+  formatBytes,
   hostOS,
   hostReporting,
   hostRole,
@@ -16,6 +17,7 @@ import {
   normalizeHostPower,
   normalizePowerStatus,
   normalizeSecureBootInfo,
+  normalizeStorage,
   normalizeTemplateDocument,
   normalizeTemplateValidation,
   registerPayload,
@@ -527,5 +529,108 @@ describe('normalizeHostPower / normalizePowerStatus', () => {
     expect(st.events[0]).toEqual({ at: '', kind: 'power', mac: '', text: 'x' })
     expect(st.capabilities).toEqual({ wol: false, actuator: 'none' })
     expect(st.summary).toEqual({ up: 0, off: 0, unreachable: 0, inFlight: 0 })
+  })
+})
+
+describe('normalizeStorage', () => {
+  it('fills every OS block and defaults missing values', () => {
+    const s = normalizeStorage(null)
+    expect(s.dataDir).toBe('')
+    expect(s.total).toBe(0)
+    expect(s.free).toBe(0)
+    for (const os of OS_OPTIONS) {
+      expect(s.os[os]).toEqual({
+        tracked: true,
+        channel: '',
+        pin: '',
+        source: '',
+        bytes: 0,
+        releases: []
+      })
+    }
+    expect(s.assets).toEqual([])
+    expect(s.other).toEqual([])
+    expect(s.autopilot).toEqual({ stateBytes: 0, reportsBytes: 0 })
+  })
+
+  it('maps the wire shape and drops junk', () => {
+    const s = normalizeStorage({
+      dataDir: '/data',
+      total: { bytes: 1000 },
+      free: { bytes: 400 },
+      used: { bytes: -5 },
+      computedAt: '2026-10-03T12:00:00Z',
+      os: {
+        bluefin: {
+          tracked: false,
+          channel: 'none',
+          source: 'ghcr.io/x/y',
+          bytes: 300,
+          releases: [
+            {
+              version: '26.09.678',
+              bytes: 300,
+              files: 9,
+              modified: '2026-09-28T23:36:00Z',
+              links: ['current', 'bogus', null],
+              hosts: { running: ['aa', null], pinned: null },
+              retained: 'current',
+              cached: true
+            },
+            { version: '1.0', retained: 'nope' }
+          ]
+        }
+      },
+      assets: [
+        { name: 'ipxe.efi', bytes: 10, kind: 'ipxe' },
+        { name: 'x.efi', kind: 'weird' },
+        { bytes: 3 }
+      ],
+      other: [{ name: 'config', bytes: 4 }, { bytes: 9 }],
+      autopilot: { stateBytes: 1 }
+    })
+    expect(s.total).toBe(1000)
+    expect(s.used).toBe(0)
+    expect(s.os.bluefin.tracked).toBe(false)
+    expect(s.os.bluefin.releases[0]).toEqual({
+      version: '26.09.678',
+      bytes: 300,
+      files: 9,
+      modified: '2026-09-28T23:36:00Z',
+      links: ['current'],
+      hosts: { running: ['aa'], pinned: [] },
+      retained: 'current',
+      cached: true
+    })
+    expect(s.os.bluefin.releases[1]).toEqual({
+      version: '1.0',
+      bytes: 0,
+      files: 0,
+      modified: '',
+      links: [],
+      hosts: { running: [], pinned: [] },
+      retained: '-',
+      cached: false
+    })
+    expect(s.os.flatcar.releases).toEqual([])
+    expect(s.assets).toEqual([
+      { name: 'ipxe.efi', bytes: 10, modified: '', kind: 'ipxe' },
+      { name: 'x.efi', bytes: 0, modified: '', kind: 'other' }
+    ])
+    expect(s.other).toEqual([{ name: 'config', bytes: 4 }])
+    expect(s.autopilot).toEqual({ stateBytes: 1, reportsBytes: 0 })
+  })
+})
+
+describe('formatBytes', () => {
+  it('picks binary units with sensible precision', () => {
+    expect(formatBytes(0)).toBe('0 B')
+    expect(formatBytes(-1)).toBe('0 B')
+    expect(formatBytes(512)).toBe('512 B')
+    expect(formatBytes(1536)).toBe('1.50 KiB')
+    expect(formatBytes(15 * 1024)).toBe('15.0 KiB')
+    expect(formatBytes(150 * 1024)).toBe('150 KiB')
+    expect(formatBytes(6 * 1024 ** 3)).toBe('6.00 GiB')
+    expect(formatBytes(2 * 1024 ** 4)).toBe('2.00 TiB')
   })
 })
