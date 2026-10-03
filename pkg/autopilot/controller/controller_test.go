@@ -1170,3 +1170,35 @@ func TestBluefinFullHoldIsImmediateOnRelease(t *testing.T) {
 		t.Fatalf("after the tick: %s", got)
 	}
 }
+
+func TestReleaseRecordsOutliveTheirFilesAndSayCached(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.flatcarHost(macA, "ehrlitan")
+	h.healthyNode("ehrlitan", "Flatcar 4800.0.0")
+	h.fetch(macA)
+	h.up(macA, "4800.0.0")
+	h.tick()
+	if r := h.release("flatcar", "4800.0.0"); r == nil || !r.Cached {
+		t.Fatalf("a release on disk is cached: %+v", r)
+	}
+	if r := h.release("flatcar", "4757.2.0"); r == nil || !r.Cached {
+		t.Fatalf("lastGood is cached: %+v", r)
+	}
+
+	h.fleet.cached["flatcar"] = []string{"4800.0.0"}
+	h.tick()
+	r := h.release("flatcar", "4757.2.0")
+	if r == nil {
+		t.Fatal("the record of a pruned release is kept")
+	}
+	if r.Cached {
+		t.Fatalf("a pruned release is not cached: %+v", r)
+	}
+	if r := h.release("flatcar", "4800.0.0"); !r.Cached {
+		t.Fatalf("the current release is still cached: %+v", r)
+	}
+	h.start()
+	if r := h.release("flatcar", "4757.2.0"); r == nil || r.Cached {
+		t.Fatalf("after a restart the record is still there and still not cached: %+v", r)
+	}
+}

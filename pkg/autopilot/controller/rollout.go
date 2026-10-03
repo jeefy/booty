@@ -337,8 +337,10 @@ func (c *Controller) Status() Status {
 			o.FleetTarget = os.Held
 			st.Held = append(st.Held, osName)
 		}
+		cached := c.opts.Fleet.Cached(osName)
 		for _, v := range slices.Sorted(maps.Keys(os.Releases)) {
 			r := *os.Releases[v]
+			r.Cached = slices.Contains(cached, v)
 			o.Releases = append(o.Releases, &r)
 			if r.State == ReleaseQuarantined {
 				st.Quarantine++
