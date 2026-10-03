@@ -150,6 +150,7 @@ func linkRelease(osName, version string) error {
 	if err := config.ReplaceSymlink(version, config.DataPath(osName, CurrentLink)); err != nil {
 		return fmt.Errorf("linking %s current: %w", osName, err)
 	}
+	InvalidateStorage()
 	return ensureLastGood(osName)
 }
 
@@ -197,6 +198,7 @@ func hostOS(h *hardware.Host) string {
 // pruneReleases removes every release directory of osName that
 // retainedReleases does not name.
 func pruneReleases(osName string) {
+	defer InvalidateStorage()
 	keep := retainedReleases(osName)
 	root := config.DataPath(osName)
 	entries, err := os.ReadDir(root)

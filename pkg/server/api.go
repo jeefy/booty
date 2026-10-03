@@ -391,3 +391,10 @@ func handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleStorageRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, versions.CurrentStorage())
+}
