@@ -10,6 +10,7 @@ import {
   hostReporting,
   hostRole,
   hostTarget,
+  normalizeAutopilotStatus,
   normalizeBootyData,
   normalizeClusterInfo,
   normalizeEffectiveConfig,
@@ -632,5 +633,21 @@ describe('formatBytes', () => {
     expect(formatBytes(150 * 1024)).toBe('150 KiB')
     expect(formatBytes(6 * 1024 ** 3)).toBe('6.00 GiB')
     expect(formatBytes(2 * 1024 ** 4)).toBe('2.00 TiB')
+  })
+})
+
+describe('normalizeAutopilotStatus cached', () => {
+  it('defaults cached to true for older servers and keeps false', () => {
+    const st = normalizeAutopilotStatus({
+      os: {
+        flatcar: {
+          releases: [
+            { version: '1', state: 'good' },
+            { version: '2', state: 'good', cached: false }
+          ]
+        }
+      }
+    })
+    expect(st.os.flatcar.releases.map((r) => r.cached)).toEqual([true, false])
   })
 })

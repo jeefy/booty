@@ -920,6 +920,8 @@ export interface AutopilotRelease {
   healthy: string[]
   failedOn: string
   failing: boolean
+  /** False once the release's files were pruned; the record stays as history. */
+  cached: boolean
 }
 
 export interface AutopilotOS {
@@ -1060,7 +1062,8 @@ export function normalizeAutopilotStatus(
         report: r.report ?? '',
         healthy: r.healthy ?? [],
         failedOn: r.failedOn ?? '',
-        failing: r.failing ?? false
+        failing: r.failing ?? false,
+        cached: r.cached ?? true
       }))
     }
   }
