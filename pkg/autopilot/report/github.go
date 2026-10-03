@@ -49,21 +49,25 @@ func (e *HTTPError) RateLimited() bool {
 // Poster files reports as GitHub issues in Repo (owner/name) with Token
 // (issues:write). One issue per release: the first machine creates it,
 // every further machine (a different DMI hash) comments, the same
-// machine again does nothing. Every call retries Tries times with
-// exponential backoff on network errors, 5xx and rate limits.
+// machine again does nothing. TitlePrefix goes in front of the issue
+// title and the comment's first line (the dedupe marker is unchanged), so
+// a scratch repository's issues say where they came from. Every call
+// retries Tries times with exponential backoff on network errors, 5xx and
+// rate limits.
 type Poster struct {
-	Repo    string
-	Token   string
-	BaseURL string
-	Client  *http.Client
-	Tries   int
-	Backoff time.Duration
-	Sleep   func(context.Context, time.Duration) error
+	Repo        string
+	Token       string
+	TitlePrefix string
+	BaseURL     string
+	Client      *http.Client
+	Tries       int
+	Backoff     time.Duration
+	Sleep       func(context.Context, time.Duration) error
 }
 
 // NewPoster is a Poster against api.github.com with 3 tries from 1 s.
-func NewPoster(repo, token string) *Poster {
-	return &Poster{Repo: repo, Token: token}
+func NewPoster(repo, token, titlePrefix string) *Poster {
+	return &Poster{Repo: repo, Token: token, TitlePrefix: titlePrefix}
 }
 
 // ValidateRepo checks an owner/repo value.
@@ -147,7 +151,7 @@ func (p *Poster) Post(ctx context.Context, in Input, rep Report) (Result, error)
 	if reported {
 		return Result{Action: ActionAlreadyReported, URL: existing.HTMLURL, Number: existing.Number}, nil
 	}
-	if err := p.comment(ctx, existing.Number, commentBody(in, doc, marker)); err != nil {
+	if err := p.comment(ctx, existing.Number, commentBody(p.TitlePrefix, in, doc, marker)); err != nil {
 		return Result{}, err
 	}
 	return Result{Action: ActionCommented, URL: existing.HTMLURL, Number: existing.Number}, nil
@@ -244,7 +248,7 @@ func (p *Poster) ensureLabel(ctx context.Context) {
 }
 
 func (p *Poster) createIssue(ctx context.Context, in Input, doc *Document, markdown string) (*issue, error) {
-	body := map[string]any{"title": IssueTitle(in, doc), "body": markdown, "labels": []string{IssueLabel}}
+	body := map[string]any{"title": IssueTitle(p.TitlePrefix, in, doc), "body": markdown, "labels": []string{IssueLabel}}
 	var created issue
 	if err := p.post(ctx, fmt.Sprintf("/repos/%s/issues", p.Repo), body, &created); err != nil {
 		var he *HTTPError
@@ -263,17 +267,18 @@ func (p *Poster) comment(ctx context.Context, number int, text string) error {
 	return p.post(ctx, fmt.Sprintf("/repos/%s/issues/%d/comments", p.Repo, number), map[string]string{"body": text}, nil)
 }
 
-// IssueTitle is "Bluefin Server <version>: <class> on <vendor> <product>
-// (autopilot)".
-func IssueTitle(in Input, doc *Document) string {
+// IssueTitle is "<prefix>Bluefin Server <version>: <class> on <vendor>
+// <product> (autopilot)"; prefix is --autopilotIssueTitlePrefix verbatim,
+// usually empty.
+func IssueTitle(prefix string, in Input, doc *Document) string {
 	hw := strings.TrimSpace(doc.Hardware.Vendor + " " + doc.Hardware.Product)
 	if hw == "" {
 		hw = "unknown hardware"
 	}
-	return fmt.Sprintf("%s %s: %s on %s (autopilot)", osTitle(in.OS), in.Version, orUnknown(doc.Class), hw)
+	return fmt.Sprintf("%s%s %s: %s on %s (autopilot)", prefix, osTitle(in.OS), in.Version, orUnknown(doc.Class), hw)
 }
 
-func commentBody(in Input, doc *Document, marker string) string {
+func commentBody(prefix string, in Input, doc *Document, marker string) string {
 	var b strings.Builder
 	b.WriteString(marker)
 	b.WriteString("\n\n")
@@ -281,8 +286,8 @@ func commentBody(in Input, doc *Document, marker string) string {
 	if hw == "" {
 		hw = "unknown hardware"
 	}
-	fmt.Fprintf(&b, "Another machine (dmi-hash `%s`, %s, BIOS %s, boot path `%s`) hit this on `%s`: **%s**, %d attempt(s); %s.\n\n",
-		orUnknown(doc.DMIHash), hw, orDash(doc.Hardware.BIOSVersion), doc.Hardware.BootPath, in.Version, orUnknown(doc.Class), doc.AttemptCount, orDash(doc.RollbackResult))
+	fmt.Fprintf(&b, "%sAnother machine (dmi-hash `%s`, %s, BIOS %s, boot path `%s`) hit this on `%s`: **%s**, %d attempt(s); %s.\n\n",
+		prefix, orUnknown(doc.DMIHash), hw, orDash(doc.Hardware.BIOSVersion), doc.Hardware.BootPath, in.Version, orUnknown(doc.Class), doc.AttemptCount, orDash(doc.RollbackResult))
 	if len(doc.FailedUnits) > 0 {
 		b.WriteString("Failed units: `" + strings.Join(doc.FailedUnits, "`, `") + "`\n\n")
 	}

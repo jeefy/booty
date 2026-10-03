@@ -130,7 +130,7 @@ func (s Settings) Poster() controller.Poster {
 	if s.Issues == "" {
 		return nil
 	}
-	return report.NewPoster(s.Issues, s.GitHubToken)
+	return report.NewPoster(s.Issues, s.GitHubToken, "")
 }
 
 // Autopilot is the running instance: the settings, the cluster client (nil
