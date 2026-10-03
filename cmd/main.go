@@ -56,9 +56,9 @@ func init() {
 	flags.String(config.WebDir, "./web/dist", "Directory with the built Web UI, used when no UI is embedded in the binary")
 	flags.String(config.FlatcarArchitecture, "amd64", "Architecture to use for the Flatcar downloads")
 	flags.String(config.CoreOSArchitecture, "x86_64", "Architecture to use for CoreOS downloads")
-	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates")
+	flags.String(config.FlatcarChannel, "stable", "Flatcar channel to look for updates, or 'none' to neither track nor download Flatcar (its hosts are refused)")
 	flags.String(config.FlatcarVersion, "", "Pin a specific Flatcar version (e.g. 3815.2.0). When empty, tracks the latest version on the configured channel")
-	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates")
+	flags.String(config.CoreOSChannel, "stable", "CoreOS channel to look for updates, or 'none' to neither track nor download CoreOS (its hosts are refused)")
 	flags.String(config.BluefinRepo, config.DefaultBluefinRepo, "GitHub repository whose v<version> releases provide the Bluefin Server netboot UKI, OS DDI and sysexts")
 	flags.String(config.BluefinVersion, "", "Pin a specific Bluefin Server release (e.g. 26.09.747, tag v26.09.747). When empty, tracks the newest v<version> release (or the OCI artifact's latest tag)")
 	flags.String(config.BluefinKeyring, "", "OpenPGP public keyring (binary as for gpgv --keyring, or armored) that must have signed a Bluefin release's SHA256SUMS (SHA256SUMS.gpg); the sync fails closed when set. Empty trusts SHA256SUMS from the release as-is")
@@ -151,6 +151,9 @@ func run(cmd *cobra.Command, argv []string) error {
 	}
 	if err := hardware.ValidateAutoRegisterOS(viper.GetString(config.AutoRegister)); err != nil {
 		return fmt.Errorf("--%s: %w", config.AutoRegister, err)
+	}
+	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" && !versions.OSTracked(autoOS) {
+		return fmt.Errorf("--%s: %s", config.AutoRegister, versions.UntrackedReason(autoOS))
 	}
 	if _, err := hardware.ParseHostnameTemplate(viper.GetString(config.HostnameTemplate)); err != nil {
 		return fmt.Errorf("--%s: %w", config.HostnameTemplate, err)

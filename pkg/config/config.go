@@ -348,6 +348,18 @@ const (
 	ClearOnNextBoot = "next-boot"
 )
 
+// ChannelNone as --flatcarChannel or --coreOSChannel tells Booty not to
+// track that OS at all: no version checks, no downloads, and whatever
+// release directories are on disk are treated as if they were not cached
+// (hosts of that OS are refused at registration, /update-check answers
+// without a target). The default channels are unchanged.
+const ChannelNone = "none"
+
+// FlatcarTracked and CoreOSTracked report whether the OS has a channel to
+// follow, i.e. its flag is not ChannelNone.
+func FlatcarTracked() bool { return !strings.EqualFold(viper.GetString(FlatcarChannel), ChannelNone) }
+func CoreOSTracked() bool  { return !strings.EqualFold(viper.GetString(CoreOSChannel), ChannelNone) }
+
 // ValidateDoInstallClearOn rejects anything but the known modes.
 func ValidateDoInstallClearOn(v string) error {
 	switch v {

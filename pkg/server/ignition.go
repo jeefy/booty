@@ -169,7 +169,12 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		vars.FlatcarCASha256 = ca.Sha256
 	}
 	os := tftp.OSForHost(host)
+	if host != nil && !versions.OSTracked(os) {
+		vars.UntrackedReason = versions.UntrackedReason(os)
+	}
 	switch {
+	case vars.UntrackedReason != "":
+		slog.Warn("Host's OS is not tracked; serving the refusal menu", "mac", mac, "os", os)
 	case tftp.SecureBootRefused(os, vars):
 		slog.Warn("Secure Boot host cannot boot its OS; serving the refusal menu", "mac", mac, "os", os, "trustedFlatcar", vars.SecureBootTrustedFlatcar, "doInstall", host.DoInstall)
 	case os == "bluefin":

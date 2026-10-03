@@ -45,6 +45,9 @@ func validateHost(h *hardware.Host) error {
 	if h.OS != "" && !hardware.IsValidOS(h.OS) {
 		return fmt.Errorf("invalid os %q: must be one of %s", h.OS, hardware.ValidOSList())
 	}
+	if err := versions.ValidateHostOS(h); err != nil {
+		return err
+	}
 	h.InstallDisk = strings.TrimSpace(h.InstallDisk)
 	if err := hardware.ValidateInstallDisk(h.InstallDisk); err != nil {
 		return err
@@ -222,12 +225,29 @@ func handleVersionRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	flatcar, coreos, bluefin := state.CurrentFlatcarVersion(), state.CurrentCoreOSVersion(), state.CurrentBluefinVersion()
+	flatcar, coreos, bluefin := trackedVersion(versions.OSFlatcar), trackedVersion(versions.OSCoreOS), trackedVersion(versions.OSBluefin)
 	if r.URL.Path == "/version.json" {
 		writeJSON(w, http.StatusOK, map[string]string{"flatcar": flatcar, "coreos": coreos, "bluefin": bluefin})
 		return
 	}
 	writeText(w, http.StatusOK, fmt.Sprintf("FLATCAR_VERSION=%s\nCOREOS_VERSION=%s\nBLUEFIN_VERSION=%s\n", flatcar, coreos, bluefin))
+}
+
+// trackedVersion is the recorded current version of osName, "" for an OS
+// Booty does not track (--coreOSChannel=none) whatever state remembers.
+func trackedVersion(osName string) string {
+	if !versions.OSTracked(osName) {
+		return ""
+	}
+	switch osName {
+	case versions.OSFlatcar:
+		return state.CurrentFlatcarVersion()
+	case versions.OSCoreOS:
+		return state.CurrentCoreOSVersion()
+	case versions.OSBluefin:
+		return state.CurrentBluefinVersion()
+	}
+	return ""
 }
 
 type infoResponse struct {
@@ -318,10 +338,10 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var info infoResponse
-	info.Flatcar.Version = state.CurrentFlatcarVersion()
+	info.Flatcar.Version = trackedVersion(versions.OSFlatcar)
 	info.Flatcar.PinnedVersion = state.FlatcarPin()
-	info.CoreOS.Version = state.CurrentCoreOSVersion()
-	info.Bluefin.Version = state.CurrentBluefinVersion()
+	info.CoreOS.Version = trackedVersion(versions.OSCoreOS)
+	info.Bluefin.Version = trackedVersion(versions.OSBluefin)
 	info.Bluefin.PinnedVersion = state.BluefinPin()
 	info.Booty.Version = viper.GetString(config.Version)
 	info.Booty.Timestamp = viper.GetString(config.Timestamp)
