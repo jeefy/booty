@@ -166,6 +166,7 @@ function mountView(overrides: { storage?: unknown; autopilot?: unknown } = {}) {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  localStorage.clear()
 })
 
 describe('StorageView', () => {
@@ -221,30 +222,74 @@ describe('StorageView', () => {
     expect(wrapper.text()).toContain('projectbluefin/server')
   })
 
-  it('joins autopilot records: pruned ones are muted, quarantined stays prominent', async () => {
+  it('hides pruned history by default but keeps quarantined and timeout records', async () => {
     const wrapper = mountView()
     await flushPromises()
     const bluefin = wrapper.find('[data-testid="storage-os-bluefin"]')
     const versions = bluefin.findAll('tbody tr').map((tr) => tr.attributes('data-release'))
-    expect(versions).toEqual(['2026.09.2', '26.09.678', '26.09.673', '26.09.650', '26.09.640'])
+    expect(versions).toEqual(['2026.09.2', '26.09.678', '26.09.673', '26.09.650'])
 
     const quarantined = bluefin.find('[data-release="26.09.650"]')
     expect(quarantined.classes()).toContain('pruned')
     expect(quarantined.classes()).toContain('prominent')
     expect(quarantined.find('[data-testid="pruned-badge"]').text()).toBe('files pruned')
     expect(quarantined.find('[data-state="quarantined"]').text()).toBe('Quarantined')
+    expect(bluefin.find('[data-release="26.09.640"]').exists()).toBe(false)
 
+    const toggle = wrapper.find('[data-testid="show-pruned"]')
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+    expect(wrapper.find('[data-testid="pruned-count"]').text()).toBe('1')
+    const note = bluefin.find('[data-testid="pruned-note"]')
+    expect(note.text()).toContain('1 older release known to the autopilot, files pruned')
+    expect(
+      wrapper.find('[data-testid="storage-os-flatcar"] [data-testid="pruned-note"]').exists()
+    ).toBe(false)
+    expect(bluefin.find('[data-release="2026.09.2"] [data-testid="autopilot-cell"]').text()).toBe(
+      '—'
+    )
+    expect(bluefin.find('[data-release="26.09.678"]').classes()).not.toContain('pruned')
+  })
+
+  it('the toggle and the per-OS note reveal pruned history and persist the choice', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const bluefin = wrapper.find('[data-testid="storage-os-bluefin"]')
+    await bluefin.find('[data-testid="pruned-note"] button').trigger('click')
+
+    expect((wrapper.find('[data-testid="show-pruned"]').element as HTMLInputElement).checked).toBe(
+      true
+    )
+    expect(bluefin.findAll('tbody tr').map((tr) => tr.attributes('data-release'))).toEqual([
+      '2026.09.2',
+      '26.09.678',
+      '26.09.673',
+      '26.09.650',
+      '26.09.640'
+    ])
     const old = bluefin.find('[data-release="26.09.640"]')
     expect(old.classes()).toContain('pruned')
     expect(old.classes()).not.toContain('prominent')
     expect(old.find('[data-testid="pruned-badge"]').exists()).toBe(true)
     expect(old.find('[data-state="good"]').text()).toBe('Good')
-    expect(old.text()).toContain('—')
-    expect(bluefin.find('[data-release="2026.09.2"] [data-testid="autopilot-cell"]').text()).toBe(
-      '—'
-    )
+    expect(bluefin.find('[data-testid="pruned-note"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pruned-count"]').text()).toBe('1')
+    expect(localStorage.getItem('booty.storage.showPruned')).toBe('true')
 
-    expect(bluefin.find('[data-release="26.09.678"]').classes()).not.toContain('pruned')
+    await wrapper.find('[data-testid="show-pruned"]').setValue(false)
+    expect(bluefin.find('[data-release="26.09.640"]').exists()).toBe(false)
+    expect(localStorage.getItem('booty.storage.showPruned')).toBe('false')
+  })
+
+  it('starts with pruned history shown when localStorage says so', async () => {
+    localStorage.setItem('booty.storage.showPruned', 'true')
+    const wrapper = mountView()
+    await flushPromises()
+    expect((wrapper.find('[data-testid="show-pruned"]').element as HTMLInputElement).checked).toBe(
+      true
+    )
+    expect(
+      wrapper.find('[data-testid="storage-os-bluefin"] [data-release="26.09.640"]').exists()
+    ).toBe(true)
   })
 
   it('marks an untracked OS and its leftover releases', async () => {
