@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { apiGet, errorMessage } from '@/api'
 import {
   OS_OPTIONS,
@@ -29,6 +29,26 @@ const autopilot = ref<AutopilotStatus>(normalizeAutopilotStatus(null))
 const hostData = ref<BootyData>(normalizeBootyData(null))
 const loading = ref(true)
 const error = ref('')
+
+const SHOW_PRUNED_KEY = 'booty.storage.showPruned'
+
+function readShowPruned(): boolean {
+  try {
+    return localStorage.getItem(SHOW_PRUNED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+const showPruned = ref(readShowPruned())
+
+watch(showPruned, (on) => {
+  try {
+    localStorage.setItem(SHOW_PRUNED_KEY, String(on))
+  } catch {
+    // storage unavailable (private mode, quota): the toggle still works for this page view
+  }
+})
 
 const OS_LABEL: Record<HostOS, string> = {
   flatcar: 'Flatcar',
@@ -116,7 +136,8 @@ function compareVersions(a: string, b: string): number {
   return b.localeCompare(a)
 }
 
-function rows(os: HostOS): ReleaseRow[] {
+/** Every release on disk joined with every autopilot record, newest first. */
+function allRows(os: HostOS): ReleaseRow[] {
   const byVersion = new Map<string, ReleaseRow>()
   for (const release of storage.value.os[os].releases) {
     byVersion.set(release.version, { version: release.version, release, record: null })
@@ -131,6 +152,24 @@ function rows(os: HostOS): ReleaseRow[] {
   }
   return [...byVersion.values()].sort((a, b) => compareVersions(a.version, b.version))
 }
+
+/** A pruned record that is only history: hidden unless the toggle is on. */
+function hideable(row: ReleaseRow): boolean {
+  return row.release === null && !prominent(row.record)
+}
+
+function rows(os: HostOS): ReleaseRow[] {
+  const all = allRows(os)
+  return showPruned.value ? all : all.filter((row) => !hideable(row))
+}
+
+function hiddenCount(os: HostOS): number {
+  return showPruned.value ? 0 : allRows(os).filter(hideable).length
+}
+
+const prunedTotal = computed(() =>
+  OS_OPTIONS.reduce((n, os) => n + allRows(os).filter(hideable).length, 0)
+)
 
 function hasRecords(os: HostOS): boolean {
   return rows(os).some((row) => row.record !== null)
@@ -191,6 +230,25 @@ onMounted(() => {
         <span v-if="!loading && storage.dataDir" class="small text-secondary mono">{{
           storage.dataDir
         }}</span>
+        <div v-if="!loading" class="form-check form-switch m-0 small">
+          <input
+            id="show-pruned"
+            v-model="showPruned"
+            class="form-check-input"
+            type="checkbox"
+            role="switch"
+            data-testid="show-pruned"
+          />
+          <label class="form-check-label text-secondary" for="show-pruned">
+            Show pruned release history
+            <span
+              class="badge text-bg-light border ms-1"
+              data-testid="pruned-count"
+              title="Autopilot release records whose files are no longer on disk (quarantined and TIMEOUT ones are always shown)"
+              >{{ prunedTotal }}</span
+            >
+          </label>
+        </div>
         <button
           type="button"
           class="btn btn-sm btn-outline-secondary"
@@ -394,7 +452,7 @@ onMounted(() => {
             </tbody>
           </table>
           <EmptyState
-            v-else
+            v-if="!rows(os).length"
             :title="storage.os[os].tracked ? 'No releases cached' : 'Not tracked'"
             :hint="
               storage.os[os].tracked
@@ -402,6 +460,21 @@ onMounted(() => {
                 : 'Start Booty with a channel for this OS to track it again.'
             "
           />
+          <div
+            v-if="hiddenCount(os)"
+            class="pruned-note small text-secondary"
+            data-testid="pruned-note"
+          >
+            {{ hiddenCount(os) }} older release{{ hiddenCount(os) === 1 ? '' : 's' }} known to the
+            autopilot, files pruned —
+            <button
+              type="button"
+              class="btn btn-link btn-sm p-0 align-baseline"
+              @click="showPruned = true"
+            >
+              show
+            </button>
+          </div>
         </div>
       </template>
 
@@ -590,6 +663,11 @@ tr.pruned td {
 
 tr.pruned.prominent td:first-child {
   color: var(--booty-ink);
+}
+
+.pruned-note {
+  padding: var(--booty-space-2) var(--booty-space-3);
+  border-top: 1px solid var(--booty-border);
 }
 
 .asset-footer {
