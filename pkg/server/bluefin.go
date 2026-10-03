@@ -259,18 +259,25 @@ func bluefinBootHost(w http.ResponseWriter, r *http.Request, mac, platform strin
 	return host, now, true
 }
 
-// recordBluefinNetboot records a real netboot: a GET stamps booted, the
-// IP, the platform and the release served; an EFI boot of a host with doInstall stamps
-// installServedAt. A BIOS boot never installs, so it stamps nothing that
-// could later count as a finished install.
+// recordBluefinNetboot records a real netboot: a GET stamps the platform
+// and the release served (the initrd's checksum fetch depends on it) and,
+// when the fetch came from the host itself (fromHost), booted, the IP and
+// L0 for the autopilot and the power tracker; an EFI boot of a host with
+// doInstall stamps installServedAt. A BIOS boot never installs, so it
+// stamps nothing that could later count as a finished install.
 func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, platform, version, file string, now time.Time) {
 	if isPreview(r) {
 		return
 	}
 	if r.Method == http.MethodGet {
+		byHost := fromHost(r, host)
 		ip, stamp := remoteIP(r), now.UTC().Format(time.RFC3339)
 		if _, err := hardware.Update(mac, func(h *hardware.Host) {
-			h.Booted, h.NetbootPlatform, h.NetbootVersion = stamp, platform, version
+			h.NetbootPlatform, h.NetbootVersion = platform, version
+			if !byHost {
+				return
+			}
+			h.Booted = stamp
 			if ip != "" {
 				h.IP = ip
 			}
@@ -278,8 +285,12 @@ func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, plat
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
 		host.NetbootPlatform, host.NetbootVersion = platform, version
-		powerFetch(mac, power.FetchKernel)
-		autopilotFetch(mac, controller.FetchKernel)
+		if byHost {
+			powerFetch(mac, power.FetchKernel)
+			autopilotFetch(mac, controller.FetchKernel)
+		} else {
+			slog.Info("Bluefin netboot fetched from an address that is not the host's; not counting it as a boot", "mac", mac, "ip", ip, "hostIP", host.IP)
+		}
 	}
 	if platform == hardware.PlatformEFI {
 		recordInstallServed(mac, host, now)

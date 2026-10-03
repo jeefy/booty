@@ -176,8 +176,13 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 		bluefinIPXEVars(mac, host, secureBoot || host.SecureBoot, &vars)
 	}
 	if host != nil && os != "bluefin" && !isPreview(r) {
-		powerFetch(mac, power.FetchKernel)
-		autopilotFetch(mac, controller.FetchKernel)
+		if fromHost(r, host) {
+			learnIP(mac, host, remoteIP(r))
+			powerFetch(mac, power.FetchKernel)
+			autopilotFetch(mac, controller.FetchKernel)
+		} else {
+			slog.Info("Boot script fetched from an address that is not the host's; not counting it as a boot", "mac", mac, "ip", remoteIP(r), "hostIP", host.IP)
+		}
 	}
 	slog.Info("Serving iPXE script", "mac", mac, "os", os, "menuDefault", vars.MenuDefault, "secureBoot", vars.SecureBoot)
 	writeText(w, http.StatusOK, tftp.IPXEScript(os, vars))
@@ -610,6 +615,54 @@ WantedBy=multi-user.target
 // stamp booted/ip or clear a pending doInstall.
 func isPreview(r *http.Request) bool {
 	return r.URL.Query().Get("preview") != ""
+}
+
+// fromHost reports whether a kernel/UKI fetch came from the host it names:
+// from the host's recorded IP, or from anywhere while Booty knows no IP
+// for the host yet (its first boot, which then teaches it one through
+// learnIP). Only such a fetch counts as the host booting, L0 for the
+// autopilot's health gate and the power tracker; an operator's curl of
+// /booty.ipxe?mac=… or of the Bluefin UKI from a workstation is served but
+// observed by nobody and leaves the host's IP alone. Two limitations
+// follow: while the IP is unknown any address passes, and a host whose
+// address changed between boots has that boot's kernel fetch ignored until
+// its Ignition fetch or POST /booted relearns the address (the next boot
+// is gated as usual). Previews never count.
+func fromHost(r *http.Request, host *hardware.Host) bool {
+	if host == nil || isPreview(r) {
+		return false
+	}
+	return host.IP == "" || sameIP(remoteIP(r), host.IP)
+}
+
+// sameIP compares two textual addresses as IPs (so an IPv4-mapped IPv6
+// form equals its IPv4), falling back to string equality.
+func sameIP(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ia, ib := net.ParseIP(a), net.ParseIP(b)
+	return ia != nil && ib != nil && ia.Equal(ib)
+}
+
+// learnIP records the address a host without one fetched its kernel from,
+// so the rest of its boot (and its next ones) can be matched against it.
+// A host with an IP is left alone: only its Ignition fetch and POST
+// /booted move it.
+func learnIP(mac string, host *hardware.Host, ip string) {
+	if host.IP != "" || ip == "" {
+		return
+	}
+	if _, err := hardware.Update(mac, func(h *hardware.Host) {
+		if h.IP == "" {
+			h.IP = ip
+		}
+	}); err != nil {
+		slog.Error("Could not record the host's IP", "mac", mac, "error", err)
+		return
+	}
+	host.IP = ip
+	slog.Info("Learned the host's IP from its kernel fetch", "mac", mac, "ip", ip)
 }
 
 func recordBoot(mac, ip string, host *hardware.Host) {

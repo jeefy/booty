@@ -32,7 +32,7 @@ func TestLivePostAgainstScratchRepo(t *testing.T) {
 		}
 		token = strings.TrimSpace(string(out))
 	}
-	p := NewPoster(repo, token)
+	p := NewPoster(repo, token, "[autopilot test] ")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 

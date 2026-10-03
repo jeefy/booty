@@ -669,6 +669,172 @@ func TestClearHostEndsTheEpisode(t *testing.T) {
 	h.wantState(macA, hardware.AutopilotIdle, 2, ClassHung)
 }
 
+// TestNeedsHandsSelfResolvesWhenTheHostComesBackOnTarget is the live
+// incident: a host hung into needs-hands, an operator reset it, and it
+// came back Ready and healthy on the target while the episode stayed
+// needs-hands. Its kernel fetch was discounted (the host already counted
+// as healthy on the release by what it reported running), so /booted and
+// a clean /health on the target must reopen the same episode's gate, with
+// the fetch as t0, and the gate must then close it as usual.
+func TestNeedsHandsSelfResolvesWhenTheHostComesBackOnTarget(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.flatcarHost(macA, "gredfallan")
+	h.healthyNode("gredfallan", "Flatcar 4757.2.0")
+	h.act.name = actuator.NameKured
+	h.fetch(macA)
+	h.advance(30 * time.Second)
+	h.c.ObserveFetch(macA, FetchKernel)
+	h.advance(16 * time.Minute)
+	h.tick()
+	h.wantState(macA, hardware.AutopilotNeedsHands, 2, ClassHung)
+	started := h.episode(macA).Started
+	if err := h.fleet.Update(macA, func(x *hardware.Host) { x.Running = "4800.0.0" }); err != nil {
+		t.Fatal(err)
+	}
+
+	h.advance(time.Minute)
+	h.up(macA, "4800.0.0", "kubelet.service")
+	h.wantState(macA, hardware.AutopilotNeedsHands, 2, ClassHung)
+	if h.hasEvent("re-gating") {
+		t.Fatal("a host back on target with failed units still needs hands")
+	}
+
+	h.advance(time.Minute)
+	fetched := h.time()
+	h.fetch(macA)
+	h.wantState(macA, hardware.AutopilotNeedsHands, 2, ClassHung)
+	if e := h.episode(macA); !e.Started.Equal(started) {
+		t.Fatalf("the fetch of a release the host counts as healthy on must not start a new episode: %+v", e)
+	}
+	h.advance(time.Minute)
+	booted := h.time()
+	h.up(macA, "4800.0.0")
+	h.wantState(macA, hardware.AutopilotGating, 3, ClassHung)
+	e := h.episode(macA)
+	if !e.Started.Equal(started) || e.Done || !e.T0.Equal(fetched) || !e.Signals.Booted.Equal(booted) || e.Signals.Health.IsZero() || e.Signals.Fetches != 1 {
+		t.Fatalf("re-gated episode: %+v", e)
+	}
+	if e.Signals.Timeline[0] != "t+0s kernel fetched" || e.Signals.Timeline[1] != "t+1m0s OS up (booted)" {
+		t.Fatalf("timeline: %v", e.Signals.Timeline)
+	}
+	if !h.hasEvent("host came back on 4800.0.0: re-gating") {
+		t.Fatalf("events: %+v", h.c.Status().Events)
+	}
+	if s := h.c.Summary(); s.NeedsHands != 0 {
+		t.Fatalf("summary: %+v", s)
+	}
+
+	h.healthyNode("gredfallan", "Flatcar 4800.0.0")
+	h.tick()
+	e = h.episode(macA)
+	if e.State != hardware.AutopilotIdle || !e.Done || e.Attempt != 3 || len(e.Attempts) != 3 || e.Attempts[2].Outcome != OutcomeHealthy {
+		t.Fatalf("gate after the re-gate: %+v (%s)", e, e.Note)
+	}
+	if st := h.c.Status(); st.Hosts[0].HealthyOn != "4800.0.0" {
+		t.Fatalf("healthyOn: %+v", st.Hosts[0])
+	}
+	if got := h.release("flatcar", "4800.0.0").Healthy; len(got) != 1 || got[0] != macA {
+		t.Fatalf("healthy list: %v", got)
+	}
+	h.wantHold("flatcar", "4800.0.0")
+	host, _ := h.fleet.Host(macA)
+	if host.Autopilot == nil || host.Autopilot.State != hardware.AutopilotIdle {
+		t.Fatalf("host summary: %+v", host.Autopilot)
+	}
+	if got := h.fleet.lastGood["flatcar"]; got != "4800.0.0" {
+		t.Fatalf("lastGood must advance once the only host is healthy on it: %s", got)
+	}
+}
+
+// TestMissedRebootRegatesFromTheHealthReport: the controller asked for a
+// reboot, the kernel fetch was never seen (a changed address), and the
+// host comes up and reports healthy on the target. /booted alone, a report
+// with failed units, or one naming another release change nothing; a
+// clean report on the target reopens the gate with the /booted as t0.
+func TestMissedRebootRegatesFromTheHealthReport(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.flatcarHost(macA, "ehrlitan")
+	h.healthyNode("ehrlitan", "Flatcar 4757.2.0")
+	h.fetch(macA)
+	h.up(macA, "4800.0.0", "kubelet.service")
+	h.wantState(macA, hardware.AutopilotRetrying, 2, ClassFailedUnits)
+	h.wantHold("flatcar", "4757.2.0")
+	h.act.wait(t, 2)
+
+	h.advance(2 * time.Minute)
+	booted := h.time()
+	h.c.ObserveBooted(macA, "")
+	h.wantState(macA, hardware.AutopilotRetrying, 2, ClassFailedUnits)
+	h.advance(30 * time.Second)
+	h.c.ObserveHealth(macA, &hardware.Health{Running: "4800.0.0", FailedUnits: []string{"x.service"}})
+	h.c.ObserveHealth(macA, &hardware.Health{Running: "4757.2.0"})
+	h.wantState(macA, hardware.AutopilotRetrying, 2, ClassFailedUnits)
+	if want, _ := h.c.RebootWanted(macA); !want {
+		t.Fatal("update-check must keep asking for the reboot until the host is back on target")
+	}
+
+	h.c.ObserveHealth(macA, &hardware.Health{Running: "4800.0.0"})
+	h.wantState(macA, hardware.AutopilotGating, 2, ClassFailedUnits)
+	e := h.episode(macA)
+	if !e.T0.Equal(booted) || !e.Signals.Booted.Equal(booted) || e.Signals.Fetches != 0 || e.Signals.Timeline[0] != "t+0s OS up (booted)" {
+		t.Fatalf("re-gated episode: %+v", e)
+	}
+	if want, _ := h.c.RebootWanted(macA); want {
+		t.Fatal("RebootWanted must drop once the gate is open")
+	}
+	if !h.hasEvent("host came back on 4800.0.0: re-gating (attempt 2, was retrying)") {
+		t.Fatalf("events: %+v", h.c.Status().Events)
+	}
+
+	h.healthyNode("ehrlitan", "Flatcar 4800.0.0")
+	h.tick()
+	if e := h.episode(macA); e.State != hardware.AutopilotIdle || !e.Done || e.Attempt != 2 {
+		t.Fatalf("gate after the re-gate: %+v (%s)", e, e.Note)
+	}
+	h.wantHold("flatcar", "4800.0.0")
+	if r := h.release("flatcar", "4800.0.0"); r.Failing {
+		t.Fatalf("release: %+v", r)
+	}
+	if calls := h.act.wait(t, 3); calls[2] != "finish "+macA {
+		t.Fatalf("the api actuator must uncordon after the re-gated gate passes: %v", calls)
+	}
+}
+
+// TestMissedRollbackRegatesAndBlamesTheRelease: a rollback whose reboot
+// was never observed and whose host comes back healthy on lastGood ends
+// exactly as an observed one: rolled back, release in TIMEOUT.
+func TestMissedRollbackRegatesAndBlamesTheRelease(t *testing.T) {
+	h := newHarness(t, config.AutopilotGuard)
+	h.flatcarHost(macA, "ehrlitan")
+	h.healthyNode("ehrlitan", "Flatcar 4800.0.0")
+	h.fetch(macA)
+	h.up(macA, "4800.0.0", "kubelet.service")
+	h.advance(time.Minute)
+	h.fetch(macA)
+	h.up(macA, "4800.0.0", "kubelet.service")
+	h.wantState(macA, hardware.AutopilotRolledBack, 3, ClassFailedUnits)
+	h.wantPin(macA, "4757.2.0")
+
+	h.advance(time.Minute)
+	h.c.ObserveBooted(macA, "")
+	h.c.ObserveHealth(macA, &hardware.Health{Running: "4757.2.0"})
+	h.wantState(macA, hardware.AutopilotGating, 3, ClassFailedUnits)
+	h.healthyNode("ehrlitan", "Flatcar 4757.2.0")
+	h.tick()
+	e := h.episode(macA)
+	if e.State != hardware.AutopilotRolledBack || !e.Done {
+		t.Fatalf("rollback gate: %+v", e)
+	}
+	if r := h.release("flatcar", "4800.0.0"); r.State != ReleaseTimeout || r.FailedOn != macA {
+		t.Fatalf("release after the re-gated rollback: %+v", r)
+	}
+	h.wantHold("flatcar", "4757.2.0")
+	h.wantPin(macA, "")
+	if !h.hasEvent("host came back on 4757.2.0: re-gating (attempt 3, was rolled-back)") {
+		t.Fatalf("events: %+v", h.c.Status().Events)
+	}
+}
+
 func TestPendingPodCountsAfterGrace(t *testing.T) {
 	h := newHarness(t, config.AutopilotGuard)
 	h.flatcarHost(macA, "ehrlitan")

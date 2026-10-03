@@ -96,6 +96,8 @@ const (
 	AutopilotRetryAfter = "autopilotRetryAfter"
 	AutopilotIssues     = "autopilotIssues"
 	RebootSSHKey        = "rebootSSHKey"
+
+	AutopilotIssueTitlePrefix = "autopilotIssueTitlePrefix"
 )
 
 // Autopilot modes: off (nothing, the default), guard (health gate, retry,
@@ -484,6 +486,7 @@ func LoadConfig() {
 	viper.SetDefault(AutopilotHealthWin, DefaultAutopilotHealthWindow)
 	viper.SetDefault(AutopilotRetryAfter, DefaultAutopilotRetryAfter)
 	viper.SetDefault(AutopilotIssues, "")
+	viper.SetDefault(AutopilotIssueTitlePrefix, "")
 	viper.SetDefault(RebootSSHKey, "")
 }
 

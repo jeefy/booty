@@ -257,6 +257,57 @@ func TestPostCreatesThenCommentsThenNoops(t *testing.T) {
 	}
 }
 
+// TestPostWithTitlePrefix: --autopilotIssueTitlePrefix goes in front of
+// the issue title and the comment's first line, verbatim, while the body,
+// the marker and therefore the dedupe stay exactly as without it.
+func TestPostWithTitlePrefix(t *testing.T) {
+	in := fixture()
+	doc := Build(in).Document()
+	if got := IssueTitle("", in, doc); got != "Bluefin Server 26.09.700: failed-units on HP HP EliteDesk 800 G1 DM (autopilot)" {
+		t.Fatalf("title without prefix %q", got)
+	}
+	if got := IssueTitle("[autopilot test] ", in, doc); got != "[autopilot test] Bluefin Server 26.09.700: failed-units on HP HP EliteDesk 800 G1 DM (autopilot)" {
+		t.Fatalf("title with prefix %q", got)
+	}
+
+	f, srv := newFakeGitHub(t)
+	p, _ := newTestPoster(srv, f)
+	p.TitlePrefix = "[autopilot test] "
+	ctx := context.Background()
+	res, err := p.Post(ctx, in, Build(in))
+	if err != nil || res.Action != ActionCreated {
+		t.Fatalf("%+v %v", res, err)
+	}
+	f.mu.Lock()
+	is := f.issues[0]
+	f.mu.Unlock()
+	if is.Title != "[autopilot test] Bluefin Server 26.09.700: failed-units on HP HP EliteDesk 800 G1 DM (autopilot)" {
+		t.Fatalf("title %q", is.Title)
+	}
+	if strings.Contains(is.Body, "[autopilot test]") || !strings.Contains(is.Body, Marker("bluefin", "26.09.700", "9f86d081884c7d65")) {
+		t.Fatalf("the prefix must not touch the body or its marker: %s", is.Body)
+	}
+
+	second := fixture()
+	second.DMIHash = "0123456789abcdef"
+	res, err = p.Post(ctx, second, Build(second))
+	if err != nil || res.Action != ActionCommented || res.Number != 1 {
+		t.Fatalf("second machine must find the prefixed issue by its marker: %+v %v", res, err)
+	}
+	f.mu.Lock()
+	comments := append([]string(nil), is.Comments...)
+	f.mu.Unlock()
+	if len(comments) != 1 || !strings.HasPrefix(comments[0], Marker("bluefin", "26.09.700", "0123456789abcdef")+"\n\n[autopilot test] Another machine (dmi-hash `0123456789abcdef`") {
+		t.Fatalf("comment: %q", comments)
+	}
+
+	unprefixed, _ := newTestPoster(srv, f)
+	res, err = unprefixed.Post(ctx, in, Build(in))
+	if err != nil || res.Action != ActionAlreadyReported || res.Number != 1 {
+		t.Fatalf("a poster without the prefix must still recognise the issue: %+v %v", res, err)
+	}
+}
+
 func TestPostFallsBackToListingWhenSearchIsRateLimited(t *testing.T) {
 	f, srv := newFakeGitHub(t)
 	p, slept := newTestPoster(srv, f)
