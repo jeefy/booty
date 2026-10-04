@@ -38,6 +38,17 @@ const (
 	FetchIgnition      = "ignition"
 	maxEvents          = 200
 	maxTimelineEntries = 64
+	// maxAttempts bounds the attempts an episode keeps (the newest stay).
+	maxAttempts = 10
+	// maxGoodHistory caps the good release records per OS whose files
+	// are gone: beyond it the oldest folded ones are dropped, the only
+	// deletion the controller ever does to its history.
+	maxGoodHistory = 50
+	// DefaultEvents and DefaultGoodHistory bound GET /autopilot without
+	// ?events=all / ?releases=all: the newest events of the ring, and the
+	// newest good records whose files are gone on top of every live one.
+	DefaultEvents      = 100
+	DefaultGoodHistory = 10
 )
 
 // Release is one cached version of an OS as the controller sees it.
@@ -268,12 +279,15 @@ type Posted struct {
 
 // State is what data/autopilot/state.json holds.
 type State struct {
-	Version int                   `json:"version"`
-	Saved   time.Time             `json:"saved"`
-	OS      map[string]*OSState   `json:"os"`
-	Hosts   map[string]*HostState `json:"hosts"`
-	Events  []Event               `json:"events"`
-	Reports map[string]*Report    `json:"reports"`
+	Version int       `json:"version"`
+	Saved   time.Time `json:"saved"`
+	// Revision counts the saves, across restarts; GET /autopilot carries it
+	// so the UI can tell an unchanged answer from a new one.
+	Revision uint64                `json:"revision"`
+	OS       map[string]*OSState   `json:"os"`
+	Hosts    map[string]*HostState `json:"hosts"`
+	Events   []Event               `json:"events"`
+	Reports  map[string]*Report    `json:"reports"`
 }
 
 const stateVersion = 1
