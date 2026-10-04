@@ -79,17 +79,27 @@ discoverable; with `enabled: false` it collapses to the one-line off state.
 ## Autopilot
 
 `AutopilotView` renders `GET /autopilot` (`normalizeAutopilotStatus` in
-`types.ts`): mode, actuator, cluster and attention counters as stat cards, a
-fleet-target table per OS (fleet target with a **held** badge, `current`,
-`lastGood`, every release with its state badge, since when, attempts and last
-class, and a **Clear** button on `quarantined`/`timeout` releases that POSTs
+`types.ts`), polled every 30 s like the Overview: mode, actuator, cluster and
+attention counters as stat cards, a fleet-target table per OS (fleet target
+with a **held** badge, `current`, `lastGood`; the releases that need an eye on
+them -- anything not `good`, or `failing` -- listed with their state badge,
+since when, attempts and last class, the OS's `good` releases behind a
+**Show N good releases** toggle, an **N more in history → Storage** link when
+`releaseCount` exceeds what the default answer carries, and a **Clear** button
+on `quarantined`/`timeout` releases that POSTs
 `/autopilot/{os}/release/{version}/clear` and reloads), the per-host episode
 table (state badge, release → target, attempt, class, since, note; hostnames
 come from `/booty.json`; a **Clear** button on `needs-hands`, `retrying` and
 `rolled-back` rows opens an inline confirm and then POSTs
 `/autopilot/host/{mac}/clear`, showing a refusal on the row), the reports and
-the event timeline (newest first,
-`alert` events in red). Each report row carries a `draft`/`final` badge, a
+the event timeline (newest first, `alert` events in red), 50 events at a time:
+**Show more** goes to 100, then fetches the whole ring with
+`/autopilot?events=all` (the poll keeps using it from then on) and shows
+`eventCount` in the footer. A poll whose `revision`, event count and live
+cluster facts equal the rendered ones leaves `status` untouched, and the
+hostname map and the power ring are swapped only when their JSON differs, so a
+quiet fleet re-renders nothing every 30 s. Each report row carries a
+`draft`/`final` badge, a
 **View** button that fetches `report.path` (`/autopilot/reports/<os>-<version>.md`,
 via `apiGetText`) and shows the redacted Markdown in an inline `<pre>`, a raw
 `.md` link, and, once the controller filed it, a **GitHub #n** link to
@@ -98,7 +108,9 @@ With `mode: off` the page shows the summary and
 an empty state. `Host.canary` is a checkbox in `HostForm` (every OS) and a
 `canary` badge in the Hosts table; `Host.autopilot` (server-owned, echoed back
 to `/register` untouched) shows as a state badge with the attempt number when
-the host is not idle.
+the host is not idle. `StorageView` joins the same records for its state
+badges and fetches `/autopilot?releases=all`, so its **Show pruned release
+history** switch has every record, not just the bounded default.
 
 ## Development
 

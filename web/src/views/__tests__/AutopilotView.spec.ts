@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises as flushMicrotasks, mount } from '@vue/test-utils'
 import AutopilotView from '@/views/AutopilotView.vue'
 import { flushPromises, jsonResponse, mockFetch, requestBody } from '@/__tests__/helpers'
 
@@ -265,6 +265,7 @@ describe('AutopilotView', () => {
     expect(quarantined.text()).toContain('3 attempts')
     expect(quarantined.text()).toContain('failed-units')
     expect(quarantined.find('[data-action="clear"]').exists()).toBe(true)
+    await flatcar.find('[data-action="toggle-good"]').trigger('click')
     expect(flatcar.find('[data-release="4757.2.0"] [data-action="clear"]').exists()).toBe(false)
     expect(flatcar.find('[data-release="4757.2.0"] [data-testid="pruned-hint"]').exists()).toBe(
       false
@@ -482,5 +483,136 @@ describe('AutopilotView', () => {
     const items = wrapper.findAll('[data-testid="autopilot-timeline"] li')
     expect(items).toHaveLength(2)
     expect(items.every((li) => li.attributes('data-kind') === 'power')).toBe(true)
+  })
+
+  it('folds good releases behind a toggle and links the rest of the history to Storage', async () => {
+    const withHistory = {
+      ...guard,
+      os: { ...guard.os, flatcar: { ...guard.os.flatcar, releaseCount: 30 } }
+    }
+    const { wrapper } = mountView(withHistory)
+    await flushPromises()
+
+    const flatcar = wrapper.find('[data-testid="autopilot-os-table"] tr[data-os="flatcar"]')
+    expect(flatcar.findAll('[data-release]').map((r) => r.attributes('data-release'))).toEqual([
+      '4800.0.0'
+    ])
+    expect(flatcar.find('[data-release="4800.0.0"] [data-action="clear"]').exists()).toBe(true)
+    const toggle = flatcar.find('[data-action="toggle-good"]')
+    expect(toggle.text()).toBe('Show 2 good releases')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    const history = flatcar.find('[data-testid="history-link"]')
+    expect(history.text()).toBe('27 more in history → Storage')
+    expect(history.attributes('href')).toBe('/storage')
+
+    await toggle.trigger('click')
+    expect(flatcar.findAll('[data-release]').map((r) => r.attributes('data-release'))).toEqual([
+      '4800.0.0',
+      '4757.2.0',
+      '4700.0.0'
+    ])
+    expect(flatcar.find('[data-action="toggle-good"]').text()).toBe('Hide 2 good releases')
+    expect(flatcar.find('[data-action="toggle-good"]').attributes('aria-expanded')).toBe('true')
+    expect(flatcar.find('[data-release="4700.0.0"]').classes()).toContain('muted')
+    await flatcar.find('[data-action="toggle-good"]').trigger('click')
+    expect(flatcar.findAll('[data-release]')).toHaveLength(1)
+
+    const bluefin = wrapper.find('[data-testid="autopilot-os-table"] tr[data-os="bluefin"]')
+    expect(bluefin.findAll('[data-release]')).toHaveLength(0)
+    expect(bluefin.find('[data-action="toggle-good"]').text()).toBe('Show 1 good release')
+    expect(bluefin.find('[data-testid="history-link"]').exists()).toBe(false)
+  })
+
+  it('shows 50 events, then 100, then fetches the whole ring on demand', async () => {
+    const event = (i: number) => ({
+      at: `2026-09-28T${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00Z`,
+      kind: 'episode',
+      os: 'bluefin',
+      release: '26.09.673',
+      mac: 'aa:bb:cc:dd:ee:02',
+      text: `event ${i}`
+    })
+    const ring = Array.from({ length: 180 }, (_, i) => event(i))
+    const page = { ...guard, events: ring.slice(80), eventCount: 180 }
+    const spy = mockFetch((url) => {
+      if (url === '/autopilot') return jsonResponse(page)
+      if (url === '/autopilot?events=all') return jsonResponse({ ...page, events: ring })
+      if (url === '/booty.json') return jsonResponse(hosts)
+      if (url === '/power') return jsonResponse({ ...powerEvents, events: [] })
+      return jsonResponse({ error: `unexpected ${url}` }, 500)
+    })
+    const wrapper = mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } })
+    await flushPromises()
+
+    const items = () => wrapper.findAll('[data-testid="autopilot-timeline"] li')
+    expect(items()).toHaveLength(50)
+    expect(items()[0]!.text()).toContain('event 179')
+    expect(wrapper.find('[data-testid="events-shown"]').text()).toBe('50 of 180 events')
+
+    await wrapper.find('[data-action="show-more-events"]').trigger('click')
+    expect(items()).toHaveLength(100)
+    expect(wrapper.find('[data-testid="events-shown"]').text()).toBe('100 of 180 events')
+    expect(spy.mock.calls.some(([url]) => url === '/autopilot?events=all')).toBe(false)
+
+    await wrapper.find('[data-action="show-more-events"]').trigger('click')
+    await flushPromises()
+    expect(spy.mock.calls.some(([url]) => url === '/autopilot?events=all')).toBe(true)
+    expect(items()).toHaveLength(180)
+    expect(items()[179]!.text()).toContain('event 0')
+    expect(wrapper.find('[data-action="show-more-events"]').exists()).toBe(false)
+  })
+
+  it('polls every 30s and leaves the state alone while the revision is unchanged', async () => {
+    vi.useFakeTimers()
+    try {
+      let current = { ...guard, revision: 7 }
+      const spy = mockFetch((url) => {
+        if (url === '/autopilot') return jsonResponse(current)
+        if (url === '/booty.json') return jsonResponse(hosts)
+        if (url === '/power') return jsonResponse({ ...powerEvents, events: [] })
+        return jsonResponse({ error: `unexpected ${url}` }, 500)
+      })
+      const wrapper = mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } })
+      await flushMicrotasks()
+      const vm = wrapper.vm as unknown as { status: object; hostnames: object }
+      const before = vm.status
+      const names = vm.hostnames
+      expect(spy.mock.calls.filter(([url]) => url === '/autopilot')).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      await flushMicrotasks()
+      expect(spy.mock.calls.filter(([url]) => url === '/autopilot')).toHaveLength(2)
+      expect(vm.status).toBe(before)
+      expect(vm.hostnames).toBe(names)
+      expect(wrapper.find('.loading, .spinner-border').exists()).toBe(false)
+
+      current = {
+        ...guard,
+        revision: 8,
+        events: [
+          ...guard.events,
+          {
+            at: '2026-09-28T13:00:00Z',
+            kind: 'release',
+            os: 'flatcar',
+            release: '4800.0.0',
+            text: 'release cleared by the operator; the fleet may try it again'
+          }
+        ]
+      }
+      await vi.advanceTimersByTimeAsync(30_000)
+      await flushMicrotasks()
+      expect(vm.status).not.toBe(before)
+      expect(wrapper.findAll('[data-testid="autopilot-timeline"] li')).toHaveLength(3)
+      expect(wrapper.find('[data-testid="autopilot-timeline"] li').text()).toContain(
+        'cleared by the operator'
+      )
+
+      wrapper.unmount()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(spy.mock.calls.filter(([url]) => url === '/autopilot')).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

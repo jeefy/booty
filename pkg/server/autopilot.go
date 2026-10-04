@@ -65,11 +65,14 @@ func autopilotRebootWanted(mac string) (bool, string) {
 const autopilotClearPrefix = "/autopilot/"
 
 // handleAutopilotRequest is GET /autopilot ({mode, cluster, actuator,
-// dryRun, os, hosts, events, reports}), GET /autopilot/reports/<os>-<version>.md
-// (the rendered, redacted report; .json for its twin), POST
-// /autopilot/{os}/release/{version}/clear, which un-quarantines a release,
-// and POST /autopilot/host/{mac}/clear, which ends a host's episode. Like
-// /register, the writes have no authentication beyond reaching the port.
+// dryRun, os, hosts, events, reports}; ?releases=all lists every release
+// record instead of the live ones plus the newest good history, ?events=all
+// the whole event ring instead of the newest 100), GET
+// /autopilot/reports/<os>-<version>.md (the rendered, redacted report;
+// .json for its twin), POST /autopilot/{os}/release/{version}/clear, which
+// un-quarantines a release, and POST /autopilot/host/{mac}/clear, which
+// ends a host's episode. Like /register, the writes have no authentication
+// beyond reaching the port.
 func handleAutopilotRequest(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, controller.ReportsPath) {
 		handleAutopilotReport(w, r)
@@ -91,9 +94,11 @@ func handleAutopilotRequest(w http.ResponseWriter, r *http.Request) {
 	if a == nil {
 		a = &autopilot.Autopilot{Settings: autopilot.Settings{Mode: config.AutopilotOff}}
 	}
+	q := r.URL.Query()
+	opts := controller.StatusOptions{AllReleases: q.Get("releases") == "all", AllEvents: q.Get("events") == "all"}
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, a.Status(ctx))
+	writeJSON(w, http.StatusOK, a.StatusWith(ctx, opts))
 }
 
 // handleAutopilotReport serves one rendered report from

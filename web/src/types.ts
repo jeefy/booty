@@ -929,7 +929,10 @@ export interface AutopilotOS {
   current: string
   lastGood: string
   held: boolean
+  /** The live records plus the newest good pruned ones; `?releases=all` lists every record. */
   releases: AutopilotRelease[]
+  /** How many records the controller holds for the OS in all. */
+  releaseCount: number
 }
 
 export interface AutopilotAttempt {
@@ -1004,9 +1007,14 @@ export interface AutopilotStatus {
   healthWindow: string
   retryAfter: string
   cluster: { reachable: boolean; kured: boolean; nodes: number; apiServer: string; error: string }
+  /** Changes whenever the controller's state did; 0 from a server that does not send it. */
+  revision: number
   os: Record<HostOS, AutopilotOS>
   hosts: AutopilotHost[]
+  /** The newest 100 of the ring; `?events=all` returns the whole ring. */
   events: AutopilotEvent[]
+  /** How many events the ring holds in all. */
+  eventCount: number
   reports: AutopilotReport[]
   held: string[]
   quarantined: number
@@ -1037,7 +1045,7 @@ export type RawAutopilotStatus = Partial<
 }
 
 function emptyOS(): AutopilotOS {
-  return { fleetTarget: '', current: '', lastGood: '', held: false, releases: [] }
+  return { fleetTarget: '', current: '', lastGood: '', held: false, releases: [], releaseCount: 0 }
 }
 
 export function normalizeAutopilotStatus(
@@ -1046,27 +1054,37 @@ export function normalizeAutopilotStatus(
   const os = {} as Record<HostOS, AutopilotOS>
   for (const name of OS_OPTIONS) {
     const block = raw?.os?.[name]
+    const releases = (block?.releases ?? []).map((r) => ({
+      os: name,
+      version: r.version ?? '',
+      state: oneOf(r.state, RELEASE_STATES, 'rolling'),
+      since: r.since ?? '',
+      attempts: r.attempts ?? 0,
+      class: r.class ?? '',
+      report: r.report ?? '',
+      healthy: r.healthy ?? [],
+      failedOn: r.failedOn ?? '',
+      failing: r.failing ?? false,
+      cached: r.cached ?? true
+    }))
     os[name] = {
       ...emptyOS(),
       fleetTarget: block?.fleetTarget ?? '',
       current: block?.current ?? '',
       lastGood: block?.lastGood ?? '',
       held: block?.held ?? false,
-      releases: (block?.releases ?? []).map((r) => ({
-        os: name,
-        version: r.version ?? '',
-        state: oneOf(r.state, RELEASE_STATES, 'rolling'),
-        since: r.since ?? '',
-        attempts: r.attempts ?? 0,
-        class: r.class ?? '',
-        report: r.report ?? '',
-        healthy: r.healthy ?? [],
-        failedOn: r.failedOn ?? '',
-        failing: r.failing ?? false,
-        cached: r.cached ?? true
-      }))
+      releases,
+      releaseCount: Math.max(releases.length, nonNegative(block?.releaseCount))
     }
   }
+  const events = (raw?.events ?? []).map((e) => ({
+    at: e.at ?? '',
+    kind: e.kind ?? '',
+    os: e.os ?? '',
+    release: e.release ?? '',
+    mac: e.mac ?? '',
+    text: e.text ?? ''
+  }))
   return {
     mode: raw?.mode ?? 'off',
     actuator: raw?.actuator ?? 'none',
@@ -1080,6 +1098,7 @@ export function normalizeAutopilotStatus(
       apiServer: raw?.cluster?.apiServer ?? '',
       error: raw?.cluster?.error ?? ''
     },
+    revision: nonNegative(raw?.revision),
     os,
     hosts: (raw?.hosts ?? []).map((h) => ({
       mac: h.mac ?? '',
@@ -1114,14 +1133,8 @@ export function normalizeAutopilotStatus(
           }
         : null
     })),
-    events: (raw?.events ?? []).map((e) => ({
-      at: e.at ?? '',
-      kind: e.kind ?? '',
-      os: e.os ?? '',
-      release: e.release ?? '',
-      mac: e.mac ?? '',
-      text: e.text ?? ''
-    })),
+    events,
+    eventCount: Math.max(events.length, nonNegative(raw?.eventCount)),
     reports: (raw?.reports ?? []).map((r) => ({
       key: r.key ?? '',
       os: r.os ?? '',

@@ -94,12 +94,13 @@ func defaultNodeStable(window time.Duration) time.Duration {
 type Controller struct {
 	opts Options
 
-	mu       sync.Mutex
-	state    *State
-	actuator string
-	dirty    bool
-	posting  map[string]bool
-	bg       sync.WaitGroup
+	mu        sync.Mutex
+	state     *State
+	actuator  string
+	dirty     bool
+	posting   map[string]bool
+	compacted map[string]string
+	bg        sync.WaitGroup
 }
 
 // Wait blocks until the background work the controller spawned (actuator
@@ -125,7 +126,7 @@ func New(opts Options) (*Controller, error) {
 		return nil, errors.New("controller: Fleet is required")
 	}
 	opts.defaults()
-	c := &Controller{opts: opts, state: newState(), actuator: ActuatorNone, posting: map[string]bool{}}
+	c := &Controller{opts: opts, state: newState(), actuator: ActuatorNone, posting: map[string]bool{}, compacted: map[string]string{}}
 	if opts.StatePath != "" {
 		if err := c.load(); err != nil {
 			return nil, err
@@ -177,7 +178,12 @@ func (c *Controller) load() error {
 }
 
 func (c *Controller) save() {
-	if c.opts.StatePath == "" || !c.dirty {
+	if !c.dirty {
+		return
+	}
+	c.state.Revision++
+	if c.opts.StatePath == "" {
+		c.dirty = false
 		return
 	}
 	c.state.Saved = c.now()
@@ -216,8 +222,8 @@ func (c *Controller) Run(ctx context.Context) {
 }
 
 // Tick is one reconcile pass: expire timers, poll the cluster for gates
-// in progress, drive rollouts, advance lastGood, sync host summaries and
-// persist.
+// in progress, drive rollouts, advance lastGood, compact the release
+// history, sync host summaries and persist.
 func (c *Controller) Tick(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -226,6 +232,7 @@ func (c *Controller) Tick(ctx context.Context) {
 	c.evaluateGates(ctx)
 	c.driveRollouts(ctx)
 	c.advanceLastGood()
+	c.compactReleases()
 	c.applyHolds()
 	c.syncHostSummaries()
 	c.postPendingReports()

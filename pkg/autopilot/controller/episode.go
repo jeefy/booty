@@ -494,6 +494,9 @@ func (c *Controller) evaluatePendingReboot(ctx context.Context, e *Episode) {
 
 func (c *Controller) finishAttempt(e *Episode, outcome, class, note string) {
 	e.Attempts = append(e.Attempts, Attempt{Attempt: e.Attempt, Target: e.Target, Outcome: outcome, Class: class, T0: e.T0, Ended: c.now(), Note: note, Signals: e.Signals, Actuator: e.Actuator})
+	if n := len(e.Attempts); n > maxAttempts {
+		e.Attempts = slices.Clone(e.Attempts[n-maxAttempts:])
+	}
 	r := c.release(e.OS, e.Release)
 	if e.Target == e.Release {
 		r.Attempts++
