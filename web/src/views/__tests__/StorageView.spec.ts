@@ -157,7 +157,7 @@ const autopilot = {
 function mountView(overrides: { storage?: unknown; autopilot?: unknown } = {}) {
   mockFetch((url) => {
     if (url === '/storage') return jsonResponse(overrides.storage ?? storage)
-    if (url === '/autopilot') return jsonResponse(overrides.autopilot ?? autopilot)
+    if (url === '/autopilot?releases=all') return jsonResponse(overrides.autopilot ?? autopilot)
     if (url === '/booty.json') return jsonResponse(hosts)
     return jsonResponse({ error: `unexpected ${url}` }, 500)
   })

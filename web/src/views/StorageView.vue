@@ -198,7 +198,7 @@ async function load() {
   error.value = ''
   const [storageResult, autopilotResult, hostsResult] = await Promise.allSettled([
     apiGet<RawStorage>('/storage'),
-    apiGet<RawAutopilotStatus>('/autopilot'),
+    apiGet<RawAutopilotStatus>('/autopilot?releases=all'),
     apiGet<RawBootyData>('/booty.json')
   ])
   if (storageResult.status === 'fulfilled') {
