@@ -224,8 +224,14 @@ type Status struct {
 	*controller.Status
 }
 
-// Status inspects the cluster (reads only) and names the actuator.
+// Status inspects the cluster (reads only) and names the actuator, with
+// the controller's default bounds on releases and events.
 func (a *Autopilot) Status(ctx context.Context) Status {
+	return a.StatusWith(ctx, controller.StatusOptions{})
+}
+
+// StatusWith is Status with ?releases=all / ?events=all applied.
+func (a *Autopilot) StatusWith(ctx context.Context, opts controller.StatusOptions) Status {
 	st := Status{Mode: a.Settings.Mode, Actuator: actuator.NameNone, DryRun: true}
 	if !a.Settings.Enabled() {
 		return st
@@ -238,7 +244,7 @@ func (a *Autopilot) Status(ctx context.Context) Status {
 		st.SSHUsers = map[string]string{"bluefin": s.User("bluefin"), "flatcar": s.User("flatcar"), "coreos": s.User("coreos")}
 	}
 	if a.Controller != nil {
-		cs := a.Controller.Status()
+		cs := a.Controller.StatusWith(opts)
 		st.Status, st.DryRun = &cs, false
 		st.HealthWindow, st.RetryAfter = a.Settings.HealthWindow.String(), a.Settings.RetryAfter.String()
 	}

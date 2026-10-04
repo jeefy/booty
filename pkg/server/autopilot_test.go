@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -451,6 +452,113 @@ func TestKernelFetchCountsOnlyFromTheHost(t *testing.T) {
 	st = getAutopilot(t)
 	if len(st.Hosts) != 2 || st.Hosts[1].MAC != fresh || st.Hosts[1].Episode == nil || st.Hosts[1].Episode.State != hardware.AutopilotGating {
 		t.Fatalf("first boot with an unknown IP is L0: %+v", st.Hosts)
+	}
+}
+
+// TestAutopilotEndpointBoundsHistory loads a state.json with a long
+// Flatcar history and checks what GET /autopilot serves by default versus
+// with ?releases=all and ?events=all.
+func TestAutopilotEndpointBoundsHistory(t *testing.T) {
+	_, dir := newTestServer(t)
+	t.Cleanup(func() {
+		setAutopilot(nil)
+		state.SetCurrentFlatcarVersion("")
+	})
+	for _, v := range []string{"4800.0.0", "4757.2.0"} {
+		writeRelease(t, dir, "flatcar", v, "flatcar_production_pxe.vmlinuz", "flatcar_production_pxe_image.cpio.gz")
+	}
+	if err := os.Symlink("4800.0.0", filepath.Join(dir, "flatcar", "current")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("4757.2.0", filepath.Join(dir, "flatcar", "lastGood")); err != nil {
+		t.Fatal(err)
+	}
+	state.SetCurrentFlatcarVersion("4800.0.0")
+
+	since := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	st := controller.State{Version: 1, OS: map[string]*controller.OSState{"flatcar": {Releases: map[string]*controller.Release{}}}, Hosts: map[string]*controller.HostState{}, Reports: map[string]*controller.Report{}}
+	for i := range 30 {
+		v := "4" + strconv.Itoa(600+i) + ".0.0"
+		st.OS["flatcar"].Releases[v] = &controller.Release{OS: "flatcar", Version: v, State: controller.ReleaseGood, Since: since.Add(time.Duration(i) * time.Hour), Healthy: []string{"aa:bb:cc:dd:ee:01"}}
+	}
+	st.OS["flatcar"].Releases["4500.0.0"] = &controller.Release{OS: "flatcar", Version: "4500.0.0", State: controller.ReleaseQuarantined, Since: since, Healthy: []string{"aa:bb:cc:dd:ee:01"}, FailedOn: "aa:bb:cc:dd:ee:02"}
+	for i := range 150 {
+		st.Events = append(st.Events, controller.Event{At: since.Add(time.Duration(i) * time.Minute), Kind: controller.EventEpisode, OS: "flatcar", Text: "event " + strconv.Itoa(i)})
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "autopilot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "autopilot", "state.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctrl, err := controller.New(controller.Options{Mode: config.AutopilotGuard, Fleet: controller.LiveFleet{}, StatePath: filepath.Join(dir, "autopilot", "state.json"), HealthWindow: 15 * time.Minute, RetryAfter: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl.Tick(t.Context())
+	setAutopilot(&autopilot.Autopilot{Settings: autopilot.Settings{Mode: config.AutopilotGuard}, Controller: ctrl})
+
+	get := func(query string) (autopilotStatus, map[string]any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handleAutopilotRequest(rec, httptest.NewRequest(http.MethodGet, "/autopilot"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /autopilot%s: %d %s", query, rec.Code, rec.Body)
+		}
+		var typed autopilotStatus
+		var raw map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &typed); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		return typed, raw
+	}
+
+	def, raw := get("")
+	flatcar := def.OS["flatcar"]
+	if len(flatcar.Releases) != 2+1+controller.DefaultGoodHistory {
+		t.Fatalf("default: current, lastGood, the quarantined record and the %d newest good ones without files, got %d", controller.DefaultGoodHistory, len(flatcar.Releases))
+	}
+	if flatcar.Releases[0].Version != "4800.0.0" || flatcar.Releases[len(flatcar.Releases)-1].Version != "4500.0.0" {
+		t.Fatalf("newest first, the quarantined one at the end: %+v", flatcar.Releases)
+	}
+	if got := raw["os"].(map[string]any)["flatcar"].(map[string]any)["releaseCount"]; got != float64(33) {
+		t.Fatalf("releaseCount counts every record: %v", got)
+	}
+	if len(def.Events) != controller.DefaultEvents || raw["eventCount"] != float64(150) || def.Events[len(def.Events)-1].Text != "event 149" {
+		t.Fatalf("default events: %d of %v, last %q", len(def.Events), raw["eventCount"], def.Events[len(def.Events)-1].Text)
+	}
+	if rev, ok := raw["revision"].(float64); !ok || rev < 1 {
+		t.Fatalf("revision: %v", raw["revision"])
+	}
+	for _, r := range raw["os"].(map[string]any)["flatcar"].(map[string]any)["releases"].([]any) {
+		rel := r.(map[string]any)
+		if rel["state"] == controller.ReleaseGood && rel["cached"] == false && rel["healthy"] != nil {
+			t.Fatalf("a good record without files is folded: %v", rel)
+		}
+		if rel["version"] == "4500.0.0" && (rel["healthy"] == nil || rel["failedOn"] != "aa:bb:cc:dd:ee:02") {
+			t.Fatalf("the quarantined record keeps its hosts: %v", rel)
+		}
+	}
+
+	all, _ := get("?releases=all&events=all")
+	if len(all.OS["flatcar"].Releases) != 33 {
+		t.Fatalf("?releases=all: %d", len(all.OS["flatcar"].Releases))
+	}
+	if len(all.Events) != 150 || all.Events[0].Text != "event 0" {
+		t.Fatalf("?events=all: %d, first %q", len(all.Events), all.Events[0].Text)
+	}
+	if only, _ := get("?releases=all"); len(only.OS["flatcar"].Releases) != 33 || len(only.Events) != controller.DefaultEvents {
+		t.Fatalf("the two parameters are independent: %d releases, %d events", len(only.OS["flatcar"].Releases), len(only.Events))
+	}
+	if other, _ := get("?releases=everything"); len(other.OS["flatcar"].Releases) != 2+1+controller.DefaultGoodHistory {
+		t.Fatalf("an unknown value means the default: %d", len(other.OS["flatcar"].Releases))
 	}
 }
 
