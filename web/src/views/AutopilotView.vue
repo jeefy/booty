@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { apiGet, apiGetText, apiPost, errorMessage } from '@/api'
 import {
@@ -13,7 +13,6 @@ import {
   type AutopilotRelease,
   type AutopilotReport,
   type AutopilotStatus,
-  type BootyData,
   type HostOS,
   type PowerEvent,
   type RawAutopilotStatus,
@@ -26,8 +25,11 @@ import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 import EmptyState from '@/components/EmptyState.vue'
 
+const REFRESH_INTERVAL_MS = 30_000
+const EVENTS_PAGE = 50
+
 const status = ref<AutopilotStatus>(normalizeAutopilotStatus(null))
-const hostData = ref<BootyData>(normalizeBootyData(null))
+const hostnames = ref<Record<string, string>>({})
 const powerEvents = ref<PowerEvent[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -40,6 +42,10 @@ const openReport = ref('')
 const reportText = ref('')
 const reportLoading = ref(false)
 const reportError = ref('')
+const goodExpanded = reactive<Record<string, boolean>>({})
+const shownEvents = ref(EVENTS_PAGE)
+const allEvents = ref(false)
+const eventsLoading = ref(false)
 
 const off = computed(() => status.value.mode === 'off')
 
@@ -51,8 +57,7 @@ const MODE_HINT: Record<string, string> = {
 }
 
 function hostLabel(mac: string): string {
-  const host = hostData.value.hosts[mac]
-  return host?.hostname || mac
+  return hostnames.value[mac] || mac
 }
 
 const hostsWithEpisodes = computed(() =>
@@ -61,15 +66,38 @@ const hostsWithEpisodes = computed(() =>
 
 /**
  * The autopilot's ring plus the power tracker's own (the latter mirrors
- * into the former while a controller runs, so duplicates are dropped).
+ * into the former while a controller runs, so duplicates are dropped),
+ * newest first, each with a key that survives new events arriving.
  */
 const events = computed(() => {
   const seen = new Set(status.value.events.map((e) => `${e.at}|${e.mac}|${e.text}`))
   const extra = powerEvents.value
     .filter((e) => !seen.has(`${e.at}|${e.mac}|${e.text}`))
     .map((e) => ({ at: e.at, kind: e.kind, os: '', release: '', mac: e.mac, text: e.text }))
-  return [...status.value.events, ...extra].sort((a, b) => a.at.localeCompare(b.at)).reverse()
+  const keys = new Map<string, number>()
+  return [...status.value.events, ...extra]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .reverse()
+    .map((e) => {
+      const base = `${e.at}|${e.kind}|${e.mac}|${e.text}`
+      const n = keys.get(base) ?? 0
+      keys.set(base, n + 1)
+      return { ...e, key: n ? `${base}#${n}` : base }
+    })
 })
+
+const visibleEvents = computed(() => events.value.slice(0, shownEvents.value))
+
+/** Events still in the server's ring that the default answer left out. */
+const unfetchedEvents = computed(() =>
+  allEvents.value ? 0 : Math.max(0, status.value.eventCount - status.value.events.length)
+)
+
+const eventTotal = computed(() => events.value.length + unfetchedEvents.value)
+
+const moreEvents = computed(
+  () => events.value.length > shownEvents.value || unfetchedEvents.value > 0
+)
 
 function osReleases(os: HostOS): AutopilotRelease[] {
   return status.value.os[os]?.releases ?? []
@@ -86,6 +114,25 @@ function canClear(r: AutopilotRelease): boolean {
 /** A pruned release stays prominent while its verdict still keeps hosts off it. */
 function muted(r: AutopilotRelease): boolean {
   return !r.cached && !canClear(r)
+}
+
+/** Releases that need an eye on them are always listed; good ones fold away. */
+function needsAttention(r: AutopilotRelease): boolean {
+  return r.state !== 'good' || r.failing
+}
+
+function goodReleases(os: HostOS): AutopilotRelease[] {
+  return osReleases(os).filter((r) => !needsAttention(r))
+}
+
+function visibleReleases(os: HostOS): AutopilotRelease[] {
+  const attention = osReleases(os).filter(needsAttention)
+  return goodExpanded[os] ? [...attention, ...goodReleases(os)] : attention
+}
+
+/** Records the default answer left out; Storage lists them all. */
+function historyCount(os: HostOS): number {
+  return Math.max(0, (status.value.os[os]?.releaseCount ?? 0) - osReleases(os).length)
 }
 
 const HOST_CLEARABLE = new Set(['needs-hands', 'retrying', 'rolled-back'])
@@ -109,25 +156,76 @@ function episodeState(h: AutopilotHost) {
   return AUTOPILOT_HOST_LABEL[h.episode?.state ?? 'idle']
 }
 
-async function load() {
-  loading.value = true
+function statusURL(): string {
+  return allEvents.value ? '/autopilot?events=all' : '/autopilot'
+}
+
+/**
+ * A poll that answers with the revision it answered last time, and the
+ * same live facts, changes nothing: the state is left alone so the lists
+ * are not re-rendered every 30 s.
+ */
+function unchanged(next: AutopilotStatus, prev: AutopilotStatus): boolean {
+  return (
+    next.revision > 0 &&
+    next.revision === prev.revision &&
+    next.events.length === prev.events.length &&
+    next.mode === prev.mode &&
+    next.actuator === prev.actuator &&
+    next.cluster.reachable === prev.cluster.reachable &&
+    next.cluster.kured === prev.cluster.kured &&
+    next.cluster.nodes === prev.cluster.nodes &&
+    next.cluster.apiServer === prev.cluster.apiServer &&
+    next.cluster.error === prev.cluster.error
+  )
+}
+
+function sameJSON(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+async function load(showSpinner = true) {
+  if (showSpinner) loading.value = true
   error.value = ''
   const [statusResult, hostsResult, powerResult] = await Promise.allSettled([
-    apiGet<RawAutopilotStatus>('/autopilot'),
+    apiGet<RawAutopilotStatus>(statusURL()),
     apiGet<RawBootyData>('/booty.json'),
     apiGet<RawPowerStatus>('/power')
   ])
   if (statusResult.status === 'fulfilled') {
-    status.value = normalizeAutopilotStatus(statusResult.value)
+    const next = normalizeAutopilotStatus(statusResult.value)
+    if (!unchanged(next, status.value)) status.value = next
   } else {
     error.value = errorMessage(statusResult.reason)
   }
   if (hostsResult.status === 'fulfilled') {
-    hostData.value = normalizeBootyData(hostsResult.value)
+    const names = Object.fromEntries(
+      Object.entries(normalizeBootyData(hostsResult.value).hosts).map(([mac, h]) => [
+        mac,
+        h.hostname
+      ])
+    )
+    if (!sameJSON(names, hostnames.value)) hostnames.value = names
   }
-  powerEvents.value =
+  const power =
     powerResult.status === 'fulfilled' ? normalizePowerStatus(powerResult.value).events : []
+  if (!sameJSON(power, powerEvents.value)) powerEvents.value = power
   loading.value = false
+}
+
+/** 50 events, then 100, then the whole ring, fetched only when asked for. */
+async function showMoreEvents() {
+  if (shownEvents.value < 2 * EVENTS_PAGE && events.value.length >= 2 * EVENTS_PAGE) {
+    shownEvents.value = 2 * EVENTS_PAGE
+    return
+  }
+  if (unfetchedEvents.value > 0) {
+    allEvents.value = true
+    eventsLoading.value = true
+    await load(false)
+    eventsLoading.value = false
+  }
+  shownEvents.value = Number.MAX_SAFE_INTEGER
 }
 
 async function clear(r: AutopilotRelease) {
@@ -139,7 +237,7 @@ async function clear(r: AutopilotRelease) {
       `/autopilot/${encodeURIComponent(r.os)}/release/${encodeURIComponent(r.version)}/clear`,
       {}
     )
-    await load()
+    await load(false)
   } catch (err) {
     clearErrors[key] = errorMessage(err)
   } finally {
@@ -154,7 +252,7 @@ async function clearHost(h: AutopilotHost) {
   hostClearErrors[mac] = ''
   try {
     await apiPost<StatusResponse>(`/autopilot/host/${encodeURIComponent(mac)}/clear`, {})
-    await load()
+    await load(false)
   } catch (err) {
     hostClearErrors[mac] = errorMessage(err)
   } finally {
@@ -186,8 +284,15 @@ function issueLabel(r: AutopilotReport): string {
   return m ? `#${m[1]}` : 'issue'
 }
 
+let timer: ReturnType<typeof setInterval> | undefined
+
 onMounted(() => {
   void load()
+  timer = setInterval(() => void load(false), REFRESH_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
 })
 </script>
 
@@ -195,17 +300,20 @@ onMounted(() => {
   <div>
     <div class="page-header">
       <h2>Autopilot</h2>
-      <button
-        type="button"
-        class="btn btn-sm btn-outline-secondary"
-        :disabled="loading"
-        @click="load"
-      >
-        Refresh
-      </button>
+      <div class="d-flex align-items-center gap-3">
+        <span class="small text-secondary">Refreshes every 30s</span>
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-secondary"
+          :disabled="loading"
+          @click="load()"
+        >
+          Refresh
+        </button>
+      </div>
     </div>
 
-    <ErrorAlert v-if="error" :message="error" @retry="load" />
+    <ErrorAlert v-if="error" :message="error" @retry="load()" />
     <LoadingState v-if="loading" label="Loading autopilot state…" />
 
     <template v-else>
@@ -324,7 +432,7 @@ onMounted(() => {
                   <td>
                     <div class="releases">
                       <div
-                        v-for="r in osReleases(os)"
+                        v-for="r in visibleReleases(os)"
                         :key="r.version"
                         class="release"
                         :class="{ muted: muted(r) }"
@@ -379,6 +487,29 @@ onMounted(() => {
                         >
                           {{ clearErrors[`${r.os}-${r.version}`] }}
                         </span>
+                      </div>
+                      <div v-if="goodReleases(os).length || historyCount(os)" class="release-more">
+                        <button
+                          v-if="goodReleases(os).length"
+                          type="button"
+                          class="btn btn-link btn-sm p-0 align-baseline"
+                          :aria-expanded="goodExpanded[os] ? 'true' : 'false'"
+                          data-action="toggle-good"
+                          @click="goodExpanded[os] = !goodExpanded[os]"
+                        >
+                          {{ goodExpanded[os] ? 'Hide' : 'Show' }}
+                          {{ goodReleases(os).length }} good release{{
+                            goodReleases(os).length === 1 ? '' : 's'
+                          }}
+                        </button>
+                        <RouterLink
+                          v-if="historyCount(os)"
+                          class="small"
+                          to="/storage"
+                          title="Older good releases whose files were pruned; the record is kept as history and Storage lists all of it"
+                          data-testid="history-link"
+                          >{{ historyCount(os) }} more in history → Storage</RouterLink
+                        >
                       </div>
                     </div>
                   </td>
@@ -613,7 +744,7 @@ onMounted(() => {
         <div class="section-title">Timeline</div>
         <div class="panel fade-in">
           <ul v-if="events.length" class="timeline" data-testid="autopilot-timeline">
-            <li v-for="(e, i) in events" :key="i" :data-kind="e.kind">
+            <li v-for="e in visibleEvents" :key="e.key" :data-kind="e.kind">
               <span class="when" :title="formatAbsolute(e.at)">{{ formatRelative(e.at) }}</span>
               <span
                 class="badge kind"
@@ -632,6 +763,25 @@ onMounted(() => {
             title="Nothing happened yet"
             hint="Episodes, holds, releases, actuator calls and power actions show up here."
           />
+          <div v-if="moreEvents" class="timeline-more">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              :disabled="eventsLoading"
+              data-action="show-more-events"
+              @click="showMoreEvents"
+            >
+              <span
+                v-if="eventsLoading"
+                class="spinner-border spinner-border-sm me-1"
+                aria-hidden="true"
+              ></span>
+              Show more
+            </button>
+            <span class="small text-secondary" data-testid="events-shown"
+              >{{ visibleEvents.length }} of {{ eventTotal }} events</span
+            >
+          </div>
         </div>
       </template>
     </template>
@@ -654,6 +804,23 @@ onMounted(() => {
 
 .release.muted {
   opacity: 0.6;
+}
+
+.release-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--booty-space-3);
+  font-size: 0.875rem;
+}
+
+.release-more .btn-link {
+  font-size: inherit;
+  text-decoration: none;
+}
+
+.release-more .btn-link:hover {
+  text-decoration: underline;
 }
 
 .section-title {
@@ -741,5 +908,13 @@ onMounted(() => {
 
 .timeline .text {
   flex: 1 1 20rem;
+}
+
+.timeline-more {
+  display: flex;
+  align-items: center;
+  gap: var(--booty-space-3);
+  padding: var(--booty-space-2) var(--booty-space-3);
+  border-top: 1px solid var(--booty-border);
 }
 </style>
