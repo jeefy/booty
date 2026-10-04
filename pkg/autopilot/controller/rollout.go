@@ -11,6 +11,7 @@ import (
 
 	"github.com/jeefy/booty/pkg/autopilot/report"
 	"github.com/jeefy/booty/pkg/hardware"
+	"github.com/jeefy/booty/pkg/versions"
 )
 
 // canaryOrder sorts the Bluefin hosts the way the rollout visits them:
@@ -269,13 +270,18 @@ func bootPath(h *hardware.Host, firmware string) string {
 	return report.BootPathUnknown
 }
 
-// OSStatus is the per-OS block of GET /autopilot.
+// OSStatus is the per-OS block of GET /autopilot. Releases carries every
+// record only with StatusOptions.AllReleases; by default it is the live
+// ones (cached, or in any state but good) plus the DefaultGoodHistory
+// newest good records whose files are gone, and ReleaseCount says how many
+// records there are in all.
 type OSStatus struct {
-	FleetTarget string     `json:"fleetTarget"`
-	Current     string     `json:"current"`
-	LastGood    string     `json:"lastGood"`
-	Held        bool       `json:"held"`
-	Releases    []*Release `json:"releases"`
+	FleetTarget  string     `json:"fleetTarget"`
+	Current      string     `json:"current"`
+	LastGood     string     `json:"lastGood"`
+	Held         bool       `json:"held"`
+	Releases     []*Release `json:"releases"`
+	ReleaseCount int        `json:"releaseCount"`
 }
 
 // HostStatus is the per-host block of GET /autopilot.
@@ -310,43 +316,66 @@ type ReportSummary struct {
 // ReportsPath is the URL prefix the server serves rendered reports under.
 const ReportsPath = "/autopilot/reports/"
 
-// Status is the controller's part of GET /autopilot.
+// Status is the controller's part of GET /autopilot. Events is the newest
+// DefaultEvents of the ring unless StatusOptions.AllEvents asks for the
+// whole ring; EventCount is the ring's size. Revision changes whenever the
+// state did, so a poller can skip an answer it has already rendered.
 type Status struct {
+	Revision   uint64              `json:"revision"`
 	OS         map[string]OSStatus `json:"os"`
 	Hosts      []HostStatus        `json:"hosts"`
 	Events     []Event             `json:"events"`
+	EventCount int                 `json:"eventCount"`
 	Reports    []ReportSummary     `json:"reports"`
 	Held       []string            `json:"held"`
 	Quarantine int                 `json:"quarantined"`
 	NeedsHands int                 `json:"needsHands"`
 }
 
-// Status snapshots the controller for the API.
-func (c *Controller) Status() Status {
+// StatusOptions widen GET /autopilot: ?releases=all and ?events=all.
+type StatusOptions struct {
+	AllReleases bool
+	AllEvents   bool
+}
+
+// Status snapshots the controller for the API with the default bounds.
+func (c *Controller) Status() Status { return c.StatusWith(StatusOptions{}) }
+
+// StatusWith snapshots the controller for the API.
+func (c *Controller) StatusWith(opts StatusOptions) Status {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st := Status{OS: map[string]OSStatus{}, Hosts: []HostStatus{}, Events: slices.Clone(c.state.Events), Reports: []ReportSummary{}, Held: []string{}}
-	if st.Events == nil {
-		st.Events = []Event{}
+	st := Status{Revision: c.state.Revision, OS: map[string]OSStatus{}, Hosts: []HostStatus{}, Events: []Event{}, EventCount: len(c.state.Events), Reports: []ReportSummary{}, Held: []string{}}
+	if n := len(c.state.Events); opts.AllEvents || n <= DefaultEvents {
+		st.Events = slices.Clone(c.state.Events)
+	} else {
+		st.Events = slices.Clone(c.state.Events[n-DefaultEvents:])
 	}
 	for _, osName := range osNames() {
 		os := c.state.osState(osName)
 		cur := c.opts.Fleet.Current(osName)
-		o := OSStatus{Current: cur, LastGood: c.opts.Fleet.LastGood(osName), FleetTarget: cur, Held: os.Held != "", Releases: []*Release{}}
+		o := OSStatus{Current: cur, LastGood: c.opts.Fleet.LastGood(osName), FleetTarget: cur, Held: os.Held != "", Releases: []*Release{}, ReleaseCount: len(os.Releases)}
 		if os.Held != "" {
 			o.FleetTarget = os.Held
 			st.Held = append(st.Held, osName)
 		}
 		cached := c.opts.Fleet.Cached(osName)
+		var history []*Release
 		for _, v := range slices.Sorted(maps.Keys(os.Releases)) {
 			r := *os.Releases[v]
 			r.Cached = slices.Contains(cached, v)
-			o.Releases = append(o.Releases, &r)
 			if r.State == ReleaseQuarantined {
 				st.Quarantine++
 			}
+			if !opts.AllReleases && !r.Cached && r.State == ReleaseGood {
+				history = append(history, &r)
+				continue
+			}
+			o.Releases = append(o.Releases, &r)
 		}
-		slices.SortFunc(o.Releases, func(a, b *Release) int { return compareStrings(b.Version, a.Version) })
+		slices.SortFunc(history, newestFirst)
+		o.Releases = append(o.Releases, history[:min(len(history), DefaultGoodHistory)]...)
+		slices.SortFunc(o.Releases, newestFirst)
 		st.OS[osName] = o
 	}
 	for _, mac := range slices.Sorted(maps.Keys(c.state.Hosts)) {
@@ -381,6 +410,8 @@ func (c *Controller) Status() Status {
 	}
 	return st
 }
+
+func newestFirst(a, b *Release) int { return versions.CompareVersions(b.Version, a.Version) }
 
 // Summary is the /info.autopilot block.
 type Summary struct {
