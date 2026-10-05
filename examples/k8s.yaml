@@ -184,7 +184,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: booty
-          image: ghcr.io/jeefy/booty:main
+          image: ghcr.io/jeefy/booty:v1.0.0-rc.1
           imagePullPolicy: Always
           args:
             - --dataDir=/data
@@ -208,7 +208,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: BOOTY_IMAGE
-              value: ghcr.io/jeefy/booty:main
+              value: ghcr.io/jeefy/booty:v1.0.0-rc.1
           ports:
             - name: tftp
               containerPort: 69
