@@ -104,6 +104,22 @@ booty --dataDir ./data     # --serverIP is autodetected; pass it explicitly behi
 
 `booty init [dir]` (default: `--dataDir`, `BOOTY_DATADIR` or `./data`) never overwrites existing files -- rerunning it prints `exists, skipped` -- and ends with the DHCP settings for your network (`next-server`, `filename undionly.kpxe` / `ipxe.efi`), the run command and the UI URL. The starter template is valid on its own: hostname, SSH keys, the update timer and the booted callback come from the [builtin fragment](#composition), so edit it only for what is specific to your fleet.
 
+### Releases
+
+Container tags: `ghcr.io/jeefy/booty:vX.Y.Z` tags are built by CI from the
+tagged commit with SLSA provenance and a keyless cosign signature. Verify a
+release with:
+
+```
+COSIGN_EXPERIMENTAL=1 cosign verify-attestation --new-bundle-format=false \
+  --certificate-identity-regexp=".*" --certificate-oidc-issuer-regexp=".*" \
+  --type slsaprovenance ghcr.io/jeefy/booty@<digest>
+```
+
+The `:main` tag tracks the default branch. Release-candidate tags
+(`-rc.N`) do **not** move `:latest`. Notable changes between releases are
+listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Features
 
 * iPXE boot (BIOS and x86-64 UEFI) into the latest Flatcar-Linux or CoreOS, and UEFI HTTP Boot of Bluefin Server's signed netboot UKI (diskless, or installed to disk)
@@ -941,7 +957,7 @@ Binding UDP 69 needs `CAP_NET_BIND_SERVICE` (as do UDP 67 and 4011 for `--proxyD
 ```
 docker run --rm --network=host \
   --cap-drop ALL --cap-add NET_BIND_SERVICE --cap-add NET_RAW \
-  -v $PWD/data:/data ghcr.io/jeefy/booty:main --serverIP=192.168.1.10
+  -v $PWD/data:/data ghcr.io/jeefy/booty:v1.0.0-rc.1 --serverIP=192.168.1.10
 ```
 
 On Kubernetes set `securityContext.capabilities: {drop: [ALL], add: [NET_BIND_SERVICE, NET_RAW]}` and use `/healthz` for the liveness and readiness probes. If you use `--tftpPort` above 1024 and always pass the MAC in the URL, no capabilities are required.
@@ -957,7 +973,7 @@ docker run --rm -it \
   --network=host \
   --cap-drop ALL --cap-add NET_BIND_SERVICE --cap-add NET_RAW \
   -v $PWD:/data/ \
-  ghcr.io/jeefy/booty:main \
+  ghcr.io/jeefy/booty:v1.0.0-rc.1 \
   --profile=kubeadm-worker \
   --joinString="kubeadm join 192.168.1.10:6443 --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${SHA_HASH}" \
   --serverIP=192.168.1.10 \
