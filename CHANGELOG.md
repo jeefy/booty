@@ -1,0 +1,247 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The format is
+based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
+project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0-rc.1] - 2026-10-04
+
+The first release since v0.3. Booty is no longer just a PXE server that hands
+out Flatcar and CoreOS: it now boots diskless and installed Bluefin Server
+nodes over UEFI HTTP Boot with Secure Boot, bootstraps the cluster itself
+(kubeadm or k0s, managed or external), rolls releases across the fleet with a
+health-gated autopilot, and exposes power control over WoL/SSH/Kubernetes API
+from the same UI. Proven on a five-node homelab of Bluefin Server and Flatcar
+hosts.
+
+This is a release candidate. See
+[docs/releases/v1.0.0-rc.1.md](docs/releases/v1.0.0-rc.1.md) for upgrade
+notes and known limitations.
+
+### Breaking changes
+
+- **OCI / ostree image cache removed.** The embedded registry that mirrored
+  each host's `ostreeImage` into `data/registry/` is gone, together with the
+  `/registry` and `/v2/` endpoints and the UI's Cache page. Hosts rebase
+  straight from their own registry, exactly what `{{ .OSTreeImage }}` renders.
+  `--ociGC` and `--ociGCEmpty` are accepted as deprecated no-ops so an old
+  command line still starts, and go away in the next release. On start-up an
+  empty `data/registry/` is removed silently; one that still holds blobs is
+  left in place with a warning. (#73)
+- **Data directory layout migrates to `data/<os>/<version>/`.** Flatcar,
+  CoreOS and Bluefin now keep each release under `data/<os>/<version>/`
+  behind relative `current`, `previous` and `lastGood` symlinks. Booty
+  migrates older layouts automatically on start-up; the pre-migration
+  top-level names (`data/flatcar_production_pxe.vmlinuz`,
+  `data/fedora-coreos-<version>-live-*`) stay as symlinks into
+  `<os>/current`, so anything that still references them keeps working.
+  (#40)
+- **Bluefin nodes get a `core` user; `root` is locked by the image.**
+  Upstream Bluefin Server 26.10 (projectbluefin/server#275) ships root locked
+  and runs sshd without PAM, so the previous "put keys on root" behaviour is
+  unusable. Booty now provisions `core` with your `--sshAuthorizedKeys`,
+  passwordless sudo and `sshd.service` enabled. SSH as `core`, not `root`.
+  (#70)
+- **`/update-check` on Bluefin answers `rebootRequired` from the target
+  rule.** The rule is the same for every OS now: `rebootRequired` when the
+  host's effective target (its `targetVersion` when set, else the fleet
+  target) differs from what it reports running. A diskless Bluefin host
+  behind its target is told to reboot and re-image. (#40)
+- **`--builtin` default gains `health` and `wol`.** The default value is now
+  `hostname,update,booted,sshkeys,health,wol`. Hosts pick up two new systemd
+  units on next boot: `booty-health.service` POSTs a health report to
+  `/health` after `multi-user.target`, and `10-booty-wol.link` arms
+  Wake-on-LAN on the host's NIC. Pass `--builtin=hostname,update,booted,sshkeys`
+  (or `none`) to opt out. (#40, #67)
+- **`GET /cluster` adds `source` / `connected` / `nodes` / `apiServer`, and
+  `ready` means "connected" in external mode.** In the default
+  `--controlPlane=external` there is no bootstrap to wait for, so `ready`
+  reports whether Booty can talk to the API server; `readyAt` is omitted. In
+  managed mode the meaning is unchanged (`kubeadm init` finished,
+  `/readyz` answers). (#64)
+- **Actuator order is kured, then SSH, then the Kubernetes API.** Reboots go
+  through kured when its DaemonSet is present, else `--rebootSSHKey`, else a
+  privileged reboot Pod from Booty's own image as the last resort. An
+  explicit SSH key now wins over the API actuator, which matches the operator
+  intent of handing Booty a key. Operator Power buttons never go through
+  kured. (#65, #67)
+- **`--coreOSChannel=none` and `--flatcarChannel=none` are now real
+  opt-outs.** Setting a channel to `none` stops version checks and downloads
+  for that OS, answers `/update-check` and `/info` as if no release were
+  cached, refuses new registrations of it with `400`, and serves an already
+  registered host a refusal menu. The directory is left on disk and listed by
+  `/storage` as `tracked:false` until you delete it by hand. (#73)
+- **`GET /autopilot` is bounded by default.** The answer now carries the
+  newest 10 `good` records whose files were pruned (plus every live record)
+  and the newest 100 of the 200-event ring; `releaseCount` and `eventCount`
+  say what was left out. Use `?releases=all` and `?events=all` for the whole
+  history. (#75)
+
+### Added
+
+- **Cluster bootstrap from PXE** (#32, #33, #34, #36). Booty provisions a
+  whole Kubernetes cluster from nothing: it generates the cluster CA under
+  `data/cluster/pki/` (or loads your `--clusterCADir`), renders the
+  control-plane host's Ignition and joins every other host as a worker, on
+  Flatcar, Fedora CoreOS and Bluefin Server. Two distributions are supported:
+  kubeadm (default) and k0s (`--clusterDistribution=k0s`), under either
+  `--controlPlane=managed` (Booty renders the control plane itself) or
+  `external` (today's join-only behaviour). `GET /cluster` reports the live
+  connection, bootstrap progress and per-host roles. kubeadm join tokens are
+  minted per boot through the Kubernetes API with `--kubeadmJoin=auto`
+  (one-hour TTL, cleaned up on the update tick); k0s worker tokens are
+  minted the same way. CNI (`--cni=cilium|calico|flannel|none`) is installed
+  from the control plane.
+- **Secure Boot, UEFI HTTP Boot and ProxyDHCP** (#25, #37, #38). `--secureBoot`
+  answers UEFI HTTP Boot clients over ProxyDHCP with a Microsoft-signed iPXE
+  shim that loads a signed iPXE, so machines with Secure Boot enabled can
+  netboot without disabling it. Flatcar kernels are verified against the
+  Flatcar Secure Boot CA extracted from the release itself once you assert
+  `--secureBootTrusted=flatcar` (and enrol the CA into the firmware `db`);
+  Fedora CoreOS boots through Fedora's shim; anything else gets a refusal
+  menu that explains the missing piece instead of a failed boot.
+  `--proxyDHCP` (PXE 2.1, off by default) answers PXE clients on UDP
+  67 + 4011 alongside your existing DHCP server, so the network needs no
+  `next-server`/`filename` for Booty-managed machines.
+- **Bluefin Server support** (#30, #39, #63). Booty serves Bluefin Server
+  diskless over UEFI HTTP Boot with a per-host Ignition config
+  (`/bluefin/<mac>/bluefin-node.ign`), or installs it to disk with
+  `doInstall` + `installDisk`. Hosts carry `stateDisk` (persistent `/var`),
+  `extensions` (opt-in `zfs` / `kubestellar` / `k0s` / NVIDIA driver and
+  `nvidia-container-toolkit` sysexts) and `mode`. Releases are tracked from
+  the GitHub releases of `--bluefinRepo` (default `projectbluefin/server`)
+  or from an ORAS OCI artifact via `--bluefinOCI`, every file verified
+  against the release's `SHA256SUMS` (plus the `SHA256SUMS.gpg` signature
+  when `--bluefinKeyring` is set, failing closed). Chainloading from iPXE
+  with Secure Boot off and a legacy BIOS diskless path cover older firmware.
+- **Configuration view and editor** (#31). `GET /config` shows every
+  effective setting with its source (flag / env / default), secrets redacted,
+  plus the Butane templates in play and whether each is writable. The UI's
+  Config page reads it, and a template editor (`GET/PUT
+  /config/template`, `POST /config/template/validate`) validates with Butane
+  and writes atomically inside the data directory; read-only mounts (a
+  Kubernetes ConfigMap, for example) are detected and refused with a clear
+  reason.
+- **Autopilot** (#40, #41, #42, #43, #57, #71, #72, #75). Booty is now a
+  self-healing upgrade controller. `--autopilot=guard` gates every reboot
+  into a release the host has not passed on (kernel fetched, OS up, no failed
+  units, Node Ready with workloads healthy inside `--autopilotHealthWindow`),
+  retries once, rolls the host back to `lastGood` and holds the fleet there
+  when the release is at fault, and gives up to `needs-hands` after
+  `--autopilotRetryAfter`. `--autopilot=full` adds a Bluefin canary-serial
+  rollout (one host at a time, canaries first), release quarantine and
+  skip-to-next. Health reports come from a `POST /health` builtin unit. A
+  report stub is kept per blamed release, rendered to
+  `data/autopilot/reports/<os>-<version>.md` with redaction (hostnames,
+  MACs, IPs, UUIDs, tokens), and `--autopilotIssues=<owner>/<repo>` with
+  `--githubToken` posts Bluefin quarantines as deduplicated GitHub issues
+  (prefix titles with `--autopilotIssueTitlePrefix` while testing against a
+  fork). Endpoints: `GET /autopilot` (bounded, see above),
+  `GET /autopilot/reports/<key>.md`,
+  `POST /autopilot/{os}/release/{version}/clear`,
+  `POST /autopilot/host/{mac}/clear`, all surfaced on the Autopilot page.
+- **Power** (#67, #68). Booty tracks each host's power state from the
+  signals it already sees plus a TCP probe, and exposes
+  `GET /power` and `POST /power/{mac}/{on,reboot,shutdown,cancel}`.
+  *Power on* sends Wake-on-LAN magic packets to every broadcast and the
+  host's own IP; *Reboot* and *Shutdown* go through the same SSH and API
+  actuators the autopilot uses (never kured), with drain, force and reason
+  fields. The UI shows a per-host badge with a tooltip, three buttons behind
+  an inline confirm, a fleet summary on the Overview and the events in the
+  Autopilot timeline.
+- **Storage page and `GET /storage`** (#73, #74). Replaces the OCI Cache
+  page. Reports the data directory by release with size, mtime, the links
+  that name it (`current` / `previous` / `lastGood`), the hosts running or
+  pinned to it, and the retention reason (`current`, `previous`, `lastGood`,
+  `pinned`, or `-` for "the next sync prunes it"). Pruned autopilot history
+  is joined in behind a *Show pruned release history* switch.
+- **"No agent yet" badge and fleet targets** (#68). Hosts that have never
+  reported (`running`, `lastCheck`, `booted`, `health` all empty -- pre-P1
+  boots, or `--builtin=none`) show a muted *no agent yet* badge instead of
+  an unknown version, and the Overview counts them. `GET /info.targets`
+  reports the hold-aware fleet target per OS so the Hosts table can mark
+  every host on-target or behind.
+- **Cluster card for external control planes** (#64). The Overview's Cluster
+  card reads *connected* / *unreachable* in external mode, with the node
+  count and API server shown when known.
+- **Release retention by reference** (#40). Pruning keeps exactly the
+  releases that `current`, `previous`, `lastGood` or any host's
+  `targetVersion` names, and removes every other release directory -- a bad
+  release can be rolled back to `lastGood` without a download, at the cost
+  of up to three releases on disk per OS.
+- **`booty node-reboot`** (#41). New subcommand run by the reboot Pod the
+  API actuator schedules: `sync`, then `SIGRTMIN+5` to PID 1 (reboot.target).
+  `--poweroff` sends `SIGRTMIN+4` instead.
+
+### Fixed
+
+- **Stability gate cap.** The L2 "node Ready and stable" requirement is
+  capped at half of `--autopilotHealthWindow`, so a short window stays
+  passable. (#72)
+- **Serial-rollout hold immediacy.** The Bluefin fleet target is held at
+  `lastGood` the instant a new release lands, not from the controller's next
+  tick, so a host whose update timer fires in between still sees the held
+  target. (#72)
+- **Netboot-version-aware `SHA256SUMS`.** `/bluefin/<mac>/` serves the
+  checksum files of the release this host's UKI or kernel was fetched from
+  (`netbootVersion`), so an initrd keeps verifying against its own release
+  even when the autopilot repoints the host mid-boot. (#72)
+- **Blank containerd disk format on Bluefin.** A Bluefin kubeadm worker
+  formats `--containerdDisk` ext4 once if and only if `blkid -p` finds the
+  device blank (no filesystem, no partition table), refuses its own
+  `stateDisk` / `installDisk`, and mounts whatever was already there as-is.
+  The old "never format" rule used to fail the mount and with it containerd,
+  the kubelet and the join on a fresh disk. (#69)
+- **Health gate ignores Booty's own reboot Pod.** The health gate no longer
+  counts the privileged `booty-node-reboot-<node>` Pod (which necessarily
+  ends `Failed` when the node reboots underneath it) as an unhealthy
+  workload. (#71)
+- **L0 only from the host's own address.** A kernel or UKI fetch counts as
+  a boot (starting the health gate, moving the power tracker) only when it
+  comes from the host's recorded IP, so a stray `curl` of
+  `/booty.ipxe?mac=…` from a workstation is served as usual but starts no
+  gate and changes no power state. (#72)
+- **cosign v3 verify.** Provenance verification uses
+  `cosign verify-attestation --new-bundle-format=false`, which keeps reading
+  the legacy OCI `.att` tag the SLSA generator still emits (cosign v3
+  otherwise auto-detects bundles and misses it). (#59)
+- **Flaky controller test.** The controller tracks its goroutines so tests
+  can wait for them. (#72)
+- **Storage page follows the bounded `/autopilot` answer.** The Storage page
+  fetches `?releases=all` so the pruned-history join sees the whole release
+  history, not just the default window. (#75)
+- **Storage tables align across OSes.** Untracked and empty cells read
+  consistently between Flatcar, CoreOS and Bluefin. (#74)
+
+### Security
+
+- **SLSA provenance on release images.** Release tags are built by GitHub
+  Actions with SLSA level-3 provenance, signed with cosign (keyless), and
+  the attestation is verified in CI before the build is considered green.
+  Verify locally with:
+
+  ```
+  COSIGN_EXPERIMENTAL=1 cosign verify-attestation --new-bundle-format=false \
+    --certificate-identity-regexp=".*" --certificate-oidc-issuer-regexp=".*" \
+    --type slsaprovenance ghcr.io/jeefy/booty@<digest>
+  ```
+
+### Documentation
+
+- README: Secure Boot / UEFI HTTP Boot section with enrolment instructions
+  (#37, #38), Bluefin Server section covering releases, boot paths, Ignition,
+  NVIDIA and install (#30, #39, #60, #63), cluster bootstrap and managed k0s
+  (#32 – #35), autopilot P1–P5 (#40, #41, #42, #43, #57), Power (#67),
+  Storage (#73), configuration editor (#31), actuator order (#65), `/cluster`
+  connection fields and what `ready` means (#64), Bluefin `core` user (#70),
+  no-agent badge and `/info.targets` (#68), bounded `/autopilot` (#75).
+- `examples/k8s.yaml` rewritten as a production-shaped Deployment: the
+  ServiceAccount, Roles and ClusterRole the autopilot and token minting
+  need, a ConfigMap with the site-only Butane, a Secret with the SSH keys,
+  `/healthz` probes, `NET_BIND_SERVICE`+`NET_RAW` only, and the
+  `POD_NAMESPACE` / `BOOTY_IMAGE` environment variables the API actuator
+  reads. (#27, #41)
+
+## [0.3] - 2023-12-21
+
+See the [v0.3 release on GitHub](https://github.com/jeefy/booty/releases/tag/v0.3).
