@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-06
+
+No code changes since 1.0.0-rc.1 apart from the CI tagging fix (#77: `latest`
+follows only non-prerelease tags). The release candidate ran the homelab for
+24 hours and rolled four unattended upstream Bluefin Server releases
+(26.10.974, .1001, .1004, .1012) canary-serial through four nodes: 15 health
+gates, 15 healthy, no rollbacks, no holds left behind.
+
 ## [1.0.0-rc.1] - 2026-10-04
 
 The first release since v0.3. Booty is no longer just a PXE server that hands
