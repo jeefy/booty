@@ -37,6 +37,12 @@ type Settings struct {
 	// release sits in before its single retry.
 	HealthWindow time.Duration
 	RetryAfter   time.Duration
+	// Soak and Cooldown pace the rollout (plan 2026-10-07-soak-cooldown):
+	// how long a release must be healthy on a canary before the fleet may
+	// move to it, and the minimum time between two waves of one OS. Both
+	// 0 keeps the v1.0.0 behaviour.
+	Soak     time.Duration
+	Cooldown time.Duration
 	// Issues is the owner/repo quarantined Bluefin reports are filed to
 	// with GitHubToken; empty keeps them on disk. IssueTitlePrefix goes in
 	// front of every issue title and comment header, verbatim.
@@ -63,6 +69,8 @@ func FromConfig() Settings {
 		SSHKey:           viper.GetString(config.RebootSSHKey),
 		HealthWindow:     viper.GetDuration(config.AutopilotHealthWin),
 		RetryAfter:       viper.GetDuration(config.AutopilotRetryAfter),
+		Soak:             viper.GetDuration(config.AutopilotSoak),
+		Cooldown:         viper.GetDuration(config.AutopilotCooldown),
 		Issues:           strings.Trim(strings.TrimSpace(viper.GetString(config.AutopilotIssues)), "/"),
 		IssueTitlePrefix: viper.GetString(config.AutopilotIssueTitlePrefix),
 		GitHubToken:      strings.TrimSpace(viper.GetString(config.GithubToken)),
@@ -98,6 +106,12 @@ func (s Settings) Validate() error {
 	}
 	if s.Enabled() && s.RetryAfter <= 0 {
 		return fmt.Errorf("--%s must be positive, got %s", config.AutopilotRetryAfter, s.RetryAfter)
+	}
+	if s.Soak < 0 {
+		return fmt.Errorf("--%s must not be negative, got %s", config.AutopilotSoak, s.Soak)
+	}
+	if s.Cooldown < 0 {
+		return fmt.Errorf("--%s must not be negative, got %s", config.AutopilotCooldown, s.Cooldown)
 	}
 	if s.SSHKey != "" {
 		if _, err := os.Stat(s.SSHKey); err != nil {
@@ -172,6 +186,8 @@ func Setup(s Settings, shared *kubeadm.Client) (*Autopilot, error) {
 		CNI:          s.ReportCNI(),
 		HealthWindow: s.HealthWindow,
 		RetryAfter:   s.RetryAfter,
+		Soak:         s.Soak,
+		Cooldown:     s.Cooldown,
 	})
 	if err != nil {
 		return nil, err
@@ -221,6 +237,8 @@ type Status struct {
 	DryRun       bool              `json:"dryRun"`
 	HealthWindow string            `json:"healthWindow,omitempty"`
 	RetryAfter   string            `json:"retryAfter,omitempty"`
+	Soak         string            `json:"soak,omitempty"`
+	Cooldown     string            `json:"cooldown,omitempty"`
 	*controller.Status
 }
 
@@ -247,6 +265,12 @@ func (a *Autopilot) StatusWith(ctx context.Context, opts controller.StatusOption
 		cs := a.Controller.StatusWith(opts)
 		st.Status, st.DryRun = &cs, false
 		st.HealthWindow, st.RetryAfter = a.Settings.HealthWindow.String(), a.Settings.RetryAfter.String()
+		if a.Settings.Soak > 0 {
+			st.Soak = a.Settings.Soak.String()
+		}
+		if a.Settings.Cooldown > 0 {
+			st.Cooldown = a.Settings.Cooldown.String()
+		}
 	}
 	return st
 }
@@ -284,6 +308,12 @@ func (a *Autopilot) LogStatus(ctx context.Context) {
 	attrs := []any{"mode", st.Mode, "actuator", st.Actuator, "apiServer", st.Cluster.APIServer, "reachable", st.Cluster.Reachable, "kured", st.Cluster.Kured, "nodes", st.Cluster.Nodes, "namespace", a.Settings.Namespace, "image", a.Settings.Image, "drainTimeout", a.Settings.DrainTimeout, "healthWindow", a.Settings.HealthWindow, "retryAfter", a.Settings.RetryAfter}
 	if st.Cluster.Error != "" {
 		attrs = append(attrs, "error", st.Cluster.Error)
+	}
+	if a.Settings.Soak > 0 {
+		attrs = append(attrs, "soak", a.Settings.Soak)
+	}
+	if a.Settings.Cooldown > 0 {
+		attrs = append(attrs, "cooldown", a.Settings.Cooldown)
 	}
 	slog.Info("Autopilot on: health gate, retry, rollback to lastGood and fleet hold for every OS"+map[bool]string{true: "; Bluefin canary-serial rollout, TIMEOUT/retry, quarantine and skip-to-next", false: ""}[st.Mode == config.AutopilotFull], attrs...)
 	if a.Settings.Issues != "" {
