@@ -9,8 +9,8 @@ import (
 )
 
 // compactReleases bounds the release history in state.json without
-// forgetting a verdict. A good record whose files are gone, that is
-// neither current nor lastGood and never went through TIMEOUT or
+// forgetting a verdict. A good (or skipped) record whose files are gone,
+// that is neither current nor lastGood and never went through TIMEOUT or
 // quarantine (no report), is folded: its per-host lists go (Healthy,
 // FailedOn), version/state/since/attempts/class stay. Quarantined and
 // TIMEOUT records are never touched. Per OS, the good records without
@@ -34,7 +34,7 @@ func (c *Controller) compactReleases() {
 		c.dirty = true
 		var history []*Release
 		for _, r := range st.Releases {
-			if r.State != ReleaseGood || slices.Contains(cached, r.Version) || r.Version == cur || r.Version == lastGood {
+			if !r.settled() || slices.Contains(cached, r.Version) || r.Version == cur || r.Version == lastGood {
 				continue
 			}
 			history = append(history, r)
