@@ -899,14 +899,24 @@ export function normalizeClusterInfo(raw: RawClusterInfo | null | undefined): Cl
   }
 }
 
-export const RELEASE_STATES = ['rolling', 'timeout', 'quarantined', 'good'] as const
+/**
+ * Release states; `skipped` is a release the fleet moved past without ever
+ * adopting it (a newer soaked release won the wave) and is history like `good`.
+ */
+export const RELEASE_STATES = ['rolling', 'timeout', 'quarantined', 'good', 'skipped'] as const
 export type ReleaseState = (typeof RELEASE_STATES)[number]
 
 export const RELEASE_STATE_LABEL: Record<ReleaseState, { text: string; badge: string }> = {
   rolling: { text: 'Rolling', badge: 'text-bg-primary' },
   timeout: { text: 'Timeout', badge: 'text-bg-warning' },
   quarantined: { text: 'Quarantined', badge: 'text-bg-danger' },
-  good: { text: 'Good', badge: 'text-bg-success' }
+  good: { text: 'Good', badge: 'text-bg-success' },
+  skipped: { text: 'Skipped', badge: 'text-bg-success' }
+}
+
+/** States that are history rather than live: folded behind the good-releases toggle. */
+export function isHistoryState(state: ReleaseState): boolean {
+  return state === 'good' || state === 'skipped'
 }
 
 export interface AutopilotRelease {
@@ -922,6 +932,22 @@ export interface AutopilotRelease {
   failing: boolean
   /** False once the release's files were pruned; the record stays as history. */
   cached: boolean
+  /** When the first host passed the gate on it (the soak clock); "" until then or from an older server. */
+  firstHealthyAt: string
+  /** Server-computed: healthy on a canary for the soak, so non-canaries may move; false from an older server. */
+  soaked: boolean
+}
+
+export const WAVE_OUTCOMES = ['rolling', 'done', 'aborted'] as const
+export type WaveOutcome = (typeof WAVE_OUTCOMES)[number]
+
+/** One pass of an OS's non-canary hosts into one release (`OSState.wave`). */
+export interface AutopilotWave {
+  release: string
+  startedAt: string
+  /** "" while the wave is open. */
+  endedAt: string
+  outcome: WaveOutcome
 }
 
 export interface AutopilotOS {
@@ -933,6 +959,12 @@ export interface AutopilotOS {
   releases: AutopilotRelease[]
   /** How many records the controller holds for the OS in all. */
   releaseCount: number
+  /** The newest wave; null when there never was one (or the server predates waves). */
+  wave: AutopilotWave | null
+  /** RFC3339, only while the cooldown blocks the next wave; "" otherwise. */
+  nextWaveAt: string
+  /** Registered, not-excluded hosts of the OS with `canary: true`. */
+  canaries: number
 }
 
 export interface AutopilotAttempt {
@@ -1006,6 +1038,10 @@ export interface AutopilotStatus {
   dryRun: boolean
   healthWindow: string
   retryAfter: string
+  /** `--autopilotSoak` as a Go duration string; "" when 0 or from an older server. */
+  soak: string
+  /** `--autopilotCooldown` as a Go duration string; "" when 0 or from an older server. */
+  cooldown: string
   cluster: { reachable: boolean; kured: boolean; nodes: number; apiServer: string; error: string }
   /** Changes whenever the controller's state did; 0 from a server that does not send it. */
   revision: number
@@ -1028,7 +1064,10 @@ export type RawAutopilotStatus = Partial<
   os?: Partial<
     Record<
       HostOS,
-      Partial<Omit<AutopilotOS, 'releases'>> & { releases?: Partial<AutopilotRelease>[] | null }
+      Partial<Omit<AutopilotOS, 'releases' | 'wave'>> & {
+        releases?: Partial<AutopilotRelease>[] | null
+        wave?: (Partial<Omit<AutopilotWave, 'outcome'>> & { outcome?: string }) | null
+      }
     >
   >
   hosts?: (Partial<Omit<AutopilotHost, 'episode'>> & {
@@ -1045,7 +1084,17 @@ export type RawAutopilotStatus = Partial<
 }
 
 function emptyOS(): AutopilotOS {
-  return { fleetTarget: '', current: '', lastGood: '', held: false, releases: [], releaseCount: 0 }
+  return {
+    fleetTarget: '',
+    current: '',
+    lastGood: '',
+    held: false,
+    releases: [],
+    releaseCount: 0,
+    wave: null,
+    nextWaveAt: '',
+    canaries: 0
+  }
 }
 
 export function normalizeAutopilotStatus(
@@ -1065,8 +1114,11 @@ export function normalizeAutopilotStatus(
       healthy: r.healthy ?? [],
       failedOn: r.failedOn ?? '',
       failing: r.failing ?? false,
-      cached: r.cached ?? true
+      cached: r.cached ?? true,
+      firstHealthyAt: r.firstHealthyAt ?? '',
+      soaked: r.soaked ?? false
     }))
+    const wave = block?.wave
     os[name] = {
       ...emptyOS(),
       fleetTarget: block?.fleetTarget ?? '',
@@ -1074,7 +1126,18 @@ export function normalizeAutopilotStatus(
       lastGood: block?.lastGood ?? '',
       held: block?.held ?? false,
       releases,
-      releaseCount: Math.max(releases.length, nonNegative(block?.releaseCount))
+      releaseCount: Math.max(releases.length, nonNegative(block?.releaseCount)),
+      wave:
+        wave && wave.release
+          ? {
+              release: wave.release,
+              startedAt: wave.startedAt ?? '',
+              endedAt: wave.endedAt ?? '',
+              outcome: oneOf(wave.outcome, WAVE_OUTCOMES, wave.endedAt ? 'done' : 'rolling')
+            }
+          : null,
+      nextWaveAt: block?.nextWaveAt ?? '',
+      canaries: nonNegative(block?.canaries)
     }
   }
   const events = (raw?.events ?? []).map((e) => ({
@@ -1091,6 +1154,8 @@ export function normalizeAutopilotStatus(
     dryRun: raw?.dryRun ?? true,
     healthWindow: raw?.healthWindow ?? '',
     retryAfter: raw?.retryAfter ?? '',
+    soak: raw?.soak ?? '',
+    cooldown: raw?.cooldown ?? '',
     cluster: {
       reachable: raw?.cluster?.reachable ?? false,
       kured: raw?.cluster?.kured ?? false,

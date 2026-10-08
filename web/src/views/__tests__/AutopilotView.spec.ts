@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises as flushMicrotasks, mount } from '@vue/test-utils'
 import AutopilotView from '@/views/AutopilotView.vue'
 import { flushPromises, jsonResponse, mockFetch, requestBody } from '@/__tests__/helpers'
@@ -11,9 +11,17 @@ const RouterLinkStub = {
 const hosts = {
   hosts: {
     'aa:bb:cc:dd:ee:01': { mac: 'aa:bb:cc:dd:ee:01', hostname: 'ehrlitan', os: 'flatcar' },
-    'aa:bb:cc:dd:ee:02': { mac: 'aa:bb:cc:dd:ee:02', hostname: 'aren', os: 'bluefin' },
+    'aa:bb:cc:dd:ee:02': { mac: 'aa:bb:cc:dd:ee:02', hostname: 'aren', os: 'bluefin', canary: true },
     'aa:bb:cc:dd:ee:03': { mac: 'aa:bb:cc:dd:ee:03', hostname: 'gredfallan', os: 'flatcar' },
-    'aa:bb:cc:dd:ee:04': { mac: 'aa:bb:cc:dd:ee:04', hostname: 'kalam', os: 'flatcar' }
+    'aa:bb:cc:dd:ee:04': { mac: 'aa:bb:cc:dd:ee:04', hostname: 'kalam', os: 'flatcar' },
+    'aa:bb:cc:dd:ee:05': { mac: 'aa:bb:cc:dd:ee:05', hostname: 'brys', os: 'bluefin' },
+    'aa:bb:cc:dd:ee:06': { mac: 'aa:bb:cc:dd:ee:06', hostname: 'cuttle', os: 'bluefin' },
+    'aa:bb:cc:dd:ee:07': {
+      mac: 'aa:bb:cc:dd:ee:07',
+      hostname: 'dujek',
+      os: 'bluefin',
+      mode: 'installed'
+    }
   },
   unknownHosts: {}
 }
@@ -185,6 +193,60 @@ const guard = {
 
 const reportMarkdown =
   '# Flatcar 4800.0.0: failed-units (autopilot report)\n\n<!-- booty-autopilot: flatcar 4800.0.0 abc -->\n\n| Boot path | `uefi-pxe` |\n'
+
+const NOW = new Date('2026-10-07T12:00:00Z')
+
+const bluefinHosts = [
+  { mac: 'aa:bb:cc:dd:ee:02', os: 'bluefin', healthyOn: '26.10.880', episode: null },
+  { mac: 'aa:bb:cc:dd:ee:05', os: 'bluefin', healthyOn: '26.10.880', pinned: true, episode: null },
+  { mac: 'aa:bb:cc:dd:ee:06', os: 'bluefin', healthyOn: '26.09.673', pinned: true, episode: null },
+  { mac: 'aa:bb:cc:dd:ee:07', os: 'bluefin', healthyOn: '', episode: null }
+]
+
+const pacedBluefin = {
+  fleetTarget: '26.09.673',
+  current: '26.10.880',
+  lastGood: '26.09.673',
+  held: true,
+  canaries: 1,
+  wave: { release: '26.10.880', startedAt: '2026-10-07T09:00:00Z', outcome: 'rolling' },
+  releases: [
+    {
+      os: 'bluefin',
+      version: '26.10.880',
+      state: 'rolling',
+      since: '2026-10-06T18:00:00Z',
+      firstHealthyAt: '2026-10-06T20:00:00Z',
+      soaked: true
+    },
+    {
+      os: 'bluefin',
+      version: '26.10.870',
+      state: 'rolling',
+      since: '2026-10-06T22:00:00Z',
+      firstHealthyAt: '2026-10-06T23:00:00Z',
+      soaked: false
+    },
+    { os: 'bluefin', version: '26.10.865', state: 'rolling', since: '2026-10-07T11:00:00Z' },
+    { os: 'bluefin', version: '26.10.860', state: 'skipped', since: '2026-10-05T12:00:00Z' },
+    { os: 'bluefin', version: '26.09.673', state: 'good', since: '2026-09-27T00:00:00Z' }
+  ]
+}
+
+const paced = {
+  ...guard,
+  soak: '24h0m0s',
+  cooldown: '48h0m0s',
+  os: { ...guard.os, bluefin: pacedBluefin },
+  hosts: [...guard.hosts.filter((h) => h.os !== 'bluefin'), ...bluefinHosts]
+}
+
+function withWave(wave: object | null, extra: object = {}) {
+  return {
+    ...paced,
+    os: { ...paced.os, bluefin: { ...pacedBluefin, ...extra, wave } }
+  }
+}
 
 const powerEvents = {
   hosts: {},
@@ -614,5 +676,187 @@ describe('AutopilotView', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  describe('soak and cooldown', () => {
+    const bluefinRow = (wrapper: ReturnType<typeof mountView>['wrapper']) =>
+      wrapper.find('[data-testid="autopilot-os-table"] tr[data-os="bluefin"]')
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(NOW)
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('shows soak and cooldown next to the health window, and omits them when unset', async () => {
+      const { wrapper } = mountView(paced)
+      await flushPromises()
+      const clocks = wrapper.find('[data-testid="autopilot-clocks"]')
+      expect(clocks.text()).toBe('health window 15m · retry after 1h · soak 24h · cooldown 48h')
+
+      vi.unstubAllGlobals()
+      const plain = mountView(guard)
+      await flushPromises()
+      expect(plain.wrapper.find('[data-testid="autopilot-clocks"]').text()).toBe(
+        'health window 15m · retry after 1h'
+      )
+    })
+
+    it('shows the rolling wave with the non-canary host count from /booty.json', async () => {
+      const { wrapper } = mountView(paced)
+      await flushPromises()
+      const wave = bluefinRow(wrapper).find('[data-wave]')
+      expect(wave.attributes('data-wave')).toBe('rolling')
+      expect(wave.text()).toBe('Wave wave into 26.10.880 · 1/2 hosts · started 3h ago')
+      expect(
+        wrapper.find('[data-testid="autopilot-os-table"] tr[data-os="flatcar"] [data-wave]').exists()
+      ).toBe(false)
+    })
+
+    it('omits the host count when /booty.json is unavailable', async () => {
+      mockFetch((url) => {
+        if (url === '/autopilot') return jsonResponse(paced)
+        if (url === '/power') return jsonResponse({ ...powerEvents, events: [] })
+        return jsonResponse({ error: `unexpected ${url}` }, 500)
+      })
+      const wrapper = mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } })
+      await flushPromises()
+      expect(bluefinRow(wrapper).find('[data-wave]').text()).toBe(
+        'Wave wave into 26.10.880 · started 3h ago'
+      )
+    })
+
+    it('shows the last wave and the cooldown until the next one', async () => {
+      const { wrapper } = mountView(
+        withWave(
+          {
+            release: '26.10.880',
+            startedAt: '2026-10-06T16:00:00Z',
+            endedAt: '2026-10-06T20:00:00Z',
+            outcome: 'done'
+          },
+          { nextWaveAt: '2026-10-08T16:00:00Z' }
+        )
+      )
+      await flushPromises()
+      const wave = bluefinRow(wrapper).find('[data-wave]')
+      expect(wave.attributes('data-wave')).toBe('done')
+      expect(wave.text()).toBe('Wave last wave done 16h ago · next wave in 1d')
+      expect(wave.attributes('title')).not.toBe('')
+    })
+
+    it('shows a done wave without a pending cooldown, and a cooldown without any wave', async () => {
+      const done = mountView(
+        withWave({
+          release: '26.10.880',
+          startedAt: '2026-10-06T16:00:00Z',
+          endedAt: '2026-10-06T20:00:00Z',
+          outcome: 'done'
+        })
+      )
+      await flushPromises()
+      expect(bluefinRow(done.wrapper).find('[data-wave]').text()).toBe(
+        'Wave last wave done 16h ago'
+      )
+
+      vi.unstubAllGlobals()
+      const pending = mountView(withWave(null, { nextWaveAt: '2026-10-07T14:00:00Z' }))
+      await flushPromises()
+      const wave = bluefinRow(pending.wrapper).find('[data-wave]')
+      expect(wave.attributes('data-wave')).toBe('pending')
+      expect(wave.text()).toBe('Wave next wave in 2h')
+
+      vi.unstubAllGlobals()
+      const none = mountView(withWave(null))
+      await flushPromises()
+      expect(bluefinRow(none.wrapper).find('[data-wave]').exists()).toBe(false)
+    })
+
+    it('names the verdict of an aborted wave, falling back to "bad"', async () => {
+      const quarantined = pacedBluefin.releases.map((r) =>
+        r.version === '26.10.880' ? { ...r, state: 'quarantined' } : r
+      )
+      const { wrapper } = mountView(
+        withWave(
+          {
+            release: '26.10.880',
+            startedAt: '2026-10-07T09:00:00Z',
+            endedAt: '2026-10-07T11:00:00Z',
+            outcome: 'aborted'
+          },
+          { releases: quarantined }
+        )
+      )
+      await flushPromises()
+      const wave = bluefinRow(wrapper).find('[data-wave]')
+      expect(wave.attributes('data-wave')).toBe('aborted')
+      expect(wave.text()).toBe('Wave wave aborted: 26.10.880 quarantined')
+
+      vi.unstubAllGlobals()
+      const unknown = mountView(
+        withWave({
+          release: '26.10.999',
+          startedAt: '2026-10-07T09:00:00Z',
+          endedAt: '2026-10-07T11:00:00Z',
+          outcome: 'aborted'
+        })
+      )
+      await flushPromises()
+      expect(bluefinRow(unknown.wrapper).find('[data-wave]').text()).toBe(
+        'Wave wave aborted: 26.10.999 bad'
+      )
+    })
+
+    it('badges rolling releases as soaking or soaked, and nothing before a host is healthy', async () => {
+      const { wrapper } = mountView(paced)
+      await flushPromises()
+      const row = bluefinRow(wrapper)
+      const soaked = row.find('[data-release="26.10.880"] [data-soak]')
+      expect(soaked.attributes('data-soak')).toBe('soaked')
+      expect(soaked.text()).toBe('soaked')
+      expect(soaked.classes()).toContain('text-bg-success')
+      const soaking = row.find('[data-release="26.10.870"] [data-soak]')
+      expect(soaking.attributes('data-soak')).toBe('soaking')
+      expect(soaking.text()).toBe('soaking 13h / 24h')
+      expect(soaking.classes()).toContain('text-bg-light')
+      expect(row.find('[data-release="26.10.865"] [data-soak]').exists()).toBe(false)
+    })
+
+    it('shows no soak badge when no soak is configured', async () => {
+      const { wrapper } = mountView({ ...paced, soak: undefined })
+      await flushPromises()
+      expect(bluefinRow(wrapper).findAll('[data-soak]')).toHaveLength(0)
+    })
+
+    it('folds skipped releases in with the good ones and renders them alike', async () => {
+      const { wrapper } = mountView(paced)
+      await flushPromises()
+      const row = bluefinRow(wrapper)
+      expect(row.findAll('[data-release]').map((r) => r.attributes('data-release'))).toEqual([
+        '26.10.880',
+        '26.10.870',
+        '26.10.865'
+      ])
+      const toggle = row.find('[data-action="toggle-good"]')
+      expect(toggle.text()).toBe('Show 2 good releases')
+      await toggle.trigger('click')
+      expect(row.findAll('[data-release]').map((r) => r.attributes('data-release'))).toEqual([
+        '26.10.880',
+        '26.10.870',
+        '26.10.865',
+        '26.10.860',
+        '26.09.673'
+      ])
+      const skipped = row.find('[data-release="26.10.860"] [data-state="skipped"]')
+      expect(skipped.text()).toBe('Skipped')
+      expect(skipped.classes()).toEqual(
+        row.find('[data-release="26.09.673"] [data-state="good"]').classes()
+      )
+      expect(row.find('[data-release="26.10.860"] [data-action="clear"]').exists()).toBe(false)
+      expect(row.find('[data-release="26.10.860"] [data-soak]').exists()).toBe(false)
+    })
   })
 })
