@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { formatAbsolute, formatRelative, formatTime, parseTime } from '@/utils/time'
+import {
+  formatAbsolute,
+  formatDuration,
+  formatElapsed,
+  formatRelative,
+  formatSpan,
+  formatTime,
+  formatUntil,
+  parseTime
+} from '@/utils/time'
 
 const now = new Date('2026-09-24T12:00:00Z')
 
@@ -45,5 +54,43 @@ describe('formatAbsolute', () => {
   it('returns empty string for unset values and a locale string otherwise', () => {
     expect(formatAbsolute('')).toBe('')
     expect(formatAbsolute('2026-09-24T11:00:00Z')).not.toBe('')
+  })
+})
+
+describe('formatSpan, formatElapsed and formatUntil', () => {
+  it.each([
+    [30, '<1m'],
+    [90, '1m'],
+    [13 * 3600, '13h'],
+    [28 * 3600, '1d'],
+    [40 * 24 * 3600, '1mo']
+  ])('formats %d seconds as %s', (seconds, expected) => {
+    expect(formatSpan(seconds)).toBe(expected)
+  })
+
+  it('measures elapsed time without the "ago" suffix', () => {
+    expect(formatElapsed('2026-09-23T23:00:00Z', now)).toBe('13h')
+    expect(formatElapsed('', now)).toBe('')
+  })
+
+  it('measures time until a future instant and is empty once it passed', () => {
+    expect(formatUntil('2026-09-25T16:00:00Z', now)).toBe('1d')
+    expect(formatUntil('2026-09-24T14:00:00Z', now)).toBe('2h')
+    expect(formatUntil('2026-09-24T11:00:00Z', now)).toBe('')
+    expect(formatUntil('', now)).toBe('')
+  })
+})
+
+describe('formatDuration', () => {
+  it.each([
+    ['24h0m0s', '24h'],
+    ['48h0m0s', '48h'],
+    ['15m0s', '15m'],
+    ['1h30m0s', '1h30m'],
+    ['1m30s', '1m30s'],
+    ['0s', '0s'],
+    ['', '']
+  ])('tidies %s to %s', (value, expected) => {
+    expect(formatDuration(value)).toBe(expected)
   })
 })
