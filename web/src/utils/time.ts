@@ -37,3 +37,29 @@ export function formatAbsolute(value: string | null | undefined): string {
 export function formatTime(value: string | null | undefined, now?: Date): string {
   return formatRelative(value, now)
 }
+
+export function formatSpan(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 60) return '<1m'
+  for (const [label, unit] of UNITS) {
+    if (seconds >= unit) return `${Math.floor(seconds / unit)}${label}`
+  }
+  return '<1m'
+}
+
+export function formatElapsed(value: string | null | undefined, now: Date = new Date()): string {
+  const date = parseTime(value)
+  if (!date) return ''
+  return formatSpan((now.getTime() - date.getTime()) / 1000)
+}
+
+export function formatUntil(value: string | null | undefined, now: Date = new Date()): string {
+  const date = parseTime(value)
+  if (!date || date.getTime() <= now.getTime()) return ''
+  return formatSpan((date.getTime() - now.getTime()) / 1000)
+}
+
+/** Drops the zero tail Go's Duration.String() prints: `24h0m0s` → `24h`, `15m0s` → `15m`. */
+export function formatDuration(value: string | null | undefined): string {
+  if (!value) return ''
+  return value.replace(/h0m0s$/, 'h').replace(/m0s$/, 'm')
+}

@@ -672,6 +672,9 @@ func (c *Controller) healthy(e *Episode) {
 	e.State = hardware.AutopilotIdle
 	if !contains(r.Healthy, e.MAC) {
 		r.Healthy = append(r.Healthy, e.MAC)
+		if r.FirstHealthyAt.IsZero() {
+			r.FirstHealthyAt = c.now()
+		}
 	}
 	if r.FailedOn == e.MAC || e.Attempt > 1 {
 		r.Failing = false

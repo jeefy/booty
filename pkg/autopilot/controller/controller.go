@@ -26,6 +26,10 @@ type Options struct {
 	StatePath    string
 	HealthWindow time.Duration
 	RetryAfter   time.Duration
+	// Soak and Cooldown pace the rollout (plan 2026-10-07-soak-cooldown);
+	// both zero is the unpaced v1.0.0 behaviour.
+	Soak     time.Duration
+	Cooldown time.Duration
 	// Poll is how often Run reconciles (default 30 s).
 	Poll time.Duration
 	// IgnitionGrace is how long after L0 a missing Ignition fetch becomes
@@ -140,6 +144,11 @@ func New(opts Options) (*Controller, error) {
 	if c.full() {
 		c.opts.Fleet.SerialRollout("bluefin")
 	}
+	if c.paced() {
+		for _, osName := range osNames() {
+			c.opts.Fleet.SerialRollout(osName)
+		}
+	}
 	c.regenerateReports()
 	return c, nil
 }
@@ -148,6 +157,16 @@ func New(opts Options) (*Controller, error) {
 func (c *Controller) Mode() string { return c.opts.Mode }
 
 func (c *Controller) full() bool { return c.opts.Mode == config.AutopilotFull }
+
+// paced reports whether the soak or the cooldown is on: non-canary hosts
+// then move in waves instead of following current. Unpaced OSes never
+// run driveWaves, which keeps v1.0.0 behaviour byte for byte.
+func (c *Controller) paced() bool { return c.opts.Soak > 0 || c.opts.Cooldown > 0 }
+
+// serial reports whether osName's reboots are the controller's own, one
+// at a time (Bluefin under full); every other OS is pinned and rebooted
+// by kured or the host's update timer.
+func (c *Controller) serial(osName string) bool { return c.full() && osName == "bluefin" }
 
 func (c *Controller) now() time.Time { return c.opts.Now() }
 
@@ -231,6 +250,7 @@ func (c *Controller) Tick(ctx context.Context) {
 	c.reconcileReleases()
 	c.evaluateGates(ctx)
 	c.driveRollouts(ctx)
+	c.driveWaves()
 	c.advanceLastGood()
 	c.compactReleases()
 	c.applyHolds()
@@ -397,8 +417,8 @@ func (c *Controller) syncHostSummaries() {
 
 // applyHolds derives each OS's fleet-target hold from its releases and
 // mode and applies it: held at lastGood while current is bad or a host is
-// failing on it, held at the rollout candidate (or lastGood) for Bluefin
-// under full until the whole fleet passed.
+// failing on it, held at lastGood for Bluefin under full and for every
+// paced OS until the whole fleet passed.
 func (c *Controller) applyHolds() {
 	for _, osName := range osNames() {
 		st := c.state.osState(osName)
@@ -424,7 +444,7 @@ func (c *Controller) desiredHold(osName string) string {
 		return ""
 	}
 	st := c.state.osState(osName)
-	if c.full() && osName == "bluefin" {
+	if c.serial(osName) || c.paced() {
 		if cur == lastGood {
 			return ""
 		}

@@ -63,7 +63,8 @@ func (c *Controller) rolloutCandidate(osName string) string {
 // driveRollouts is the Bluefin canary-serial rollout under full: one host
 // at a time gets targetVersion=R and a reboot, the next one only after the
 // previous passed the gate; when every host passed, pins are cleared and
-// lastGood advances (advanceLastGood).
+// lastGood advances (advanceLastGood). When the rollout is paced only the
+// canaries move this way; driveWaves moves everyone else.
 func (c *Controller) driveRollouts(ctx context.Context) {
 	if !c.full() {
 		return
@@ -87,6 +88,9 @@ func (c *Controller) driveRollouts(ctx context.Context) {
 		return
 	}
 	for _, h := range canaryOrder(hosts) {
+		if c.paced() && !h.Canary {
+			continue
+		}
 		if c.healthyOn(h) == candidate || contains(r.Healthy, h.MAC) {
 			continue
 		}
@@ -155,6 +159,7 @@ func (c *Controller) advanceLastGood() {
 			}
 			c.setReleaseState(r, ReleaseGood)
 			c.event(EventRelease, osName, v, "", "every host is healthy on it: lastGood = "+v)
+			c.skipOlderReleases(osName, v)
 			c.applyHolds()
 			for _, h := range c.hostsOf(osName) {
 				if hs := c.state.Hosts[h.MAC]; hs != nil && hs.Pinned && h.TargetVersion == v {
@@ -165,8 +170,13 @@ func (c *Controller) advanceLastGood() {
 	}
 }
 
+// fleetHealthyOn reports whether every booted host of osName is healthy on
+// version. A canary counts when it is on version or on a newer release
+// that is not bad: it moves ahead of the fleet by design and must not
+// hold lastGood back.
 func (c *Controller) fleetHealthyOn(osName, version string) bool {
 	any := false
+	st := c.state.osState(osName)
 	for _, h := range c.hostsOf(osName) {
 		if h.Booted == "" {
 			continue
@@ -178,6 +188,7 @@ func (c *Controller) fleetHealthyOn(osName, version string) bool {
 		hs := c.state.Hosts[h.MAC]
 		switch {
 		case hs != nil && hs.HealthyOn == version:
+		case hs != nil && h.Canary && hs.HealthyOn != "" && versions.CompareVersions(hs.HealthyOn, version) > 0 && !st.Releases[hs.HealthyOn].Bad():
 		case hs != nil && hs.Episode != nil && hs.Episode.Release == version && hs.Episode.State == hardware.AutopilotNeedsHands:
 			return false
 		case (hs == nil || hs.HealthyOn == "") && h.Running == version && (h.Health == nil || len(h.Health.FailedUnits) == 0):
@@ -282,6 +293,12 @@ type OSStatus struct {
 	Held         bool       `json:"held"`
 	Releases     []*Release `json:"releases"`
 	ReleaseCount int        `json:"releaseCount"`
+	// Wave is the OS's last wave (omitted when there never was one),
+	// NextWaveAt when the cooldown lets the next one start (zero when it
+	// does not block), Canaries how many canary hosts the OS has.
+	Wave       *Wave     `json:"wave,omitempty"`
+	NextWaveAt time.Time `json:"nextWaveAt,omitzero"`
+	Canaries   int       `json:"canaries"`
 }
 
 // HostStatus is the per-host block of GET /autopilot.
@@ -354,20 +371,29 @@ func (c *Controller) StatusWith(opts StatusOptions) Status {
 	for _, osName := range osNames() {
 		os := c.state.osState(osName)
 		cur := c.opts.Fleet.Current(osName)
-		o := OSStatus{Current: cur, LastGood: c.opts.Fleet.LastGood(osName), FleetTarget: cur, Held: os.Held != "", Releases: []*Release{}, ReleaseCount: len(os.Releases)}
+		canaries := canariesOf(c.hostsOf(osName))
+		o := OSStatus{Current: cur, LastGood: c.opts.Fleet.LastGood(osName), FleetTarget: cur, Held: os.Held != "", Releases: []*Release{}, ReleaseCount: len(os.Releases), Canaries: len(canaries)}
 		if os.Held != "" {
 			o.FleetTarget = os.Held
 			st.Held = append(st.Held, osName)
+		}
+		if os.Wave != nil {
+			w := *os.Wave
+			o.Wave = &w
+			if next := w.StartedAt.Add(c.opts.Cooldown); c.opts.Cooldown > 0 && next.After(c.now()) {
+				o.NextWaveAt = next
+			}
 		}
 		cached := c.opts.Fleet.Cached(osName)
 		var history []*Release
 		for _, v := range slices.Sorted(maps.Keys(os.Releases)) {
 			r := *os.Releases[v]
 			r.Cached = slices.Contains(cached, v)
+			r.Soaked = c.opts.Soak > 0 && c.soaked(&r, canaries)
 			if r.State == ReleaseQuarantined {
 				st.Quarantine++
 			}
-			if !opts.AllReleases && !r.Cached && r.State == ReleaseGood {
+			if !opts.AllReleases && !r.Cached && r.settled() {
 				history = append(history, &r)
 				continue
 			}

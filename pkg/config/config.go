@@ -97,6 +97,8 @@ const (
 	AutopilotHealthWin  = "autopilotHealthWindow"
 	AutopilotRetryAfter = "autopilotRetryAfter"
 	AutopilotIssues     = "autopilotIssues"
+	AutopilotSoak       = "autopilotSoak"
+	AutopilotCooldown   = "autopilotCooldown"
 	RebootSSHKey        = "rebootSSHKey"
 
 	AutopilotIssueTitlePrefix = "autopilotIssueTitlePrefix"
@@ -116,6 +118,13 @@ const (
 	// DefaultAutopilotRetryAfter is how long a release that rolled back
 	// healthy stays in TIMEOUT before its single retry.
 	DefaultAutopilotRetryAfter = time.Hour
+	// DefaultAutopilotSoak and DefaultAutopilotCooldown are the paced
+	// rollout's two clocks (plan 2026-10-07-soak-cooldown): how long a
+	// release must be healthy on a canary before the fleet may move to it,
+	// and the minimum time between two waves of one OS. Both 0: no pacing,
+	// the v1.0.0 behaviour.
+	DefaultAutopilotSoak     time.Duration = 0
+	DefaultAutopilotCooldown time.Duration = 0
 
 	// DefaultAutopilotDrainTimeout bounds how long the API actuator retries
 	// PodDisruptionBudget-refused evictions before giving up on a node.
@@ -497,6 +506,8 @@ func LoadConfig() {
 	viper.SetDefault(AutopilotDrainTO, DefaultAutopilotDrainTimeout)
 	viper.SetDefault(AutopilotHealthWin, DefaultAutopilotHealthWindow)
 	viper.SetDefault(AutopilotRetryAfter, DefaultAutopilotRetryAfter)
+	viper.SetDefault(AutopilotSoak, DefaultAutopilotSoak)
+	viper.SetDefault(AutopilotCooldown, DefaultAutopilotCooldown)
 	viper.SetDefault(AutopilotIssues, "")
 	viper.SetDefault(AutopilotIssueTitlePrefix, "")
 	viper.SetDefault(RebootSSHKey, "")

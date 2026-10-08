@@ -14,12 +14,22 @@ import (
 	"github.com/jeefy/booty/pkg/hardware"
 )
 
-// Release states, per OS release.
+// Release states, per OS release. Skipped is a rolling release the fleet
+// moved past (lastGood advanced to a newer one without it); it is kept
+// like good.
 const (
 	ReleaseRolling     = "rolling"
 	ReleaseTimeout     = "timeout"
 	ReleaseQuarantined = "quarantined"
 	ReleaseGood        = "good"
+	ReleaseSkipped     = "skipped"
+)
+
+// Wave outcomes, per OS wave.
+const (
+	WaveRolling = "rolling"
+	WaveDone    = "done"
+	WaveAborted = "aborted"
 )
 
 // Failure classes of a health-gate attempt.
@@ -73,16 +83,40 @@ type Release struct {
 	Failing bool `json:"failing,omitempty"`
 	// Retried is set once the single TIMEOUT retry has been issued.
 	Retried bool `json:"retried,omitempty"`
+	// FirstHealthyAt is when the first host passed the gate on it: the
+	// soak clock runs from here. SoakedAt is when it first counted as
+	// soaked and SoakWarned that the no-canary warning for it went out;
+	// both keep the events to one per release across restarts.
+	FirstHealthyAt time.Time `json:"firstHealthyAt,omitzero"`
+	SoakedAt       time.Time `json:"soakedAt,omitzero"`
+	SoakWarned     bool      `json:"soakWarned,omitempty"`
 	// Cached says whether the release's files are still on disk. Records
 	// outlive their releases on purpose (the verdict is the history); Status
 	// computes it from the fleet's cached list, the persisted value is
-	// meaningless.
+	// meaningless. Soaked (may non-canary hosts move to it) is computed the
+	// same way, and only reported while a soak is configured.
 	Cached bool `json:"cached"`
+	Soaked bool `json:"soaked,omitempty"`
 }
 
 // Bad reports whether hosts should be kept off the release.
 func (r *Release) Bad() bool {
 	return r != nil && (r.State == ReleaseTimeout || r.State == ReleaseQuarantined)
+}
+
+// settled reports whether the fleet is past the release (good, or skipped
+// on the way to a newer good one): history, not a live record.
+func (r *Release) settled() bool {
+	return r.State == ReleaseGood || r.State == ReleaseSkipped
+}
+
+// Wave is one pass of an OS's non-canary hosts into one release; it is
+// open while EndedAt is zero.
+type Wave struct {
+	Release   string    `json:"release"`
+	StartedAt time.Time `json:"startedAt"`
+	EndedAt   time.Time `json:"endedAt,omitzero"`
+	Outcome   string    `json:"outcome"`
 }
 
 // Signals are what an attempt has seen so far, all relative to T0.
@@ -199,6 +233,9 @@ type OSState struct {
 	// the fleet target is current), re-applied on load.
 	Held      string    `json:"held,omitempty"`
 	HeldSince time.Time `json:"heldSince,omitzero"`
+	// Wave is the last wave of the OS (open while its EndedAt is zero);
+	// the cooldown counts from its StartedAt.
+	Wave *Wave `json:"wave,omitempty"`
 }
 
 // Event is one line of the timeline GET /autopilot serves. Text never

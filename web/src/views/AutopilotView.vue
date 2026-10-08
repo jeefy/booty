@@ -6,6 +6,8 @@ import {
   AUTOPILOT_HOST_LABEL,
   OS_OPTIONS,
   RELEASE_STATE_LABEL,
+  hostOS,
+  isHistoryState,
   normalizeAutopilotStatus,
   normalizeBootyData,
   normalizePowerStatus,
@@ -20,7 +22,13 @@ import {
   type RawPowerStatus,
   type StatusResponse
 } from '@/types'
-import { formatAbsolute, formatRelative } from '@/utils/time'
+import {
+  formatAbsolute,
+  formatDuration,
+  formatElapsed,
+  formatRelative,
+  formatUntil
+} from '@/utils/time'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -28,8 +36,17 @@ import EmptyState from '@/components/EmptyState.vue'
 const REFRESH_INTERVAL_MS = 30_000
 const EVENTS_PAGE = 50
 
+/** What a wave moves, taken from /booty.json: the OS's non-canary, netbooting hosts. */
+interface WaveHost {
+  mac: string
+  os: HostOS
+  canary: boolean
+  installed: boolean
+}
+
 const status = ref<AutopilotStatus>(normalizeAutopilotStatus(null))
 const hostnames = ref<Record<string, string>>({})
+const waveHosts = ref<WaveHost[] | null>(null)
 const powerEvents = ref<PowerEvent[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -116,9 +133,9 @@ function muted(r: AutopilotRelease): boolean {
   return !r.cached && !canClear(r)
 }
 
-/** Releases that need an eye on them are always listed; good ones fold away. */
+/** Releases that need an eye on them are always listed; good and skipped ones fold away. */
 function needsAttention(r: AutopilotRelease): boolean {
-  return r.state !== 'good' || r.failing
+  return !isHistoryState(r.state) || r.failing
 }
 
 function goodReleases(os: HostOS): AutopilotRelease[] {
@@ -133,6 +150,77 @@ function visibleReleases(os: HostOS): AutopilotRelease[] {
 /** Records the default answer left out; Storage lists them all. */
 function historyCount(os: HostOS): number {
   return Math.max(0, (status.value.os[os]?.releaseCount ?? 0) - osReleases(os).length)
+}
+
+const clocks = computed(() => {
+  const parts: string[] = []
+  if (status.value.healthWindow) parts.push(`health window ${formatDuration(status.value.healthWindow)}`)
+  if (status.value.retryAfter) parts.push(`retry after ${formatDuration(status.value.retryAfter)}`)
+  if (status.value.soak) parts.push(`soak ${formatDuration(status.value.soak)}`)
+  if (status.value.cooldown) parts.push(`cooldown ${formatDuration(status.value.cooldown)}`)
+  return parts.join(' · ')
+})
+
+interface SoakBadge {
+  kind: 'soaking' | 'soaked'
+  text: string
+  badge: string
+  title: string
+}
+
+/** The soak clock on a rolling release, shown only when a soak is configured. */
+function soakBadge(r: AutopilotRelease): SoakBadge | null {
+  if (r.state !== 'rolling' || !status.value.soak) return null
+  const soak = formatDuration(status.value.soak)
+  if (r.soaked) {
+    return {
+      kind: 'soaked',
+      text: 'soaked',
+      badge: 'text-bg-success',
+      title: `Healthy on a canary for ${soak}; eligible for the next wave`
+    }
+  }
+  if (!r.firstHealthyAt) return null
+  return {
+    kind: 'soaking',
+    text: `soaking ${formatElapsed(r.firstHealthyAt)} / ${soak}`,
+    badge: 'text-bg-light border',
+    title: `First healthy ${formatAbsolute(r.firstHealthyAt)}; the fleet waits until it has soaked for ${soak}`
+  }
+}
+
+/**
+ * `<done>/<total>` of the wave: the OS's non-canary netbooting hosts, and
+ * how many of them are healthy on the wave's release. Null until /booty.json
+ * answered, since /autopilot alone cannot tell a canary apart.
+ */
+function waveProgress(os: HostOS, release: string): { done: number; total: number } | null {
+  if (waveHosts.value === null) return null
+  const movers = waveHosts.value.filter((h) => h.os === os && !h.canary && !h.installed)
+  if (!movers.length) return null
+  const healthy = new Set(
+    status.value.hosts.filter((h) => h.healthyOn === release).map((h) => h.mac)
+  )
+  return { done: movers.filter((h) => healthy.has(h.mac)).length, total: movers.length }
+}
+
+function waveLine(os: HostOS): string {
+  const block = status.value.os[os]
+  const wave = block?.wave ?? null
+  const next = formatUntil(block?.nextWaveAt)
+  if (!wave) return next ? `next wave in ${next}` : ''
+  if (wave.outcome === 'rolling') {
+    const progress = waveProgress(os, wave.release)
+    const count = progress ? ` · ${progress.done}/${progress.total} hosts` : ''
+    return `wave into ${wave.release}${count} · started ${formatRelative(wave.startedAt)}`
+  }
+  if (wave.outcome === 'done') {
+    const done = `last wave done ${formatRelative(wave.endedAt || wave.startedAt)}`
+    return next ? `${done} · next wave in ${next}` : done
+  }
+  const verdict = osReleases(os).find((r) => r.version === wave.release)
+  const state = verdict && verdict.state !== 'rolling' ? verdict.state : 'bad'
+  return `wave aborted: ${wave.release} ${state}`
 }
 
 const HOST_CLEARABLE = new Set(['needs-hands', 'retrying', 'rolled-back'])
@@ -199,13 +287,16 @@ async function load(showSpinner = true) {
     error.value = errorMessage(statusResult.reason)
   }
   if (hostsResult.status === 'fulfilled') {
-    const names = Object.fromEntries(
-      Object.entries(normalizeBootyData(hostsResult.value).hosts).map(([mac, h]) => [
-        mac,
-        h.hostname
-      ])
-    )
+    const fleet = Object.values(normalizeBootyData(hostsResult.value).hosts)
+    const names = Object.fromEntries(fleet.map((h) => [h.mac, h.hostname]))
     if (!sameJSON(names, hostnames.value)) hostnames.value = names
+    const movers: WaveHost[] = fleet.map((h) => ({
+      mac: h.mac,
+      os: hostOS(h.os),
+      canary: h.canary ?? false,
+      installed: h.os === 'bluefin' && h.mode === 'installed'
+    }))
+    if (!sameJSON(movers, waveHosts.value)) waveHosts.value = movers
   }
   const power =
     powerResult.status === 'fulfilled' ? normalizePowerStatus(powerResult.value).events : []
@@ -301,6 +392,12 @@ onUnmounted(() => {
     <div class="page-header">
       <h2>Autopilot</h2>
       <div class="d-flex align-items-center gap-3">
+        <span
+          v-if="!loading && !off && clocks"
+          class="small text-secondary mono"
+          data-testid="autopilot-clocks"
+          >{{ clocks }}</span
+        >
         <span class="small text-secondary">Refreshes every 30s</span>
         <button
           type="button"
@@ -432,6 +529,17 @@ onUnmounted(() => {
                   <td>
                     <div class="releases">
                       <div
+                        v-if="waveLine(os)"
+                        class="wave small"
+                        :data-wave="status.os[os].wave?.outcome ?? 'pending'"
+                        :title="
+                          status.os[os].nextWaveAt ? formatAbsolute(status.os[os].nextWaveAt) : ''
+                        "
+                      >
+                        <span class="wave-label">Wave</span>
+                        {{ waveLine(os) }}
+                      </div>
+                      <div
                         v-for="r in visibleReleases(os)"
                         :key="r.version"
                         class="release"
@@ -447,6 +555,14 @@ onUnmounted(() => {
                         >
                           {{ RELEASE_STATE_LABEL[r.state].text }}
                         </span>
+                        <span
+                          v-if="soakBadge(r)"
+                          class="badge"
+                          :class="soakBadge(r)?.badge"
+                          :data-soak="soakBadge(r)?.kind"
+                          :title="soakBadge(r)?.title"
+                          >{{ soakBadge(r)?.text }}</span
+                        >
                         <RouterLink
                           v-if="!r.cached"
                           class="badge text-bg-light border text-decoration-none"
@@ -804,6 +920,26 @@ onUnmounted(() => {
 
 .release.muted {
   opacity: 0.6;
+}
+
+.wave {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--booty-space-2);
+  color: var(--booty-muted);
+}
+
+.wave-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--booty-muted);
+}
+
+.wave[data-wave='aborted'] {
+  color: var(--bs-danger);
 }
 
 .release-more {

@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **Soak and cooldown: paced autopilot rollouts.** Two new flags pace how the
+  fleet adopts releases: `--autopilotSoak` (how long a release must have been
+  healthy on a `canary: true` host before the other hosts of its OS may move
+  to it) and `--autopilotCooldown` (the minimum time between the starts of two
+  rollout waves of the same OS). Canaries are exempt from both clocks and keep
+  following every release; the rest of the fleet moves in waves, one per
+  cooldown, onto the newest soaked release -- skip-ahead, so several releases
+  inside one cooldown cost one reboot per host, and the releases the fleet
+  passed over are marked `skipped`. Waves are serial under
+  `--autopilot=full`/Bluefin and pins + kured elsewhere; a release going bad
+  mid-wave aborts it. Both flags default to `0`, preserving 1.0.0 behaviour
+  exactly; the homelab setting is `24h`/`48h`, one reboot per host per 48 h
+  with two upstream releases a day. Without a canary registered for an OS the
+  soak has no effect on it (warned once per release) and the cooldown still
+  applies.
+- **`GET /autopilot` and the Autopilot page** gain the two clocks (`soak`,
+  `cooldown`), per-OS `wave:{release,startedAt,endedAt,outcome}`,
+  `nextWaveAt` and `canaries`, per-release `firstHealthyAt` and `soaked`, and
+  the `skipped` release state; the UI shows the clocks in the header, a Wave
+  line per OS card, soaking/soaked badges on release rows, and folds `skipped`
+  in with the good history.
+
 ## [1.0.0] - 2026-10-06
 
 No code changes since 1.0.0-rc.1 apart from the CI tagging fix (#77: `latest`
