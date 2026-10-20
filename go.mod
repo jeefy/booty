@@ -7,12 +7,12 @@ require (
 	github.com/buger/jsonparser v1.6.1
 	github.com/coreos/butane v0.29.0
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/coreos/ignition/v2 v2.27.0
+	github.com/coreos/ignition/v2 v2.28.0
 	github.com/go-co-op/gocron/v2 v2.22.0
 	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
 	github.com/j-keck/arping v1.0.3
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.3
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pin/tftp/v3 v3.2.0
@@ -20,7 +20,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	golang.org/x/crypto v0.58.0
 	gopkg.in/yaml.v3 v3.0.1
-	oras.land/oras-go/v2 v2.6.2
+	oras.land/oras-go/v2 v2.6.4
 )
 
 require (
