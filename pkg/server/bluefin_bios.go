@@ -57,7 +57,7 @@ func bluefinSectionRelease(name string) (versions.BluefinManifest, string, bool)
 // UKI straight out of the UKI file (HEAD and Range work). The .linux fetch
 // starts a BIOS netboot and is recorded like the UKI fetch; the initrds
 // record nothing.
-func serveBluefinUKISection(w http.ResponseWriter, r *http.Request, mac, name string) {
+func (s *Server) serveBluefinUKISection(w http.ResponseWriter, r *http.Request, mac, name string) {
 	m, section, ok := bluefinSectionRelease(name)
 	if !ok {
 		writeError(w, http.StatusNotFound, "not a section of a cached Bluefin release")
@@ -79,7 +79,7 @@ func serveBluefinUKISection(w http.ResponseWriter, r *http.Request, mac, name st
 		if !ok {
 			return
 		}
-		recordBluefinNetboot(r, mac, host, hardware.PlatformPCBIOS, m.Version, name, now)
+		s.recordBluefinNetboot(r, mac, host, hardware.PlatformPCBIOS, m.Version, name, now)
 	} else if host, ok := hardware.Get(mac); !ok || host.OS != "bluefin" {
 		writeError(w, http.StatusNotFound, "host not registered as bluefin")
 		return

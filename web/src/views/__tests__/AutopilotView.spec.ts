@@ -624,6 +624,43 @@ describe('AutopilotView', () => {
     expect(wrapper.find('[data-action="show-more-events"]').exists()).toBe(false)
   })
 
+  it('drops a stale load response that resolves after a newer one', async () => {
+    vi.useFakeTimers()
+    try {
+      let release: () => void = () => {}
+      const gate = new Promise<void>((r) => (release = r))
+      let autopilotCalls = 0
+      const spy = mockFetch((url, init) => {
+        if (url === '/autopilot') {
+          autopilotCalls++
+          // 1: initial load, 2: the 30s poll (held back, stale), 3: reload after clear.
+          if (autopilotCalls === 2) return gate.then(() => jsonResponse({ ...guard, revision: 1 }))
+          return jsonResponse({ ...guard, revision: autopilotCalls === 1 ? 0 : 2 })
+        }
+        if (url === '/booty.json') return jsonResponse(hosts)
+        if (url === '/power') return jsonResponse({ ...powerEvents, events: [] })
+        if (init?.method === 'POST') return jsonResponse({ status: 'ok' })
+        return jsonResponse({ error: `unexpected ${url}` }, 500)
+      })
+      const wrapper = mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } })
+      await flushMicrotasks()
+      const vm = wrapper.vm as unknown as { status: { revision?: number } }
+
+      await vi.advanceTimersByTimeAsync(30_000) // poll starts and hangs
+      await wrapper.find('[data-release="4800.0.0"] [data-action="clear"]').trigger('click')
+      await flushMicrotasks()
+      expect(spy.mock.calls.filter(([url]) => url === '/autopilot')).toHaveLength(3)
+      expect(vm.status.revision).toBe(2)
+
+      release()
+      await flushMicrotasks()
+      expect(vm.status.revision).toBe(2)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('polls every 30s and leaves the state alone while the revision is unchanged', async () => {
     vi.useFakeTimers()
     try {

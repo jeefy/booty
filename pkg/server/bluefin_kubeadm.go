@@ -13,8 +13,8 @@ import (
 	"github.com/spf13/viper"
 )
 
-func clusterSettings() cluster.Settings {
-	if m := clusterManager; m != nil {
+func (s *Server) clusterSettings() cluster.Settings {
+	if m := s.clusterManager; m != nil {
 		return m.Settings
 	}
 	return cluster.FromConfig()
@@ -23,9 +23,9 @@ func clusterSettings() cluster.Settings {
 // bluefinJoinsKubeadm reports whether host's node config joins the
 // external kubeadm cluster: a worker under --profile=kubeadm-worker, as for
 // Flatcar, unless it runs k0s or this boot installs it to disk.
-func bluefinJoinsKubeadm(mac string, host *hardware.Host) bool {
+func (s *Server) bluefinJoinsKubeadm(mac string, host *hardware.Host) bool {
 	switch {
-	case !clusterSettings().BluefinKubeadmWorkers():
+	case !s.clusterSettings().BluefinKubeadmWorkers():
 		return false
 	case host.IsControlPlane():
 		slog.Debug("kubeadm worker skipped: control-plane host of an external cluster", "mac", mac)
@@ -43,7 +43,7 @@ func bluefinJoinsKubeadm(mac string, host *hardware.Host) bool {
 // addBluefinKubeadmWorker activates the release's kubeadm sysext and adds
 // the worker units. Without that sysext it adds nothing and logs an error:
 // the host still boots diskless, it just does not join.
-func addBluefinKubeadmWorker(ctx context.Context, cfg *ign36.Config, mac string, host *hardware.Host, release versions.BluefinManifest, haveRelease, mint bool) {
+func (s *Server) addBluefinKubeadmWorker(ctx context.Context, cfg *ign36.Config, mac string, host *hardware.Host, release versions.BluefinManifest, haveRelease, mint bool) {
 	if !haveRelease {
 		slog.Error("No Bluefin release cached; serving the node config without the kubeadm join", "mac", mac)
 		return
@@ -53,7 +53,7 @@ func addBluefinKubeadmWorker(ctx context.Context, cfg *ign36.Config, mac string,
 		return
 	}
 	addBluefinExtensions(cfg, mac, release, []string{versions.BluefinSysextKubeadm})
-	join, _ := kubeadmJoinString(ctx, mac, host, mint)
+	join, _ := s.kubeadmJoinString(ctx, mac, host, mint)
 	containerdDisk := viper.GetString(config.ContainerdDisk)
 	if containerdDisk != "" && (containerdDisk == host.StateDisk || containerdDisk == host.InstallDisk) {
 		slog.Error("--containerdDisk is this host's stateDisk or installDisk; its containerd disk format unit will refuse it and containerd will not start", "mac", mac, "containerdDisk", containerdDisk, "stateDisk", host.StateDisk, "installDisk", host.InstallDisk)

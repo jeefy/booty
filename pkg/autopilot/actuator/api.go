@@ -231,7 +231,8 @@ func RebootPodName(nodeName string) string {
 
 // RebootPodManifest builds the v1 Pod that reboots nodeName: Booty's own
 // image running `booty node-reboot`, hostPID and privileged so it can
-// signal the host's PID 1, pinned with nodeName, tolerating every taint,
+// signal the host's PID 1 (as root: the image itself runs as nonroot uid
+// 65532, which cannot signal it), pinned with nodeName, tolerating every taint,
 // never restarted, bounded by RebootPodDeadline.
 func RebootPodManifest(namespace, name, nodeName, image string) ([]byte, error) {
 	return PowerPodManifest(namespace, name, nodeName, image, false)
@@ -240,6 +241,7 @@ func RebootPodManifest(namespace, name, nodeName, image string) ([]byte, error) 
 // PowerPodManifest is RebootPodManifest with the choice of `--poweroff`.
 func PowerPodManifest(namespace, name, nodeName, image string, poweroff bool) ([]byte, error) {
 	privileged := true
+	root := int64(0)
 	command := []string{"/booty", "node-reboot"}
 	if poweroff {
 		command = append(command, "--poweroff")
@@ -266,7 +268,7 @@ func PowerPodManifest(namespace, name, nodeName, image string, poweroff bool) ([
 				"image":           image,
 				"imagePullPolicy": "IfNotPresent",
 				"command":         command,
-				"securityContext": map[string]any{"privileged": &privileged},
+				"securityContext": map[string]any{"privileged": &privileged, "runAsUser": &root, "runAsGroup": &root},
 			}},
 		},
 	}

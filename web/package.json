@@ -8,6 +8,8 @@
     "build": "npm run type-check && vite build",
     "preview": "vite preview",
     "test:unit": "vitest",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "type-check": "vue-tsc --build --force",
     "lint": "eslint . --fix",
     "format": "prettier --write src/"
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@vitejs/plugin-vue": "^6.0.10",
+    "@vitest/coverage-v8": "^5.0.3",
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.9.0",
     "@vue/test-utils": "^2.4.6",
@@ -28,6 +31,7 @@
     "eslint-plugin-vue": "^10.11.1",
     "jsdom": "^30.1.2",
     "prettier": "^3.9.10",
+    "sass": "^1.107.0",
     "typescript": "~5.9.3",
     "vite": "^8.3.4",
     "vitest": "^5.0.3",

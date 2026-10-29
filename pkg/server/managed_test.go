@@ -253,7 +253,7 @@ func TestManagedRenderRefusals(t *testing.T) {
 	}
 
 	viper.Set(config.ControlPlaneDisk, "")
-	clusterManager.Settings.ControlPlaneDisk = ""
+	cur().clusterManager.Settings.ControlPlaneDisk = ""
 	for _, url := range []string{"/ignition.json?mac=aa:bb:cc:dd:ee:01&preview=1", "/ignition/builtin.json?mac=aa:bb:cc:dd:ee:01&preview=1", "/ignition/user.json?mac=aa:bb:cc:dd:ee:01"} {
 		r := do(t, http.MethodGet, srv.URL+url, "")
 		assertJSONError(t, r, http.StatusBadRequest)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { apiGet, errorMessage } from '@/api'
+import { errorMessage, getAutopilotStatus, getBootyData, getStorage } from '@/api'
 import {
   OS_OPTIONS,
   RELEASE_STATE_LABEL,
@@ -12,9 +12,6 @@ import {
   type AutopilotStatus,
   type BootyData,
   type HostOS,
-  type RawAutopilotStatus,
-  type RawBootyData,
-  type RawStorage,
   type ReleaseLink,
   type Storage,
   type StorageRelease
@@ -66,7 +63,10 @@ const RETAINED_HINT: Record<string, string> = {
   current: 'Kept as the current release',
   previous: 'Kept as the previous release',
   lastGood: 'Kept as lastGood',
-  pinned: "Kept because a host's targetVersion names it",
+  pinned: "Kept because a configured version pin or a host's targetVersion names it",
+  held: 'Kept because the autopilot holds the fleet at it',
+  netboot: "Kept because a host's netbootVersion names it",
+  demoted: 'Stopped being current less than an hour ago; kept so hosts mid-boot can finish',
   '-': 'Nothing references it; the next sync of this OS prunes it',
   untracked: 'This OS is not tracked: nothing is retained or pruned, the directory is left as it is'
 }
@@ -92,7 +92,9 @@ interface ReleaseRow {
 const hostCount = computed(() => Object.keys(hostData.value.hosts).length)
 
 const bootyBytes = computed(() => storage.value.used)
-const osBytes = computed(() => OS_OPTIONS.map((os) => storage.value.os[os].bytes))
+const osBytesTotal = computed(() =>
+  OS_OPTIONS.reduce((sum, os) => sum + storage.value.os[os].bytes, 0)
+)
 const assetBytes = computed(
   () =>
     storage.value.assets.reduce((sum, a) => sum + a.bytes, 0) +
@@ -110,9 +112,9 @@ function percent(bytes: number): string {
 }
 
 const segments = computed(() => [
-  { key: 'flatcar', label: 'Flatcar', bytes: osBytes.value[0] },
-  { key: 'coreos', label: 'CoreOS', bytes: osBytes.value[1] },
-  { key: 'bluefin', label: 'Bluefin', bytes: osBytes.value[2] },
+  { key: 'flatcar', label: 'Flatcar', bytes: storage.value.os.flatcar.bytes },
+  { key: 'coreos', label: 'CoreOS', bytes: storage.value.os.coreos.bytes },
+  { key: 'bluefin', label: 'Bluefin', bytes: storage.value.os.bluefin.bytes },
   { key: 'assets', label: 'Boot files & state', bytes: assetBytes.value },
   { key: 'elsewhere', label: 'Other data on this filesystem', bytes: elsewhereBytes.value },
   { key: 'free', label: 'Free', bytes: storage.value.free }
@@ -197,18 +199,18 @@ async function load() {
   loading.value = true
   error.value = ''
   const [storageResult, autopilotResult, hostsResult] = await Promise.allSettled([
-    apiGet<RawStorage>('/storage'),
-    apiGet<RawAutopilotStatus>('/autopilot?releases=all'),
-    apiGet<RawBootyData>('/booty.json')
+    getStorage(),
+    getAutopilotStatus('?releases=all'),
+    getBootyData()
   ])
   if (storageResult.status === 'fulfilled') {
-    storage.value = normalizeStorage(storageResult.value)
+    storage.value = storageResult.value
   } else {
     error.value = errorMessage(storageResult.reason)
   }
   autopilot.value =
     autopilotResult.status === 'fulfilled'
-      ? normalizeAutopilotStatus(autopilotResult.value)
+      ? autopilotResult.value
       : normalizeAutopilotStatus(null)
   hostData.value =
     hostsResult.status === 'fulfilled'
@@ -281,7 +283,7 @@ onMounted(() => {
             {{ OS_OPTIONS.reduce((n, os) => n + storage.os[os].releases.length, 0) }}
           </div>
           <div class="stat-hint">
-            {{ formatBytes(osBytes.reduce((a, b) => a + b, 0)) }} across
+            {{ formatBytes(osBytesTotal) }} across
             {{ OS_OPTIONS.filter((os) => storage.os[os].releases.length).length }} OS
           </div>
         </div>

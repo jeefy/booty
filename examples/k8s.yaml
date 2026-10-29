@@ -176,6 +176,9 @@ spec:
       serviceAccountName: booty
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -184,7 +187,10 @@ spec:
           effect: NoSchedule
       containers:
         - name: booty
-          image: ghcr.io/jeefy/booty:v1.0.0
+          # Pin to the first release after v1.0.0 once one exists: v1.0.0 is
+          # a root image with no file caps, so it crash-loops under the
+          # runAsUser 65532 securityContext below.
+          image: ghcr.io/jeefy/booty:main
           imagePullPolicy: Always
           args:
             - --dataDir=/data
@@ -208,7 +214,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: BOOTY_IMAGE
-              value: ghcr.io/jeefy/booty:v1.0.0
+              value: ghcr.io/jeefy/booty:main
           ports:
             - name: tftp
               containerPort: 69
@@ -228,9 +234,21 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 20
           securityContext:
+            runAsUser: 65532
+            # The image runs as nonroot (uid 65532) with file capabilities on
+            # /booty; the caps below populate the bounding set so exec() can
+            # raise them. NET_BIND_SERVICE: DHCP :67, TFTP :69 and
+            # --httpPort=80 (ProxyDHCP's :4011 is above 1023 and needs no
+            # cap). NET_RAW: the ARP fallback for MAC-less requests.
+            # allowPrivilegeEscalation: false is safe to set: no_new_privs
+            # makes exec silently drop the file caps instead of failing, but
+            # the binary then starts as non-root and cannot bind :67/:69/:80
+            # or open raw sockets -- so it is omitted here because the caps
+            # are actually needed.
             capabilities:
               drop: ["ALL"]
               add: ["NET_BIND_SERVICE", "NET_RAW"]
+            runAsNonRoot: true
           resources:
             requests:
               cpu: 100m

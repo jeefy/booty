@@ -446,8 +446,9 @@ func LoadConfig() {
 	viper.AutomaticEnv()
 
 	viper.SetDefault(Debug, false)
-	viper.SetDefault(FlatcarURL, "https://%s.release.flatcar-linux.net/%s-usr/%s")
-	viper.SetDefault(CoreOSURL, "https://builds.coreos.fedoraproject.org/prod/streams/%s/builds/%s/%s")
+	viper.SetDefault(FlatcarURL, DefaultFlatcarURL)
+	viper.SetDefault(CoreOSURL, DefaultCoreOSURL)
+	setEndpointDefaults()
 	// https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/39.20231101.3.0/x86_64/fedora-coreos-39.20231101.3.0-live-kernel-x86_64
 	// https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt
 

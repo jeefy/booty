@@ -9,7 +9,14 @@ export default defineConfig((configEnv) =>
       test: {
         environment: 'jsdom',
         exclude: [...configDefaults.exclude, 'dist/**'],
-        root: fileURLToPath(new URL('./', import.meta.url))
+        root: fileURLToPath(new URL('./', import.meta.url)),
+        coverage: {
+          provider: 'v8',
+          include: ['src/**/*.{ts,vue}'],
+          exclude: ['src/**/__tests__/**', 'src/main.ts'],
+          reporter: ['text-summary', 'html', 'lcov', 'json-summary'],
+          reportsDirectory: './coverage'
+        }
       }
     })
   )

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -63,8 +64,13 @@ func verifyBluefinSums(path string, sums, sig []byte) (string, error) {
 	return strings.ToUpper(hex.EncodeToString(signer.PrimaryKey.Fingerprint)), nil
 }
 
+// maxZstdOutput caps a decompressed sysext; a stream that inflates beyond it
+// is refused (zip-bomb guard). A variable so tests can lower it.
+var maxZstdOutput int64 = 16 << 30
+
 // decompressZstd writes the zstd stream in src to dst and returns the
-// sha256 of the decompressed bytes.
+// sha256 of the decompressed bytes. Output larger than maxZstdOutput fails
+// and leaves nothing at dst.
 func decompressZstd(src, dst string) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -76,7 +82,14 @@ func decompressZstd(src, dst string) (string, error) {
 		return "", fmt.Errorf("%s: %w", src, err)
 	}
 	defer dec.Close()
-	sum, err := writeHashed(dec, dst, func(string) error { return nil })
+	limit := maxZstdOutput
+	lr := &io.LimitedReader{R: dec, N: limit + 1}
+	sum, err := writeHashed(lr, dst, func(string) error {
+		if lr.N <= 0 {
+			return fmt.Errorf("decompressed output exceeds %d bytes", limit)
+		}
+		return nil
+	})
 	if err != nil {
 		return "", fmt.Errorf("decompressing %s: %w", src, err)
 	}

@@ -243,6 +243,9 @@ func TestIgnitionEmbeddedDefaultTemplate(t *testing.T) {
 
 func statHardwareMap(t *testing.T, dir string) (time.Time, int64) {
 	t.Helper()
+	if err := hardware.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Stat(filepath.Join(dir, "hardware.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -255,8 +258,8 @@ func TestUpdateCheckFlatcar(t *testing.T) {
 	state.SetCurrentFlatcarVersion("")
 	t.Cleanup(func() { state.SetCurrentFlatcarVersion("") })
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	nowFunc = func() time.Time { return now }
-	t.Cleanup(func() { nowFunc = time.Now })
+	cur().nowFunc = func() time.Time { return now }
+	t.Cleanup(func() { cur().nowFunc = time.Now })
 
 	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/update-check", ""), http.StatusBadRequest)
 	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/update-check?mac=zz", ""), http.StatusBadRequest)

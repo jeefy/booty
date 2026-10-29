@@ -1,8 +1,10 @@
 bin/
 data/
-.vscode/*
+/.vscode/*
 *.DS_Store*
+.DS_Store
 jeefy/
 *.log
 /booty
 .sisyphus/
+.playwright-mcp/

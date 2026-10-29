@@ -1,18 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
+import { usePolling } from '@/composables/usePolling'
 import { RouterLink } from 'vue-router'
-import { ApiError, apiGet, apiPost, errorMessage } from '@/api'
+import {
+  ApiError,
+  apiGet,
+  getBootyData,
+  getClusterInfo,
+  getInfo,
+  apiPost,
+  errorMessage
+} from '@/api'
 import {
   normalizeBootyData,
-  normalizeClusterInfo,
   normalizePowerSummary,
   normalizeSecureBootInfo,
   type BootyData,
   type ClusterInfo,
   type Info,
-  type PinState,
-  type RawBootyData,
-  type RawClusterInfo
+  type PinState
 } from '@/types'
 import {
   bluefinVersion,
@@ -23,6 +29,7 @@ import {
   targetVersion
 } from '@/utils/fleet'
 import { powerSummaryText, summarizePower } from '@/utils/power'
+import { formatAbsolute, formatRelative } from '@/utils/time'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import LoadingState from '@/components/LoadingState.vue'
 
@@ -71,6 +78,11 @@ const pending = computed(() =>
   }))
 )
 const secureBoot = computed(() => normalizeSecureBootInfo(info.value.secureBoot))
+const syncErrors = computed(() =>
+  Object.entries(info.value.syncErrors ?? {})
+    .map(([name, entry]) => ({ name, ...entry }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+)
 const secureBootState = computed(() => {
   if (!secureBoot.value.enabled) return 'off'
   return secureBoot.value.ready ? 'ready' : 'syncing artefacts'
@@ -89,7 +101,7 @@ const clusterState = computed(() => {
 
 async function loadCluster() {
   try {
-    cluster.value = normalizeClusterInfo(await apiGet<RawClusterInfo>('/cluster'))
+    cluster.value = await getClusterInfo()
     clusterError.value = ''
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
@@ -101,26 +113,29 @@ async function loadCluster() {
   }
 }
 
-async function load(showSpinner = true) {
-  if (showSpinner) loading.value = true
+async function load() {
   error.value = ''
   const clusterRequest = loadCluster()
+  let ok = true
   try {
     const [data, infoData, pinData] = await Promise.all([
-      apiGet<RawBootyData>('/booty.json'),
-      apiGet<Info>('/info'),
+      getBootyData(),
+      getInfo(),
       apiGet<PinState>('/flatcar/pin')
     ])
-    hostData.value = normalizeBootyData(data)
-    info.value = infoData ?? {}
+    hostData.value = data
+    info.value = infoData
     pin.value = pinData
     if (!pinBusy.value) pinInput.value = pinData.version || ''
   } catch (err) {
     error.value = errorMessage(err)
+    ok = false
   } finally {
     loading.value = false
   }
   await clusterRequest
+  // /cluster has its own error slot and does not slow the poll down.
+  return ok
 }
 
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
@@ -165,7 +180,7 @@ async function savePin(version: string) {
     pinStatus.value = result.pinned
       ? `Pinned to ${result.version}. Downloading in the background.`
       : 'Pin cleared. Tracking the latest channel release.'
-    await load(false)
+    await refresh({ force: true })
   } catch (err) {
     pinError.value = errorMessage(err)
   } finally {
@@ -183,15 +198,18 @@ function clearPin() {
   void savePin('')
 }
 
-let timer: ReturnType<typeof setInterval> | undefined
+// The first poll runs on mount (immediate) under the initial spinner, so it
+// counts toward backoff and is shared with visibility refreshes. Every reload
+// goes through refresh() so a manual success resets the backoff.
+const { refresh } = usePolling(load, { interval: REFRESH_INTERVAL_MS, immediate: true })
 
-onMounted(() => {
-  void load()
-  timer = setInterval(() => void load(false), REFRESH_INTERVAL_MS)
-})
+/** Manual Retry: shows the spinner and joins any run in flight. */
+function reload() {
+  loading.value = true
+  return refresh()
+}
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer)
   if (copiedTimer) clearTimeout(copiedTimer)
   if (caCopiedTimer) clearTimeout(caCopiedTimer)
 })
@@ -204,7 +222,7 @@ onUnmounted(() => {
       <span class="small text-secondary">Refreshes every 30s</span>
     </div>
 
-    <ErrorAlert v-if="error" :message="error" @retry="load()" />
+    <ErrorAlert v-if="error" :message="error" @retry="reload()" />
     <LoadingState v-if="loading" label="Loading status…" />
 
     <template v-else>
@@ -256,6 +274,29 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div
+        v-if="syncErrors.length"
+        class="alert alert-warning sync-errors fade-in"
+        role="status"
+        data-testid="sync-errors"
+      >
+        <strong class="me-1">Release sync is failing.</strong>
+        Booty keeps serving the releases it already has; see the server log for details.
+        <ul class="sync-error-list mb-0">
+          <li
+            v-for="entry in syncErrors"
+            :key="entry.name"
+            :data-testid="`sync-error-${entry.name}`"
+          >
+            <span class="mono">{{ entry.name }}</span
+            >: {{ entry.error }}
+            <span v-if="entry.at" class="text-body-secondary" :title="formatAbsolute(entry.at)">
+              ({{ formatRelative(entry.at) }})</span
+            >
+          </li>
+        </ul>
+      </div>
+
       <div class="section-title">Fleet</div>
       <div
         class="panel fleet-panel fade-in"
@@ -280,10 +321,21 @@ onUnmounted(() => {
           <div class="fleet-stat">
             <div class="stat-label">Power</div>
             <div class="fleet-power" data-testid="fleet-power">
-              <RouterLink to="/hosts" :title="power.inFlight ? `${power.inFlight} in flight` : 'Per-host power on the Hosts page'">
+              <RouterLink
+                to="/hosts"
+                :title="
+                  power.inFlight
+                    ? `${power.inFlight} in flight`
+                    : 'Per-host power on the Hosts page'
+                "
+              >
                 {{ powerText }}
               </RouterLink>
-              <span v-if="power.inFlight" class="badge text-bg-info ms-2" data-testid="fleet-power-inflight">
+              <span
+                v-if="power.inFlight"
+                class="badge text-bg-info ms-2"
+                data-testid="fleet-power-inflight"
+              >
                 {{ power.inFlight }} in flight
               </span>
             </div>
@@ -306,7 +358,11 @@ onUnmounted(() => {
             booted before Booty's update/health units existed; a reboot picks them up
           </span>
         </div>
-        <table v-if="pending.length" class="table table-sm fleet-table mb-0" data-testid="fleet-list">
+        <table
+          v-if="pending.length"
+          class="table table-sm fleet-table mb-0"
+          data-testid="fleet-list"
+        >
           <thead>
             <tr>
               <th scope="col">Host</th>
@@ -320,9 +376,12 @@ onUnmounted(() => {
                 <RouterLink to="/hosts">{{ row.hostname }}</RouterLink>
               </td>
               <td>
-                <span v-if="row.running" class="mono truncate fleet-version" :title="row.running.full">{{
-                  row.running.short
-                }}</span>
+                <span
+                  v-if="row.running"
+                  class="mono truncate fleet-version"
+                  :title="row.running.full"
+                  >{{ row.running.short }}</span
+                >
                 <span v-else class="text-secondary">—</span>
               </td>
               <td>
@@ -357,8 +416,8 @@ onUnmounted(() => {
               {{ clusterState }}
             </span>
             <span class="cluster-roles stat-hint" data-testid="cluster-roles">
-              {{ clusterRoles.controlPlane }} control-plane ·
-              {{ clusterRoles.workers }} {{ clusterRoles.workers === 1 ? 'worker' : 'workers' }}
+              {{ clusterRoles.controlPlane }} control-plane · {{ clusterRoles.workers }}
+              {{ clusterRoles.workers === 1 ? 'worker' : 'workers' }}
             </span>
           </div>
           <dl class="cluster-facts" data-testid="cluster-facts">
@@ -368,17 +427,23 @@ onUnmounted(() => {
             <dd class="mono">{{ cluster.controlPlane }}</dd>
             <dt class="stat-label">Endpoint</dt>
             <dd>
-              <span v-if="cluster.endpoint" class="mono truncate cluster-endpoint" :title="cluster.endpoint">{{
-                cluster.endpoint
-              }}</span>
+              <span
+                v-if="cluster.endpoint"
+                class="mono truncate cluster-endpoint"
+                :title="cluster.endpoint"
+                >{{ cluster.endpoint }}</span
+              >
               <span v-else class="text-secondary">—</span>
             </dd>
             <template v-if="cluster.apiServer">
               <dt class="stat-label">API server</dt>
               <dd>
-                <span class="mono truncate cluster-endpoint" :title="cluster.apiServer" data-testid="cluster-api-server">{{
-                  cluster.apiServer
-                }}</span>
+                <span
+                  class="mono truncate cluster-endpoint"
+                  :title="cluster.apiServer"
+                  data-testid="cluster-api-server"
+                  >{{ cluster.apiServer }}</span
+                >
               </dd>
             </template>
             <dt class="stat-label">CNI</dt>
@@ -390,9 +455,12 @@ onUnmounted(() => {
             <dt class="stat-label">CA fingerprint</dt>
             <dd class="cluster-fingerprint">
               <template v-if="cluster.caFingerprint">
-                <span class="mono truncate cluster-fingerprint-value" :title="cluster.caFingerprint" data-testid="cluster-fingerprint">{{
-                  cluster.caFingerprint
-                }}</span>
+                <span
+                  class="mono truncate cluster-fingerprint-value"
+                  :title="cluster.caFingerprint"
+                  data-testid="cluster-fingerprint"
+                  >{{ cluster.caFingerprint }}</span
+                >
                 <button
                   type="button"
                   class="btn btn-sm btn-outline-secondary cluster-copy"
@@ -447,29 +515,41 @@ onUnmounted(() => {
           <span class="secure-boot-state" data-testid="secure-boot-state">
             Secure Boot: {{ secureBootState }}
           </span>
-          <span v-if="!secureBoot.enabled" class="stat-hint secure-boot-hint" data-testid="secure-boot-off-hint">
+          <span
+            v-if="!secureBoot.enabled"
+            class="stat-hint secure-boot-hint"
+            data-testid="secure-boot-off-hint"
+          >
             UEFI HTTP Boot clients are ignored. Start Booty with
             <code>--secureBoot --proxyDHCP</code> to serve Secure Boot machines.
           </span>
           <span v-else class="stat-hint secure-boot-hint">
             Trusted CAs:
-            <span class="mono" data-testid="secure-boot-trusted">{{ secureBoot.trusted.join(', ') }}</span>
+            <span class="mono" data-testid="secure-boot-trusted">{{
+              secureBoot.trusted.join(', ')
+            }}</span>
           </span>
         </div>
         <template v-if="secureBoot.enabled">
           <dl class="secure-boot-facts" data-testid="secure-boot-facts">
             <dt class="stat-label">Bundle</dt>
             <dd>
-              <span v-if="secureBoot.bundleVersion" class="mono truncate secure-boot-value" :title="secureBoot.bundleVersion">{{
-                secureBoot.bundleVersion
-              }}</span>
+              <span
+                v-if="secureBoot.bundleVersion"
+                class="mono truncate secure-boot-value"
+                :title="secureBoot.bundleVersion"
+                >{{ secureBoot.bundleVersion }}</span
+              >
               <span v-else class="text-secondary">—</span>
             </dd>
             <dt class="stat-label">Boot URL</dt>
             <dd>
-              <span v-if="secureBoot.bootURL" class="mono truncate secure-boot-value" :title="secureBoot.bootURL">{{
-                secureBoot.bootURL
-              }}</span>
+              <span
+                v-if="secureBoot.bootURL"
+                class="mono truncate secure-boot-value"
+                :title="secureBoot.bootURL"
+                >{{ secureBoot.bootURL }}</span
+              >
               <span v-else class="text-secondary">—</span>
             </dd>
             <dt class="stat-label">Flatcar CA</dt>
@@ -833,6 +913,15 @@ onUnmounted(() => {
 
 .secure-boot-warnings {
   margin-top: var(--booty-space-3);
+}
+
+.sync-errors {
+  margin-top: var(--booty-space-3);
+}
+
+.sync-error-list {
+  padding-left: var(--booty-space-3);
+  margin-top: var(--booty-space-1);
 }
 
 .secure-boot-warning-list {

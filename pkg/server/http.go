@@ -31,6 +31,7 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
+// writeJSON encodes v and writes it with writeJSONBody.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -38,9 +39,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		status = http.StatusInternalServerError
 		data = []byte(`{"error":"internal error encoding response"}`)
 	}
+	writeJSONBody(w, nil, status, data)
+}
+
+// writeJSONBody is the one JSON response writer: it sets Content-Type and
+// Content-Length, writes status and, unless r is a HEAD request, body
+// (already encoded JSON). Extra headers (Cache-Control, warnings) are set
+// on w before the call.
+func writeJSONBody(w http.ResponseWriter, r *http.Request, status int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
-	if _, err := w.Write(data); err != nil {
+	if r != nil && r.Method == http.MethodHead {
+		return
+	}
+	if _, err := w.Write(body); err != nil {
 		slog.Debug("Writing response failed", "error", err)
 	}
 }
@@ -97,38 +110,59 @@ func uiFileSystem(o Options) http.FileSystem {
 	return http.Dir(o.WebDir)
 }
 
+// Server holds the per-handler dependencies that used to be package
+// globals. NewHandler returns one as its http.Handler.
+type Server struct {
+	pilot          *autopilot.Autopilot
+	powerTracker   *power.Tracker
+	clusterManager *cluster.Manager
+	joinMinter     *kubeadm.Minter
+	nowFunc        func() time.Time
+	handler        http.Handler
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.handler.ServeHTTP(w, r)
+}
+
+// serverCreated observes every Server NewHandler builds; it is a test
+// seam (tests reach the live server's dependencies through it).
+var serverCreated = func(*Server) {}
+
 func NewHandler(o Options) http.Handler {
-	setJoinMinter(o.Minter)
-	setClusterManager(o.Cluster)
-	setAutopilot(o.Autopilot)
-	setPowerTracker(o.Power)
+	s := &Server{nowFunc: time.Now}
+	serverCreated(s)
+	s.setJoinMinter(o.Minter)
+	s.setClusterManager(o.Cluster)
+	s.setAutopilot(o.Autopilot)
+	s.setPowerTracker(o.Power)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/healthz", handleHealthz)
-	mux.HandleFunc("/ignition.json", handleIgnitionRequest)
-	mux.HandleFunc("/ignition/user.json", handleIgnitionUserRequest)
-	mux.HandleFunc("/ignition/builtin.json", handleIgnitionBuiltinRequest)
-	mux.HandleFunc("/update-check", handleUpdateCheckRequest)
-	mux.HandleFunc("/booty.ipxe", handleIPXERequest)
+	mux.HandleFunc("/ignition.json", s.handleIgnitionRequest)
+	mux.HandleFunc("/ignition/user.json", s.handleIgnitionUserRequest)
+	mux.HandleFunc("/ignition/builtin.json", s.handleIgnitionBuiltinRequest)
+	mux.HandleFunc("/update-check", s.handleUpdateCheckRequest)
+	mux.HandleFunc("/booty.ipxe", s.handleIPXERequest)
 	mux.HandleFunc("/version.txt", handleVersionRequest)
 	mux.HandleFunc("/version.json", handleVersionRequest)
 	mux.HandleFunc("/hosts", handleHostsRequest)
-	mux.HandleFunc("/booted", handleBootedRequest)
-	mux.HandleFunc("/health", handleHealthRequest)
+	mux.HandleFunc("/booted", s.handleBootedRequest)
+	mux.HandleFunc("/health", s.handleHealthRequest)
 	mux.HandleFunc("/register", handleRegistrationRequest)
 	mux.HandleFunc("/unregister", handleUnregistrationRequest)
 	mux.HandleFunc("/booty.json", handleDataRequest)
-	mux.HandleFunc("/info", handleInfoRequest)
+	mux.HandleFunc("/info", s.handleInfoRequest)
 	mux.HandleFunc("/flatcar/pin", handleFlatcarPinRequest)
 	mux.HandleFunc("/config", handleConfigRequest)
 	mux.HandleFunc("/config/template", handleConfigTemplateRequest)
 	mux.HandleFunc("/config/template/validate", handleConfigTemplateValidateRequest)
-	mux.HandleFunc("/cluster", handleClusterRequest)
+	mux.HandleFunc("/cluster", s.handleClusterRequest)
 	mux.HandleFunc("/cluster/ready", handleClusterReadyRequest)
-	mux.HandleFunc("/autopilot", handleAutopilotRequest)
-	mux.HandleFunc("/autopilot/", handleAutopilotRequest)
-	mux.HandleFunc("/power", handlePowerRequest)
-	mux.HandleFunc("/power/", handlePowerRequest)
+	mux.HandleFunc("/autopilot", s.handleAutopilotRequest)
+	mux.HandleFunc("/autopilot/", s.handleAutopilotRequest)
+	mux.HandleFunc("/power", s.handlePowerRequest)
+	mux.HandleFunc("/power/", s.handlePowerRequest)
 	mux.HandleFunc("/storage", handleStorageRequest)
 	mux.Handle("/data/", http.StripPrefix("/data/", newDataHandler(viper.GetString(config.DataDir))))
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uiFileSystem(o))))
@@ -138,17 +172,18 @@ func NewHandler(o Options) http.Handler {
 	// unclean paths such as /boot/sb//ipxe.efi with a 301. Both handlers
 	// clean the path themselves.
 	boot := bootHandler{files: o.BootFiles, secureBootDir: config.SecureBootPath()}
-	return logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.handler = logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, bootPathPrefix) {
 			boot.ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, bluefinPathPrefix) {
-			handleBluefinRequest(w, r)
+			s.handleBluefinRequest(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	}))
+	return s
 }
 
 // Start binds the listener synchronously and serves in the background so

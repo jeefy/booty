@@ -33,50 +33,53 @@ func coreOSArtifactNames(version, arch string) map[string]string {
 // artifacts when they differ from the served version. Concurrent invocations
 // are skipped.
 func CoreOSVersionCheck() {
-	if !config.CoreOSTracked() {
-		slog.Debug("CoreOS is not tracked; skipping version check", "flag", config.CoreOSChannel)
-		return
-	}
-	if !state.CoreOSUpdateMu.TryLock() {
-		slog.Info("CoreOS update already in progress, skipping version check")
-		return
-	}
-	defer state.CoreOSUpdateMu.Unlock()
-	ctx := context.Background()
-	slog.Debug("Checking CoreOS version")
-
 	arch := viper.GetString(config.CoreOSArchitecture)
-	current := state.CurrentCoreOSVersion()
-	if current == "" {
-		current = loadLocalCoreOSVersion(arch)
-		state.SetCurrentCoreOSVersion(current)
-	}
+	var body []byte
+	runReleaseSync(releaseSync{
+		os:      OSCoreOS,
+		label:   "CoreOS",
+		tracked: config.CoreOSTracked,
+		tryLock: state.TryLockCoreOSUpdate,
+		local: func() string {
+			current := state.CurrentCoreOSVersion()
+			if current == "" {
+				current = loadLocalCoreOSVersion(arch)
+				state.SetCurrentCoreOSVersion(current)
+			}
+			return current
+		},
+		target: func(ctx context.Context) (string, error) {
+			type stream struct {
+				body    []byte
+				version string
+			}
+			st, err := retryMetadata(ctx, "CoreOS streams", func(ctx context.Context) (stream, error) {
+				b, v, err := LoadRemoteCoreOSVersion(ctx, arch)
+				return stream{b, v}, err
+			})
+			body = st.body
+			return st.version, err
+		},
+		install: func(ctx context.Context, target, current string) error {
+			return installCoreOSRelease(ctx, body, target, current, arch)
+		},
+		setCurrent: state.SetCurrentCoreOSVersion,
+	})
+}
 
-	body, remote, err := LoadRemoteCoreOSVersion(ctx, arch)
-	if err != nil {
-		slog.Error("Could not determine remote CoreOS version, skipping update", "error", err)
-		return
-	}
-	if remote == current {
-		return
-	}
-	slog.Info("Remote CoreOS version differs from local", "remote", remote, "local", current)
-
-	if err := downloadCoreOSArtifacts(ctx, body, remote, arch); err != nil {
-		slog.Error("CoreOS artifact download failed, not advancing version", "target", remote, "error", err)
-		return
+// installCoreOSRelease downloads and verifies target's PXE artifacts, saves
+// the streams JSON and links target as coreos/current.
+func installCoreOSRelease(ctx context.Context, body []byte, target, current, arch string) error {
+	if err := downloadCoreOSArtifacts(ctx, body, target, arch); err != nil {
+		return err
 	}
 	if err := config.WriteFileAtomic(coreOSJSONPath(), body, 0o644); err != nil {
 		slog.Error("Error saving CoreOS streams JSON", "error", err)
 	}
-
-	if err := linkCoreOSRelease(remote, current, arch); err != nil {
-		slog.Error("CoreOS release links failed, not advancing version", "target", remote, "error", err)
-		return
+	if err := linkCoreOSRelease(target, current, arch); err != nil {
+		return fmt.Errorf("links: %w", err)
 	}
-	state.SetCurrentCoreOSVersion(remote)
-	slog.Info("CoreOS updated", "version", remote)
-	pruneReleases(OSCoreOS)
+	return nil
 }
 
 // linkCoreOSRelease makes version the current CoreOS release and swaps the
@@ -141,16 +144,20 @@ func loadLocalCoreOSVersion(arch string) string {
 func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch string) error {
 	base := coreOSReleaseURL(version, arch)
 	names := coreOSArtifactNames(version, arch)
-	for _, artifactType := range []string{"initramfs", "kernel", "rootfs"} {
-		file := names[artifactType]
+	types := []string{"initramfs", "kernel", "rootfs"}
+	// Every checksum is checked before anything is written, and a missing
+	// one removes nothing: coreos/<version>/ may be a retained release
+	// (previous, lastGood, pinned) that must survive.
+	shas := make(map[string]string, len(types))
+	for _, artifactType := range types {
 		sha, err := extractCoreOSChecksum(body, arch, artifactType)
 		if err != nil {
-			slog.Warn("Could not extract checksum, falling back to unverified download", "artifact", artifactType, "error", err)
+			return fmt.Errorf("%s: refusing to install without its sha256: %w: %w", names[artifactType], errVerification, err)
 		}
-		hashAlgo := crypto.Hash(0)
-		if sha != "" {
-			hashAlgo = crypto.SHA256
-		}
+		shas[artifactType] = sha
+	}
+	for _, artifactType := range types {
+		file, sha := names[artifactType], shas[artifactType]
 		// Fedora has renamed artifacts over time (e.g. -live-kernel-x86_64
 		// became -live-kernel.x86_64), so fetch from the location the stream
 		// publishes and keep our stable local name for the boot scripts.
@@ -160,7 +167,7 @@ func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch str
 		} else {
 			slog.Warn("Could not extract artifact location, falling back to constructed URL", "artifact", artifactType, "error", err)
 		}
-		if err := config.Download(ctx, config.DownloadClient, url, filepath.Join(ReleaseDir(OSCoreOS, version), file), hashAlgo, sha); err != nil {
+		if err := config.Download(ctx, config.DownloadClient, url, filepath.Join(ReleaseDir(OSCoreOS, version), file), crypto.SHA256, sha); err != nil {
 			removeOldCoreOSArtifacts(version, arch)
 			return fmt.Errorf("%s: %w", file, err)
 		}
@@ -216,7 +223,7 @@ func coreOSReleaseURL(version, arch string) string {
 }
 
 func RemoteCoreOSJSONURL() string {
-	return fmt.Sprintf("https://builds.coreos.fedoraproject.org/streams/%s.json", viper.GetString(config.CoreOSChannel))
+	return fmt.Sprintf(viper.GetString(config.CoreOSStreamsURL), viper.GetString(config.CoreOSChannel))
 }
 
 func extractCoreOSLocation(body []byte, arch, artifactType string) (string, error) {
@@ -240,6 +247,9 @@ func extractCoreOSChecksum(body []byte, arch, artifactType string) (string, erro
 	sha, err := jsonparser.GetString(body, "architectures", arch, "artifacts", "metal", "formats", "pxe", artifactType, "sha256")
 	if err != nil {
 		return "", fmt.Errorf("SHA256 checksum not found for %s: %w", artifactType, err)
+	}
+	if sha == "" {
+		return "", fmt.Errorf("SHA256 checksum for %s is empty", artifactType)
 	}
 	return sha, nil
 }

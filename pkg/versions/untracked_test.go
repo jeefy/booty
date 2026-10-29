@@ -83,8 +83,8 @@ func TestUntrackedOSHasNoCachedReleases(t *testing.T) {
 	if err := ValidateHostOS(&hardware.Host{}); err == nil || !strings.Contains(err.Error(), "--flatcarChannel=none") {
 		t.Fatalf("ValidateHostOS(flatcar)=%v", err)
 	}
-	if keep := retainedReleases(OSFlatcar); len(keep) != 0 {
-		t.Fatalf("retainedReleases(flatcar)=%v: an untracked OS's links name nothing", keep)
+	if keep := retentionReasons(OSFlatcar); len(keep) != 0 {
+		t.Fatalf("retentionReasons(flatcar)=%v: an untracked OS's links name nothing", keep)
 	}
 	if !releaseDirExists(OSFlatcar, homelabFlatcar) {
 		t.Fatalf("the Flatcar release under %s is left alone", dir)

@@ -18,36 +18,34 @@ import (
 	"github.com/jeefy/booty/pkg/hardware"
 )
 
-var pilot *autopilot.Autopilot
-
-func setAutopilot(a *autopilot.Autopilot) {
-	pilot = a
+func (s *Server) setAutopilot(a *autopilot.Autopilot) {
+	s.pilot = a
 }
 
-func autopilotController() *controller.Controller {
-	if pilot == nil {
+func (s *Server) autopilotController() *controller.Controller {
+	if s.pilot == nil {
 		return nil
 	}
-	return pilot.Controller
+	return s.pilot.Controller
 }
 
 // The boot and health handlers call these; with the mode off (no
 // controller) they are no-ops, so nothing changes versus today.
 
-func autopilotFetch(mac, kind string) {
-	if c := autopilotController(); c != nil && mac != "" {
+func (s *Server) autopilotFetch(mac, kind string) {
+	if c := s.autopilotController(); c != nil && mac != "" {
 		c.ObserveFetch(mac, kind)
 	}
 }
 
-func autopilotBooted(mac, running string) {
-	if c := autopilotController(); c != nil {
+func (s *Server) autopilotBooted(mac, running string) {
+	if c := s.autopilotController(); c != nil {
 		c.ObserveBooted(mac, running)
 	}
 }
 
-func autopilotHealth(mac string, report *hardware.Health) {
-	if c := autopilotController(); c != nil {
+func (s *Server) autopilotHealth(mac string, report *hardware.Health) {
+	if c := s.autopilotController(); c != nil {
 		c.ObserveHealth(mac, report)
 	}
 }
@@ -55,8 +53,8 @@ func autopilotHealth(mac string, report *hardware.Health) {
 // autopilotRebootWanted is the kured actuator: while the controller waits
 // for a host to reboot into its target, /update-check says so even when
 // running == target (attempt 2 into the same release).
-func autopilotRebootWanted(mac string) (bool, string) {
-	if c := autopilotController(); c != nil {
+func (s *Server) autopilotRebootWanted(mac string) (bool, string) {
+	if c := s.autopilotController(); c != nil {
 		return c.RebootWanted(mac)
 	}
 	return false, ""
@@ -73,24 +71,24 @@ const autopilotClearPrefix = "/autopilot/"
 // un-quarantines a release, and POST /autopilot/host/{mac}/clear, which
 // ends a host's episode. Like /register, the writes have no authentication
 // beyond reaching the port.
-func handleAutopilotRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAutopilotRequest(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, controller.ReportsPath) {
 		handleAutopilotReport(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, autopilotClearPrefix+"host/") {
-		handleAutopilotHostClear(w, r)
+		s.handleAutopilotHostClear(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, autopilotClearPrefix) {
-		handleAutopilotClear(w, r)
+		s.handleAutopilotClear(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	a := pilot
+	a := s.pilot
 	if a == nil {
 		a = &autopilot.Autopilot{Settings: autopilot.Settings{Mode: config.AutopilotOff}}
 	}
@@ -139,7 +137,7 @@ func handleAutopilotReport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleAutopilotClear(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAutopilotClear(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, autopilotClearPrefix), "/")
 	if len(parts) != 4 || parts[1] != "release" || parts[3] != "clear" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -158,7 +156,7 @@ func handleAutopilotClear(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid release version")
 		return
 	}
-	c := autopilotController()
+	c := s.autopilotController()
 	if c == nil {
 		writeError(w, http.StatusConflict, "autopilot is off")
 		return
@@ -171,7 +169,7 @@ func handleAutopilotClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "os": osName, "version": version})
 }
 
-func handleAutopilotHostClear(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAutopilotHostClear(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, autopilotClearPrefix+"host/"), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] != "clear" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -186,7 +184,7 @@ func handleAutopilotHostClear(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	c := autopilotController()
+	c := s.autopilotController()
 	if c == nil {
 		writeError(w, http.StatusConflict, "autopilot is off")
 		return

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { apiGet, errorMessage } from '@/api'
+import { apiGet, getInfo, errorMessage } from '@/api'
 import type { Health, Info } from '@/types'
 import { formatAbsolute, formatRelative } from '@/utils/time'
 import { bluefinVersion } from '@/utils/fleet'
@@ -18,11 +18,11 @@ async function load() {
   error.value = ''
   healthError.value = ''
   const [infoResult, healthResult] = await Promise.allSettled([
-    apiGet<Info>('/info'),
+    getInfo(),
     apiGet<Health>('/healthz')
   ])
   if (infoResult.status === 'fulfilled') {
-    info.value = infoResult.value ?? {}
+    info.value = infoResult.value
   } else {
     error.value = errorMessage(infoResult.reason)
   }

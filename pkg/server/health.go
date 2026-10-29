@@ -20,7 +20,7 @@ const maxHealthBodyBytes = 64 << 10
 // update check has not yet, and a repeated POST from the same boot (same
 // bootID) converges on the same stored state. Journal lines are logged at
 // debug level only: they may carry hostnames and addresses.
-func handleHealthRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealthRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -54,7 +54,7 @@ func handleHealthRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	report.ReceivedAt = nowFunc().UTC().Format(time.RFC3339)
+	report.ReceivedAt = s.nowFunc().UTC().Format(time.RFC3339)
 	sameBoot := host.Health.SameBoot(&report)
 
 	updated, err := hardware.Update(mac, func(h *hardware.Host) {
@@ -68,8 +68,8 @@ func handleHealthRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update host")
 		return
 	}
-	powerSeen(mac)
-	autopilotHealth(mac, &report)
+	s.powerSeen(mac)
+	s.autopilotHealth(mac, &report)
 	level := slog.LevelInfo
 	if sameBoot {
 		level = slog.LevelDebug

@@ -63,7 +63,7 @@ watch(
     </div>
   </nav>
 
-  <main class="container">
+  <main id="main-content" class="container" tabindex="-1">
     <RouterView />
   </main>
 </template>

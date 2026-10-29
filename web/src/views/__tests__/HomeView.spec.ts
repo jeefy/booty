@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import HomeView from '@/views/HomeView.vue'
 import { jsonResponse, mockFetch, requestBody } from '@/__tests__/helpers'
 
@@ -8,7 +8,7 @@ const RouterLinkStub = {
   template: '<a :href="to"><slot /></a>'
 }
 
-type Handlers = Record<string, (init?: RequestInit) => Response>
+type Handlers = Record<string, (init?: RequestInit) => Response | Promise<Response>>
 
 const DIGEST = 'sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210'
 
@@ -81,7 +81,13 @@ const clusterInfo = {
   ready: true,
   caFingerprint: FINGERPRINT,
   hosts: [
-    { mac: 'aa:bb:cc:dd:ee:01', hostname: 'alpha', os: 'flatcar', role: 'control-plane', booted: '' },
+    {
+      mac: 'aa:bb:cc:dd:ee:01',
+      hostname: 'alpha',
+      os: 'flatcar',
+      role: 'control-plane',
+      booted: ''
+    },
     { mac: 'aa:bb:cc:dd:ee:02', hostname: 'bravo', os: 'flatcar', role: 'worker', booted: '' },
     { mac: 'aa:bb:cc:dd:ee:03', hostname: 'charlie', os: 'coreos', role: '', booted: '' }
   ],
@@ -99,7 +105,9 @@ const externalClusterInfo = {
   connected: true,
   nodes: 6,
   caFingerprint: FINGERPRINT,
-  hosts: [{ mac: 'aa:bb:cc:dd:ee:02', hostname: 'bravo', os: 'flatcar', role: 'worker', booted: '' }],
+  hosts: [
+    { mac: 'aa:bb:cc:dd:ee:02', hostname: 'bravo', os: 'flatcar', role: 'worker', booted: '' }
+  ],
   warnings: []
 }
 
@@ -133,6 +141,8 @@ beforeEach(() => {
   vi.useFakeTimers()
 })
 
+enableAutoUnmount(afterEach)
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
@@ -151,6 +161,36 @@ describe('HomeView', () => {
     expect(text).toContain('No version pinned')
   })
 
+  it('lists /info.syncErrors in a warning alert, and hides it when there are none', async () => {
+    const { wrapper } = mountHome({
+      '/info': () =>
+        jsonResponse({
+          ...baseInfo,
+          syncErrors: {
+            scheduler: { error: 'periodic checks disabled: bad cron', at: '2026-10-29T10:00:00Z' },
+            flatcar: { error: 'download failed: 503', at: '2026-10-29T09:00:00Z' },
+            junk: 'not an entry'
+          }
+        })
+    })
+    await flushPromises()
+    const alert = wrapper.find('[data-testid="sync-errors"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.attributes('role')).toBe('status')
+    const items = alert.findAll('li')
+    expect(items.map((li) => li.attributes('data-testid'))).toEqual([
+      'sync-error-flatcar',
+      'sync-error-scheduler'
+    ])
+    expect(items[0]!.text()).toContain('flatcar: download failed: 503')
+    expect(items[1]!.text()).toContain('periodic checks disabled: bad cron')
+    expect(alert.text()).not.toContain('junk')
+
+    const { wrapper: clean } = mountHome()
+    await flushPromises()
+    expect(clean.find('[data-testid="sync-errors"]').exists()).toBe(false)
+  })
+
   it('renders the Bluefin stat as tracking latest, pinned, or not downloaded', async () => {
     const { wrapper, handlers } = mountHome()
     await flushPromises()
@@ -160,14 +200,18 @@ describe('HomeView', () => {
     expect(stat.text()).toContain('Tracking latest')
 
     handlers['/info'] = () =>
-      jsonResponse({ ...baseInfo, bluefin: { version: '42.20260901', pinnedVersion: '42.20260901' } })
+      jsonResponse({
+        ...baseInfo,
+        bluefin: { version: '42.20260901', pinnedVersion: '42.20260901' }
+      })
     await vi.advanceTimersByTimeAsync(30_000)
     await flushPromises()
     stat = wrapper.find('[data-testid="bluefin-stat"]')
     expect(stat.text()).toContain('Pinned')
     expect(stat.text()).toContain('42.20260901')
 
-    handlers['/info'] = () => jsonResponse({ ...baseInfo, bluefin: { version: '0.0.0', pinnedVersion: '' } })
+    handlers['/info'] = () =>
+      jsonResponse({ ...baseInfo, bluefin: { version: '0.0.0', pinnedVersion: '' } })
     await vi.advanceTimersByTimeAsync(30_000)
     await flushPromises()
     stat = wrapper.find('[data-testid="bluefin-stat"]')
@@ -313,6 +357,62 @@ describe('HomeView', () => {
     wrapper.unmount()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(spy.mock.calls.length).toBe(initialCalls + 4)
+  })
+
+  it('shares the first load with a visibility refresh instead of starting a second one', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const { wrapper, spy } = mountHome({
+      '/info': () => gate.then(() => jsonResponse(baseInfo))
+    })
+    await flushPromises()
+    expect(wrapper.find('.spinner-border').exists()).toBe(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(spy.mock.calls.filter(([url]) => url === '/info')).toHaveLength(1)
+
+    release()
+    await flushPromises()
+    expect(wrapper.find('.spinner-border').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('counts a failed first load toward the poll backoff', async () => {
+    const { wrapper, spy } = mountHome({
+      '/info': () => jsonResponse({ error: 'boom' }, 500)
+    })
+    await flushPromises()
+    const infoCalls = () => spy.mock.calls.filter(([url]) => url === '/info').length
+    expect(infoCalls()).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(infoCalls()).toBe(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(infoCalls()).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('resets the poll backoff to 30s after a successful manual Retry', async () => {
+    let failing = true
+    const { wrapper, spy } = mountHome({
+      '/info': () => (failing ? jsonResponse({ error: 'boom' }, 500) : jsonResponse(baseInfo))
+    })
+    await flushPromises()
+    const infoCalls = () => spy.mock.calls.filter(([url]) => url === '/info').length
+    await vi.advanceTimersByTimeAsync(60_000) // failure 2 -> next poll in 120s
+    expect(infoCalls()).toBe(2)
+
+    failing = false
+    await wrapper.find('.alert-danger button').trigger('click')
+    await flushPromises()
+    expect(infoCalls()).toBe(3)
+    expect(wrapper.find('.alert-danger').exists()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(infoCalls()).toBe(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(infoCalls()).toBe(4)
+    wrapper.unmount()
   })
 
   it('renders the cluster card from /cluster with facts, readiness, role counts and fingerprint', async () => {
@@ -503,7 +603,15 @@ describe('HomeView', () => {
       '/info': () =>
         jsonResponse({
           ...baseInfo,
-          secureBoot: { enabled: false, ready: false, bundleVersion: '', trusted: ['microsoft'], bootURL: '', flatcarCA: null, warnings: [] }
+          secureBoot: {
+            enabled: false,
+            ready: false,
+            bundleVersion: '',
+            trusted: ['microsoft'],
+            bootURL: '',
+            flatcarCA: null,
+            warnings: []
+          }
         })
     })
     await flushPromises()
@@ -512,7 +620,9 @@ describe('HomeView', () => {
     expect(card.exists()).toBe(true)
     expect(card.classes()).not.toContain('secure-boot-panel--ready')
     expect(card.find('[data-testid="secure-boot-state"]').text()).toBe('Secure Boot: off')
-    expect(card.find('[data-testid="secure-boot-off-hint"]').text()).toContain('--secureBoot --proxyDHCP')
+    expect(card.find('[data-testid="secure-boot-off-hint"]').text()).toContain(
+      '--secureBoot --proxyDHCP'
+    )
     expect(card.find('[data-testid="secure-boot-facts"]').exists()).toBe(false)
     expect(card.find('[data-testid="secure-boot-warnings"]').exists()).toBe(false)
   })
@@ -591,10 +701,14 @@ describe('HomeView', () => {
     const card = wrapper.find('[data-testid="secure-boot-card"]')
     expect(card.classes()).not.toContain('secure-boot-panel--ready')
     expect(card.classes()).toContain('secure-boot-panel--alert')
-    expect(card.find('[data-testid="secure-boot-state"]').text()).toBe('Secure Boot: syncing artefacts')
+    expect(card.find('[data-testid="secure-boot-state"]').text()).toBe(
+      'Secure Boot: syncing artefacts'
+    )
     expect(card.find('[data-testid="secure-boot-ca"]').exists()).toBe(false)
     expect(card.find('[data-testid="secure-boot-copy"]').exists()).toBe(false)
-    expect(card.find('[data-testid="secure-boot-ca-missing"]').text()).toContain('not extracted yet')
+    expect(card.find('[data-testid="secure-boot-ca-missing"]').text()).toContain(
+      'not extracted yet'
+    )
 
     const warnings = card.find('[data-testid="secure-boot-warnings"]')
     expect(warnings.classes()).toContain('alert-warning')
@@ -622,7 +736,9 @@ describe('HomeView', () => {
         jsonResponse({ ...baseInfo, power: { up: 6, off: 0, unreachable: 1, inFlight: 2 } })
     })
     await flushPromises()
-    expect(wrapper.find('[data-testid="fleet-power"]').text()).toContain('6 up · 0 off · 1 unreachable')
+    expect(wrapper.find('[data-testid="fleet-power"]').text()).toContain(
+      '6 up · 0 off · 1 unreachable'
+    )
     expect(wrapper.find('[data-testid="fleet-power-inflight"]').text()).toContain('2 in flight')
 
     const derived = mountHome({
@@ -637,7 +753,9 @@ describe('HomeView', () => {
         })
     })
     await flushPromises()
-    expect(derived.wrapper.find('[data-testid="fleet-power"]').text()).toContain('1 up · 1 off · 0 unreachable')
+    expect(derived.wrapper.find('[data-testid="fleet-power"]').text()).toContain(
+      '1 up · 1 off · 0 unreachable'
+    )
     expect(derived.wrapper.find('[data-testid="fleet-power-inflight"]').exists()).toBe(false)
   })
 
@@ -655,7 +773,13 @@ describe('HomeView', () => {
       '/booty.json': () =>
         jsonResponse({
           hosts: {
-            a: { mac: 'a', hostname: 'aren', booted: '2026-10-01T05:01:33Z', running: '26.10.816', lastCheck: '2026-10-01T18:00:43Z' },
+            a: {
+              mac: 'a',
+              hostname: 'aren',
+              booted: '2026-10-01T05:01:33Z',
+              running: '26.10.816',
+              lastCheck: '2026-10-01T18:00:43Z'
+            },
             y: never('y', 'yghitan'),
             g: never('g', 'gredfallan'),
             t: never('t', 'tristram'),
@@ -675,7 +799,9 @@ describe('HomeView', () => {
       '/booty.json': () => jsonResponse({ hosts: { y: never('y', 'yghitan') }, unknownHosts: {} })
     })
     await flushPromises()
-    expect(one.wrapper.find('[data-testid="fleet-no-agent"]').text()).toContain('1 host has no agent yet')
+    expect(one.wrapper.find('[data-testid="fleet-no-agent"]').text()).toContain(
+      '1 host has no agent yet'
+    )
   })
 
   it('omits the "no agent yet" line when every host has reported', async () => {

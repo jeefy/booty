@@ -18,10 +18,9 @@ import (
 
 // clusterManager is set from Options.Cluster; nil means "not configured",
 // in which case GET /cluster describes the flags without CA or tokens.
-var clusterManager *cluster.Manager
 
-func setClusterManager(m *cluster.Manager) {
-	clusterManager = m
+func (s *Server) setClusterManager(m *cluster.Manager) {
+	s.clusterManager = m
 }
 
 // clusterProbeTimeout bounds what one GET /cluster waits for a cold API
@@ -75,14 +74,14 @@ type clusterResponse struct {
 	Warnings      []string      `json:"warnings"`
 }
 
-func handleClusterRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleClusterRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), clusterProbeTimeout)
 	defer cancel()
-	writeJSON(w, http.StatusOK, clusterStatus(ctx, hardware.Snapshot().Hosts))
+	writeJSON(w, http.StatusOK, s.clusterStatus(ctx, hardware.Snapshot().Hosts))
 }
 
 // handleClusterReadyRequest is POSTed by the control-plane host's
@@ -120,12 +119,12 @@ func handleClusterReadyRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state.GetClusterReady())
 }
 
-func clusterStatus(ctx context.Context, hosts map[string]*hardware.Host) clusterResponse {
-	m := clusterManager
+func (s *Server) clusterStatus(ctx context.Context, hosts map[string]*hardware.Host) clusterResponse {
+	m := s.clusterManager
 	if m == nil {
 		m = &cluster.Manager{Settings: cluster.FromConfig()}
 	}
-	api, hasAPI := clusterAPI(ctx)
+	api, hasAPI := s.clusterAPI(ctx)
 	resp := clusterResponse{
 		Distribution: string(m.Settings.Distribution),
 		ControlPlane: string(m.Settings.ControlPlane),
@@ -214,8 +213,8 @@ func (v clusterAPIView) warning() string {
 // (the in-cluster fallback minter counts, so a Booty running in the
 // cluster it serves always has one). ok is false when there is no client
 // at all, at no cost.
-func clusterAPI(ctx context.Context) (view clusterAPIView, ok bool) {
-	if a := pilot; a != nil && a.Settings.Enabled() && a.Chooser != nil && a.Client.Configured() {
+func (s *Server) clusterAPI(ctx context.Context) (view clusterAPIView, ok bool) {
+	if a := s.pilot; a != nil && a.Settings.Enabled() && a.Chooser != nil && a.Client.Configured() {
 		st, _ := a.Chooser.Inspect(ctx)
 		view = clusterAPIView{server: st.APIServer, ca: a.Client.API().CACert(), connected: st.Reachable, nodes: st.Nodes}
 		if st.Error != "" {
@@ -223,7 +222,7 @@ func clusterAPI(ctx context.Context) (view clusterAPIView, ok bool) {
 		}
 		return view, true
 	}
-	if m := joinMinter; m != nil && m.APIServer() != "" {
+	if m := s.joinMinter; m != nil && m.APIServer() != "" {
 		view = clusterAPIView{server: m.APIServer(), ca: m.CACert()}
 		view.connected, view.err = m.Reachable(ctx)
 		return view, true

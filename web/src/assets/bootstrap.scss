@@ -1,0 +1,35 @@
+// Only the Bootstrap parts the UI uses (audited against the templates; see
+// web/README.md). Adding a component class that is not listed here renders
+// unstyled: add its partial below.
+//
+// Bootstrap 5.3 still ships @import-based Sass; vite.config.ts silences the
+// resulting deprecation noise for node_modules.
+
+@import 'bootstrap/scss/functions';
+@import 'bootstrap/scss/variables';
+@import 'bootstrap/scss/variables-dark';
+@import 'bootstrap/scss/maps';
+@import 'bootstrap/scss/mixins';
+@import 'bootstrap/scss/utilities';
+
+// Layout & content
+@import 'bootstrap/scss/root';
+@import 'bootstrap/scss/reboot';
+@import 'bootstrap/scss/type';
+@import 'bootstrap/scss/containers';
+@import 'bootstrap/scss/grid';
+@import 'bootstrap/scss/tables';
+@import 'bootstrap/scss/forms';
+@import 'bootstrap/scss/buttons';
+@import 'bootstrap/scss/transitions'; // .collapse/.show on the navbar
+
+// Components
+@import 'bootstrap/scss/nav';
+@import 'bootstrap/scss/navbar';
+@import 'bootstrap/scss/badge';
+@import 'bootstrap/scss/alert';
+@import 'bootstrap/scss/spinners';
+
+// Helpers (.text-bg-*, .visually-hidden, …) and utilities (.d-flex, .mb-2, …)
+@import 'bootstrap/scss/helpers';
+@import 'bootstrap/scss/utilities/api';

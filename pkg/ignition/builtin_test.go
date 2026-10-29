@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	v3_4 "github.com/coreos/ignition/v2/config/v3_4"
 	v3_5 "github.com/coreos/ignition/v2/config/v3_5"
@@ -201,5 +202,37 @@ func TestLoadSSHKeys(t *testing.T) {
 	keys, err = LoadSSHKeys(filepath.Join(t.TempDir(), "missing"), []string{"k"})
 	if err == nil || len(keys) != 1 {
 		t.Fatalf("missing file must error but keep inline keys: keys=%q err=%v", keys, err)
+	}
+}
+
+func TestLoadSSHKeysPicksUpEdits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys")
+	if err := os.WriteFile(path, []byte("ssh-ed25519 AAAA1 a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := LoadSSHKeys(path, nil)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys=%v err=%v", keys, err)
+	}
+	keys[0] = "mutated"
+	again, _ := LoadSSHKeys(path, nil)
+	if again[0] != "ssh-ed25519 AAAA1 a" {
+		t.Fatalf("cached keys shared with a caller: %v", again)
+	}
+	if err := os.WriteFile(path, []byte("ssh-ed25519 AAAA1 a\nssh-ed25519 AAAA2 b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := LoadSSHKeys(path, []string{"inline"}); len(keys) != 3 || keys[0] != "inline" {
+		t.Fatalf("edit not picked up: %v", keys)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSSHKeys(path, nil); err == nil {
+		t.Fatal("a removed file must be an error, not a cached answer")
 	}
 }

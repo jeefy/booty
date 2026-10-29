@@ -141,7 +141,7 @@ func handleDataRequest(w http.ResponseWriter, r *http.Request) {
 // installed system (see examples/*.but). It is the only place doInstall is
 // cleared when --doInstallClearOn=booted; a Bluefin host that was
 // installing becomes mode installed.
-func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBootedRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -177,8 +177,8 @@ func handleBootedRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update host")
 		return
 	}
-	powerBooted(mac)
-	autopilotBooted(mac, strings.TrimSpace(r.URL.Query().Get("running")))
+	s.powerBooted(mac)
+	s.autopilotBooted(mac, strings.TrimSpace(r.URL.Query().Get("running")))
 	slog.Info("Host reported install complete", "mac", mac, "ip", ip)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "host": host})
 }
@@ -264,6 +264,9 @@ type infoResponse struct {
 	SecureBoot secureBootInfo    `json:"secureBoot"`
 	Autopilot  autopilot.Summary `json:"autopilot"`
 	Power      power.Summary     `json:"power"`
+	// SyncErrors are the outstanding release-sync and scheduler failures
+	// keyed by name (state.SetSyncError); omitted when there are none.
+	SyncErrors map[string]state.SyncError `json:"syncErrors,omitempty"`
 }
 
 type fleetTargets struct {
@@ -318,7 +321,7 @@ func currentSecureBootInfo(hosts map[string]*hardware.Host) secureBootInfo {
 	return info
 }
 
-func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -340,8 +343,11 @@ func handleInfoRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	info.Targets = currentFleetTargets()
 	info.SecureBoot = currentSecureBootInfo(hosts)
-	info.Autopilot = pilot.Summary()
+	info.Autopilot = s.pilot.Summary()
 	info.Power = powerSummary()
+	if errs := state.SyncErrors(); len(errs) > 0 {
+		info.SyncErrors = errs
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 

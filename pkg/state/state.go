@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/joho/godotenv"
@@ -13,10 +14,68 @@ import (
 )
 
 var (
-	FlatcarUpdateMu sync.Mutex
-	CoreOSUpdateMu  sync.Mutex
-	BluefinUpdateMu sync.Mutex
+	flatcarUpdateMu sync.Mutex
+	coreOSUpdateMu  sync.Mutex
+	bluefinUpdateMu sync.Mutex
 )
+
+// tryLock returns the mutex's unlock function and true when it was free,
+// or (nil, false) when an update of that OS is already running.
+func tryLock(mu *sync.Mutex) (func(), bool) {
+	if !mu.TryLock() {
+		return nil, false
+	}
+	return mu.Unlock, true
+}
+
+// TryLockFlatcarUpdate claims the Flatcar update slot; call the returned
+// unlock when done. ok is false while another Flatcar update runs.
+func TryLockFlatcarUpdate() (unlock func(), ok bool) { return tryLock(&flatcarUpdateMu) }
+
+// TryLockCoreOSUpdate claims the CoreOS update slot, see TryLockFlatcarUpdate.
+func TryLockCoreOSUpdate() (unlock func(), ok bool) { return tryLock(&coreOSUpdateMu) }
+
+// TryLockBluefinUpdate claims the Bluefin update slot, see TryLockFlatcarUpdate.
+func TryLockBluefinUpdate() (unlock func(), ok bool) { return tryLock(&bluefinUpdateMu) }
+
+// SyncError is the last failed release sync of one OS (or artefact set,
+// e.g. "secureboot").
+type SyncError struct {
+	Error string    `json:"error"`
+	At    time.Time `json:"at"`
+}
+
+var (
+	syncErrMu  sync.RWMutex
+	syncErrors = map[string]SyncError{}
+)
+
+// SetSyncError records err as the latest sync failure of name; a nil err
+// clears it (a successful sync).
+func SetSyncError(name string, err error) {
+	syncErrMu.Lock()
+	defer syncErrMu.Unlock()
+	if err == nil {
+		delete(syncErrors, name)
+		return
+	}
+	syncErrors[name] = SyncError{Error: err.Error(), At: time.Now().UTC()}
+}
+
+// ClearSyncError forgets the recorded failure of name.
+func ClearSyncError(name string) { SetSyncError(name, nil) }
+
+// SyncErrors returns a copy of the outstanding sync failures keyed by name,
+// meant for /info.
+func SyncErrors() map[string]SyncError {
+	syncErrMu.RLock()
+	defer syncErrMu.RUnlock()
+	out := make(map[string]SyncError, len(syncErrors))
+	for k, v := range syncErrors {
+		out[k] = v
+	}
+	return out
+}
 
 type runtimeState struct {
 	mu                    sync.RWMutex

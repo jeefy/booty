@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/state"
@@ -113,6 +114,10 @@ func setupVerify(t *testing.T) string {
 	viper.Set(config.CoreOSChannel, "stable")
 	viper.Set(config.CoreOSArchitecture, "x86_64")
 	config.LoadConfig()
+	// Retention tests prune right after a swap; the grace window has its
+	// own test.
+	demotionGrace = 0
+	t.Cleanup(func() { demotionGrace = time.Hour })
 	state.SetCurrentFlatcarVersion("")
 	state.SetCurrentCoreOSVersion("")
 	t.Cleanup(func() {

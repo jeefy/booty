@@ -30,50 +30,35 @@ var flatcarArtifacts = []string{flatcarInitrd, flatcarKernel}
 // (if set) or the channel's latest version. Concurrent invocations are
 // skipped.
 func FlatcarVersionCheck() {
-	if !config.FlatcarTracked() {
-		slog.Debug("Flatcar is not tracked; skipping version check", "flag", config.FlatcarChannel)
-		return
-	}
-	if !state.FlatcarUpdateMu.TryLock() {
-		slog.Info("Flatcar update already in progress, skipping version check")
-		return
-	}
-	defer state.FlatcarUpdateMu.Unlock()
-	ctx := context.Background()
-	slog.Debug("Checking Flatcar version")
-
-	current := state.CurrentFlatcarVersion()
-	if current == "" {
-		current = state.LoadLocalFlatcarVersion()
-		if current == "" {
-			slog.Info("No local Flatcar version found, starting from 0.0.0")
-			current = "0.0.0"
-		}
-		state.SetCurrentFlatcarVersion(current)
-	}
-
-	target := state.FlatcarPin()
-	if target != "" {
-		slog.Debug("Flatcar version is pinned", "version", target)
-	} else {
-		remote, err := LoadRemoteFlatcarVersion(ctx)
-		if err != nil {
-			slog.Error("Could not determine remote Flatcar version, skipping update", "error", err)
-			return
-		}
-		target = remote
-	}
-
-	if target == current {
-		return
-	}
-	slog.Info("Target Flatcar version differs from local", "target", target, "local", current)
-	if err := installFlatcarRelease(ctx, target); err != nil {
-		slog.Error("Flatcar release install failed, not advancing version", "target", target, "error", err)
-		return
-	}
-	state.SetCurrentFlatcarVersion(target)
-	slog.Info("Flatcar updated", "version", target)
+	runReleaseSync(releaseSync{
+		os:      OSFlatcar,
+		label:   "Flatcar",
+		tracked: config.FlatcarTracked,
+		tryLock: state.TryLockFlatcarUpdate,
+		local: func() string {
+			current := state.CurrentFlatcarVersion()
+			if current == "" {
+				current = state.LoadLocalFlatcarVersion()
+				if current == "" {
+					slog.Info("No local Flatcar version found, starting from 0.0.0")
+					current = "0.0.0"
+				}
+				state.SetCurrentFlatcarVersion(current)
+			}
+			return current
+		},
+		target: func(ctx context.Context) (string, error) {
+			if pin := state.FlatcarPin(); pin != "" {
+				slog.Debug("Flatcar version is pinned", "version", pin)
+				return pin, nil
+			}
+			return LoadRemoteFlatcarVersion(ctx)
+		},
+		install: func(ctx context.Context, target, _ string) error {
+			return installFlatcarRelease(ctx, target)
+		},
+		setCurrent: state.SetCurrentFlatcarVersion,
+	})
 }
 
 func flatcarReleaseURL(release string) string {
@@ -126,7 +111,7 @@ func LoadRemoteFlatcarVersion(ctx context.Context) (string, error) {
 // installFlatcarRelease downloads the PXE kernel and initrd for version into
 // DataDir/flatcar/<version>/, then atomically repoints flatcar/current (and
 // the compatibility symlinks at the top of DataDir), writes version.txt
-// and prunes the release directories nothing refers to any more.
+// (the caller prunes the release directories nothing refers to any more).
 func installFlatcarRelease(ctx context.Context, version string) error {
 	base := flatcarReleaseURL(version)
 	dir := ReleaseDir(OSFlatcar, version)
@@ -141,18 +126,17 @@ func installFlatcarRelease(ctx context.Context, version string) error {
 
 	for _, artifact := range flatcarArtifacts {
 		dest := filepath.Join(dir, artifact)
-		hashAlgo := crypto.Hash(0)
-		digest, err := LoadFlatcarDigest(ctx, base, artifact)
+		digest, err := retryMetadata(ctx, artifact+".DIGESTS", func(ctx context.Context) (string, error) {
+			return LoadFlatcarDigest(ctx, base, artifact)
+		})
 		if err != nil {
-			slog.Warn("Could not load digest, falling back to unverified download", "file", artifact, "error", err)
-		} else {
-			hashAlgo = crypto.SHA512
-			if config.FileHashMatches(dest, hashAlgo, digest) {
-				slog.Info("Artifact already present and verified", "path", dest)
-				continue
-			}
+			return fmt.Errorf("%s: refusing to install without its SHA512 digest: %w", artifact, err)
 		}
-		if err := config.Download(ctx, config.DownloadClient, base+"/"+artifact, dest, hashAlgo, digest); err != nil {
+		if config.FileHashMatches(dest, crypto.SHA512, digest) {
+			slog.Info("Artifact already present and verified", "path", dest)
+			continue
+		}
+		if err := config.Download(ctx, config.DownloadClient, base+"/"+artifact, dest, crypto.SHA512, digest); err != nil {
 			return fmt.Errorf("%s: %w", artifact, err)
 		}
 	}
@@ -166,7 +150,6 @@ func installFlatcarRelease(ctx context.Context, version string) error {
 	if err := config.WriteFileAtomic(config.DataPath("version.txt"), versionTxt, 0o644); err != nil {
 		return fmt.Errorf("version.txt: %w", err)
 	}
-	pruneReleases(OSFlatcar)
 	return nil
 }
 

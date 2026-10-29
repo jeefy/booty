@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/rpm/rpmtest"
@@ -55,6 +57,8 @@ type sbFixture struct {
 	vendorCert                                  []byte
 	flatcarShim                                 []byte
 	hits                                        map[string]*atomic.Int32
+	// fail answers these paths with the given status (set before syncing).
+	fail map[string]int
 }
 
 // fakeSecureBootUpstream serves GitHub (API + downloads), the Fedora mirror
@@ -76,6 +80,7 @@ func fakeSecureBootUpstream(t *testing.T) (*httptest.Server, *sbFixture) {
 		vendorCert:  section,
 		flatcarShim: secureboottest.MinimalShim(section),
 		hits:        map[string]*atomic.Int32{},
+		fail:        map[string]int{},
 	}
 	tarball := tarGz(t, map[string][]byte{
 		"ipxeboot/x86_64-sb/ipxe.efi":    fx.ipxe,
@@ -100,10 +105,16 @@ func fakeSecureBootUpstream(t *testing.T) (*httptest.Server, *sbFixture) {
 		"/stable/amd64-usr/4757.2.0/flatcar_production_image.shim":                            fx.flatcarShim,
 		"/stable/amd64-usr/4757.2.0/flatcar_production_image.shim.DIGESTS":                    []byte(flatcarDigests),
 	}
+	addFedoraRepo(t, routes, "/fedora/development/45/Everything/x86_64/os/", "Packages/s/shim-x64-9.9-1.x86_64.rpm", shimRPM)
+	addFedoraRepo(t, routes, "/fedora/updates/99/Everything/x86_64/", "Packages/g/grub2-efi-x64-9.9-1.fc99.x86_64.rpm", grubRPM)
 	for p := range routes {
 		fx.hits[p] = &atomic.Int32{}
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if code, ok := fx.fail[r.URL.Path]; ok {
+			http.Error(w, "injected", code)
+			return
+		}
 		body, ok := routes[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -129,12 +140,13 @@ func setupSecureBoot(t *testing.T, srvURL string) string {
 	viper.Set(config.SecureBootIPXE, "vtest")
 	viper.Set(config.FedoraShimVersion, "9.9-1")
 	viper.Set(config.FedoraGrubVersion, "9.9-1.fc99")
+	viper.Set(config.FedoraReleases, "45")
 	viper.Set(config.FlatcarChannel, "stable")
 	viper.Set(config.FlatcarArchitecture, "amd64")
 	viper.Set(config.FlatcarURL, srvURL+"/%s/%s-usr/%s")
-	origAPI, origDL, origFedora := githubAPIBase, githubDownloadBase, fedoraMirrorBase
-	githubAPIBase, githubDownloadBase, fedoraMirrorBase = srvURL, srvURL, srvURL+"/fedora"
-	t.Cleanup(func() { githubAPIBase, githubDownloadBase, fedoraMirrorBase = origAPI, origDL, origFedora })
+	viper.Set(config.GithubAPIURL, srvURL)
+	viper.Set(config.GithubDownloadURL, srvURL)
+	viper.Set(config.FedoraMirrorURL, srvURL+"/fedora")
 	return dir
 }
 
@@ -362,5 +374,147 @@ func TestValidateSecureBootFlags(t *testing.T) {
 		if err := ValidateSecureBootFlags(); err == nil {
 			t.Errorf("--%s=%q accepted", key, bad)
 		}
+	}
+}
+
+// addFedoraRepo publishes repodata (repomd.xml and a gzip primary.xml
+// listing href with the sha256 of pkg) for the repository at base.
+func addFedoraRepo(t *testing.T, routes map[string][]byte, base, href string, pkg []byte) {
+	t.Helper()
+	primary := fmt.Sprintf(`<?xml version="1.0"?><metadata packages="2"><package type="rpm"><name>other</name><checksum type="sha256" pkgid="YES">%s</checksum><location href="Packages/o/other.rpm"/></package><package type="rpm"><checksum type="sha256" pkgid="YES">%s</checksum><location href="%s"/></package></metadata>`, strings.Repeat("0", 64), sha256Of(pkg), href)
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write([]byte(primary)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	routes[base+"repodata/abc-primary.xml.gz"] = gz.Bytes()
+	routes[base+"repodata/repomd.xml"] = []byte(fmt.Sprintf(`<?xml version="1.0"?><repomd><data type="filelists"><checksum type="sha256">x</checksum><location href="repodata/f.xml.gz"/></data><data type="primary"><checksum type="sha256">%s</checksum><location href="repodata/abc-primary.xml.gz"/></data></repomd>`, sha256Of(gz.Bytes())))
+}
+
+func TestSecureBootRefusesFedoraRPMWithoutRepoMetadata(t *testing.T) {
+	srv, fx := fakeSecureBootUpstream(t)
+	dir := setupSecureBoot(t, srv.URL)
+	metadataBackoff = time.Millisecond
+	t.Cleanup(func() { metadataBackoff = time.Second })
+	repomd := "/fedora/development/45/Everything/x86_64/os/repodata/repomd.xml"
+	fx.fail[repomd] = http.StatusInternalServerError
+
+	SecureBootVersionCheck()
+
+	if _, err := os.Stat(filepath.Join(dir, "secureboot", "current")); !os.IsNotExist(err) {
+		t.Error("bundle installed with an unverifiable Fedora shim")
+	}
+	if got := fx.hits["/fedora/development/45/Everything/x86_64/os/Packages/s/shim-x64-9.9-1.x86_64.rpm"].Load(); got != 0 {
+		t.Errorf("unverified RPM downloaded %d times", got)
+	}
+	if e, ok := state.SyncErrors()[SyncSecureBoot]; !ok || !strings.Contains(e.Error, "allowUnverifiedFedoraRPMs") {
+		t.Errorf("sync error = %+v (%v)", e, ok)
+	}
+
+	viper.Set(config.AllowUnverifiedFedoraRPMs, true)
+	SecureBootVersionCheck()
+	if !SecureBootReady() {
+		t.Fatal("not ready with --allowUnverifiedFedoraRPMs")
+	}
+	if _, ok := state.SyncErrors()[SyncSecureBoot]; ok {
+		t.Error("sync error not cleared after success")
+	}
+}
+
+func TestSecureBootFlatcarCAFailsClosedWithoutDigest(t *testing.T) {
+	srv, fx := fakeSecureBootUpstream(t)
+	setupSecureBoot(t, srv.URL)
+	metadataBackoff = time.Millisecond
+	t.Cleanup(func() { metadataBackoff = time.Second })
+	state.SetCurrentFlatcarVersion("4757.2.0")
+	fx.fail["/stable/amd64-usr/4757.2.0/flatcar_production_image.shim.DIGESTS"] = http.StatusNotFound
+
+	SecureBootVersionCheck()
+
+	if _, ok := CurrentFlatcarCA(); ok {
+		t.Error("Flatcar CA extracted from an unverified shim")
+	}
+	if got := fx.hits["/stable/amd64-usr/4757.2.0/flatcar_production_image.shim"].Load(); got != 0 {
+		t.Errorf("unverified shim downloaded %d times", got)
+	}
+	if _, ok := state.SyncErrors()[SyncFlatcarCA]; !ok {
+		t.Error("no flatcar-ca sync error recorded")
+	}
+}
+
+func TestFindPrimarySHA256(t *testing.T) {
+	dir := t.TempDir()
+	sum := strings.Repeat("ab", 32)
+	xmlBody := `<metadata><package><checksum type="sha1">aa</checksum><location href="Packages/a/a.rpm"/></package><package><checksum type="sha256">` + sum + `</checksum><location href="Packages/b/b.rpm"/></package></metadata>`
+	plain := filepath.Join(dir, "p-primary.xml")
+	if err := os.WriteFile(plain, []byte(xmlBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := findPrimarySHA256(plain, "Packages/b/b.rpm"); err != nil || got != sum {
+		t.Errorf("b = %q, %v", got, err)
+	}
+	if _, err := findPrimarySHA256(plain, "Packages/a/a.rpm"); err == nil {
+		t.Error("sha1-only package accepted")
+	}
+	if _, err := findPrimarySHA256(plain, "Packages/c/c.rpm"); !errors.Is(err, errNotInRepo) {
+		t.Errorf("missing package: %v", err)
+	}
+	xz := filepath.Join(dir, "p-primary.xml.xz")
+	if err := os.WriteFile(xz, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findPrimarySHA256(xz, "Packages/b/b.rpm"); err == nil {
+		t.Error("xz primary accepted")
+	}
+	if base, href, ok := fedoraRepoOf("https://m/updates/45/Everything/x86_64/Packages/s/s.rpm"); !ok || base != "https://m/updates/45/Everything/x86_64/" || href != "Packages/s/s.rpm" {
+		t.Errorf("fedoraRepoOf = %q %q %v", base, href, ok)
+	}
+}
+
+// TestSecureBootFedoraRepomdMissing: a 404 on repomd.xml is not "package
+// absent". Without --allowUnverifiedFedoraRPMs the RPM is never fetched;
+// with it each path's RPM is tried unverified, a 404 there moving on.
+func TestSecureBootFedoraRepomdMissing(t *testing.T) {
+	srv, fx := fakeSecureBootUpstream(t)
+	dir := setupSecureBoot(t, srv.URL)
+	metadataBackoff = time.Millisecond
+	t.Cleanup(func() { metadataBackoff = time.Second })
+	fx.fail["/fedora/development/45/Everything/x86_64/os/repodata/repomd.xml"] = http.StatusNotFound
+	shimRPM := "/fedora/development/45/Everything/x86_64/os/Packages/s/shim-x64-9.9-1.x86_64.rpm"
+
+	SecureBootVersionCheck()
+
+	if _, err := os.Stat(filepath.Join(dir, "secureboot", "current")); !os.IsNotExist(err) {
+		t.Error("bundle installed with an unverifiable Fedora shim")
+	}
+	if got := fx.hits[shimRPM].Load(); got != 0 {
+		t.Errorf("unverified RPM downloaded %d times without the flag", got)
+	}
+
+	viper.Set(config.AllowUnverifiedFedoraRPMs, true)
+	SecureBootVersionCheck()
+	if !SecureBootReady() {
+		t.Fatalf("not ready with --allowUnverifiedFedoraRPMs: %+v", state.SyncErrors()[SyncSecureBoot])
+	}
+	if got := fx.hits[shimRPM].Load(); got != 1 {
+		t.Errorf("shim RPM fetched %d times, want 1", got)
+	}
+	m, _ := CurrentSecureBootManifest()
+	for _, f := range m.Files {
+		if f.Name == "fedora/shimx64.efi" && !strings.Contains(f.Source, "/development/45/") {
+			t.Errorf("shim source = %q", f.Source)
+		}
+	}
+}
+
+func TestFedoraRepoSHA256RepomdMissing(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	_, err := fedoraRepoSHA256(t.Context(), srv.URL+"/updates/45/Everything/x86_64/Packages/s/s.rpm")
+	if !errors.Is(err, errRepomdMissing) || errors.Is(err, errNotInRepo) {
+		t.Fatalf("err = %v, want errRepomdMissing only", err)
 	}
 }

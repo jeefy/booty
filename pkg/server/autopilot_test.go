@@ -67,7 +67,7 @@ type autopilotStatus struct {
 func getAutopilot(t *testing.T) autopilotStatus {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	handleAutopilotRequest(rec, httptest.NewRequest(http.MethodGet, "/autopilot", nil))
+	cur().handleAutopilotRequest(rec, httptest.NewRequest(http.MethodGet, "/autopilot", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
@@ -103,7 +103,7 @@ func TestAutopilotEndpointIsReadOnly(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	handleAutopilotRequest(rec, httptest.NewRequest(http.MethodPost, "/autopilot", nil))
+	cur().handleAutopilotRequest(rec, httptest.NewRequest(http.MethodPost, "/autopilot", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST must be refused: %d", rec.Code)
 	}
@@ -505,7 +505,7 @@ func TestAutopilotEndpointBoundsHistory(t *testing.T) {
 	get := func(query string) (autopilotStatus, map[string]any) {
 		t.Helper()
 		rec := httptest.NewRecorder()
-		handleAutopilotRequest(rec, httptest.NewRequest(http.MethodGet, "/autopilot"+query, nil))
+		cur().handleAutopilotRequest(rec, httptest.NewRequest(http.MethodGet, "/autopilot"+query, nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET /autopilot%s: %d %s", query, rec.Code, rec.Body)
 		}

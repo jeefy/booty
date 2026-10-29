@@ -8,18 +8,21 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
 	"github.com/jeefy/booty/pkg/state"
+	"github.com/spf13/viper"
 )
 
 // Every OS keeps its releases in DataDir/<os>/<version>/ behind three
 // relative symlinks: current (the fleet target), previous (the release
 // current replaced, so hosts mid-boot can finish) and lastGood (the newest
 // release the whole fleet was healthy on; P1 sets it to current once and
-// the autopilot controller moves it). Pruning keeps exactly those three
-// plus any host's targetVersion.
+// the autopilot controller moves it). Pruning keeps those three plus
+// everything else retentionReasons names (pins, holds, netboot releases,
+// recent demotions).
 const (
 	OSFlatcar = "flatcar"
 	OSCoreOS  = "coreos"
@@ -143,6 +146,7 @@ func SetLastGood(osName, version string) error {
 func linkRelease(osName, version string) error {
 	old := CurrentRelease(osName)
 	if old != "" && old != version {
+		recordDemotion(osName, old)
 		if err := config.ReplaceSymlink(old, config.DataPath(osName, PreviousLink)); err != nil {
 			return fmt.Errorf("linking %s previous: %w", osName, err)
 		}
@@ -165,24 +169,94 @@ func ensureLastGood(osName string) error {
 	return SetLastGood(osName, current)
 }
 
-// retainedReleases is what pruneReleases keeps: current, previous,
-// lastGood and every registered host's targetVersion for osName.
-func retainedReleases(osName string) []string {
-	var keep []string
-	add := func(v string) {
-		if v != "" && !slices.Contains(keep, v) {
-			keep = append(keep, v)
+// demotionGrace is how long a release that stopped being current stays
+// exempt from pruning, so hosts that fetched its boot script just before
+// the swap can still download its artifacts. Variable for tests.
+var demotionGrace = time.Hour
+
+// demotedAt records, in memory only, when each (os, version) stopped being
+// current. Losing it on restart only shortens the grace window.
+var demotions = struct {
+	sync.Mutex
+	at map[[2]string]time.Time
+}{at: map[[2]string]time.Time{}}
+
+// timeNow is overridable in tests.
+var timeNow = time.Now
+
+func recordDemotion(osName, version string) {
+	demotions.Lock()
+	defer demotions.Unlock()
+	demotions.at[[2]string{osName, version}] = timeNow()
+}
+
+// recentlyDemoted lists the releases of osName demoted less than
+// demotionGrace ago and forgets older entries.
+func recentlyDemoted(osName string) []string {
+	demotions.Lock()
+	defer demotions.Unlock()
+	var out []string
+	now := timeNow()
+	for k, at := range demotions.at {
+		switch {
+		case now.Sub(at) >= demotionGrace:
+			delete(demotions.at, k)
+		case k[0] == osName:
+			out = append(out, k[1])
+		}
+	}
+	return out
+}
+
+// configPin is the --flatcarVersion / --bluefinVersion pin of osName.
+func configPin(osName string) string {
+	switch osName {
+	case OSFlatcar:
+		return viper.GetString(config.FlatcarVersion)
+	case OSBluefin:
+		return viper.GetString(config.BluefinVersion)
+	}
+	return ""
+}
+
+// retentionReasons maps every release of osName that pruneReleases keeps
+// to the first reason it is kept for, in this order: the current, previous
+// and lastGood links (RetainedCurrent/Previous/LastGood), the configured
+// pin or a registered host's targetVersion (RetainedPinned), the fleet
+// hold (RetainedHeld), a host's netbootVersion (RetainedNetboot) and a
+// demotion from current less than demotionGrace ago (RetainedDemoted).
+// pruneReleases and the storage view both read it, so what /storage calls
+// retained is exactly what a prune keeps.
+func retentionReasons(osName string) map[string]string {
+	reasons := map[string]string{}
+	add := func(v, why string) {
+		if _, seen := reasons[v]; v != "" && !seen {
+			reasons[v] = why
 		}
 	}
 	for _, link := range releaseLinks {
-		add(readReleaseLink(osName, link))
+		add(readReleaseLink(osName, link), link)
 	}
+	add(configPin(osName), RetainedPinned)
+	var hosts []*hardware.Host
 	for _, h := range hardware.Snapshot().Hosts {
 		if hostOS(h) == osName {
-			add(h.TargetVersion)
+			hosts = append(hosts, h)
 		}
 	}
-	return keep
+	for _, h := range hosts {
+		add(h.TargetVersion, RetainedPinned)
+	}
+	holdMu.RLock()
+	add(fleetHolds[osName], RetainedHeld)
+	holdMu.RUnlock()
+	for _, h := range hosts {
+		add(h.NetbootVersion, RetainedNetboot)
+	}
+	for _, v := range recentlyDemoted(osName) {
+		add(v, RetainedDemoted)
+	}
+	return reasons
 }
 
 func hostOS(h *hardware.Host) string {
@@ -196,10 +270,10 @@ func hostOS(h *hardware.Host) string {
 }
 
 // pruneReleases removes every release directory of osName that
-// retainedReleases does not name.
+// retentionReasons does not name.
 func pruneReleases(osName string) {
 	defer InvalidateStorage()
-	keep := retainedReleases(osName)
+	reasons := retentionReasons(osName)
 	root := config.DataPath(osName)
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -207,7 +281,7 @@ func pruneReleases(osName string) {
 		return
 	}
 	for _, e := range entries {
-		if !e.IsDir() || slices.Contains(keep, e.Name()) {
+		if _, keep := reasons[e.Name()]; !e.IsDir() || keep {
 			continue
 		}
 		path := filepath.Join(root, e.Name())
@@ -215,7 +289,7 @@ func pruneReleases(osName string) {
 			slog.Warn("Could not remove old release", "os", osName, "path", path, "error", err)
 			continue
 		}
-		slog.Info("Removed old release", "os", osName, "path", path, "kept", keep)
+		slog.Info("Removed old release", "os", osName, "path", path, "kept", reasons)
 	}
 }
 

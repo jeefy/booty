@@ -48,7 +48,7 @@ func TestDownloadSuccess(t *testing.T) {
 	if string(got) != "hello world" {
 		t.Fatalf("unexpected content %q", got)
 	}
-	assertNoFile(t, dest+".tmp")
+	assertNoTemp(t, filepath.Dir(dest))
 }
 
 func TestDownloadWithChecksum(t *testing.T) {
@@ -74,7 +74,7 @@ func TestDownloadHTTPError(t *testing.T) {
 		t.Fatalf("expected HTTP 404 error, got %v", err)
 	}
 	assertNoFile(t, dest)
-	assertNoFile(t, dest+".tmp")
+	assertNoTemp(t, filepath.Dir(dest))
 }
 
 func TestDownloadChecksumMismatch(t *testing.T) {
@@ -86,7 +86,7 @@ func TestDownloadChecksumMismatch(t *testing.T) {
 		t.Fatalf("expected checksum mismatch, got %v", err)
 	}
 	assertNoFile(t, dest)
-	assertNoFile(t, dest+".tmp")
+	assertNoTemp(t, filepath.Dir(dest))
 }
 
 func TestDownloadRejectsUnsupportedHash(t *testing.T) {

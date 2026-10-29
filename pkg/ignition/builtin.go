@@ -10,8 +10,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/coreos/ignition/v2/config/v3_4/types"
 	"github.com/jeefy/booty/pkg/config"
@@ -231,7 +234,9 @@ esac
 
 // LoadSSHKeys combines the keys from file (one per line, blank lines and
 // #-comments ignored) with the inline keys. A missing or unreadable file is
-// an error only when file is non-empty.
+// an error only when file is non-empty. The file's keys are cached by path,
+// size and mtime, so a render does not re-read an unchanged file while an
+// edit is picked up on the next call.
 func LoadSSHKeys(file string, inline []string) ([]string, error) {
 	var keys []string
 	for _, k := range inline {
@@ -242,11 +247,39 @@ func LoadSSHKeys(file string, inline []string) ([]string, error) {
 	if file == "" {
 		return keys, nil
 	}
+	fromFile, err := sshKeysFromFile(file)
+	return append(keys, fromFile...), err
+}
+
+type sshKeysEntry struct {
+	size    int64
+	modTime time.Time
+	inode   uint64
+	keys    []string
+}
+
+var sshKeysCache = struct {
+	sync.Mutex
+	m map[string]sshKeysEntry
+}{m: map[string]sshKeysEntry{}}
+
+func sshKeysFromFile(file string) ([]string, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return keys, err
+		return nil, err
 	}
 	defer config.CloseQuietly(f, file)
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	sshKeysCache.Lock()
+	e, ok := sshKeysCache.m[file]
+	sshKeysCache.Unlock()
+	if ok && e.size == info.Size() && e.modTime.Equal(info.ModTime()) && e.inode == fileInode(info) {
+		return slices.Clone(e.keys), nil
+	}
+	var keys []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -258,5 +291,9 @@ func LoadSSHKeys(file string, inline []string) ([]string, error) {
 	if err := sc.Err(); err != nil {
 		return keys, err
 	}
-	return keys, nil
+	sshKeysCache.Lock()
+	// One entry per configured path; a handful at most.
+	sshKeysCache.m[file] = sshKeysEntry{size: info.Size(), modTime: info.ModTime(), inode: fileInode(info), keys: keys}
+	sshKeysCache.Unlock()
+	return slices.Clone(keys), nil
 }
