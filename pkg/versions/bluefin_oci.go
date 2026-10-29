@@ -2,14 +2,11 @@ package versions
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -177,7 +174,7 @@ func (s *ociBluefinSource) download(ctx context.Context, version, name, dest, sh
 	return writeVerified(vr, dest, sha, vr.Verify)
 }
 
-// writeVerified streams r to dest through dest+".tmp" and renames it into
+// writeVerified streams r to dest through an atomic temp file and renames it into
 // place only when the sha256 of the bytes matches want (empty skips that
 // check) and check (if any) passes.
 func writeVerified(r io.Reader, dest, want string, check func() error) error {
@@ -194,37 +191,5 @@ func writeVerified(r io.Reader, dest, want string, check func() error) error {
 }
 
 func writeHashed(r io.Reader, dest string, accept func(sha string) error) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
-	tmp := dest + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return "", err
-	}
-	fail := func(err error) (string, error) {
-		config.CloseQuietly(f, tmp)
-		if rmErr := os.Remove(tmp); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			slog.Warn("Could not remove partial file", "path", tmp, "error", rmErr)
-		}
-		return "", err
-	}
-	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, h), r); err != nil {
-		return fail(err)
-	}
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	sum := hex.EncodeToString(h.Sum(nil))
-	if err := accept(sum); err != nil {
-		return fail(err)
-	}
-	if err := f.Close(); err != nil {
-		return fail(err)
-	}
-	if err := os.Rename(tmp, dest); err != nil {
-		return fail(err)
-	}
-	return sum, nil
+	return config.WriteHashedAtomic(r, dest, crypto.SHA256, accept)
 }

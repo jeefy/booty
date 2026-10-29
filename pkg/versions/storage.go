@@ -32,12 +32,16 @@ const (
 	AssetOther    = "other"
 )
 
-// Retention reasons of a release directory, in the order one is picked.
+// Retention reasons of a release directory, in the order one is picked
+// (see retentionReasons).
 const (
 	RetainedCurrent  = "current"
 	RetainedPrevious = "previous"
 	RetainedLastGood = "lastGood"
 	RetainedPinned   = "pinned"
+	RetainedHeld     = "held"
+	RetainedNetboot  = "netboot"
+	RetainedDemoted  = "demoted"
 	RetainedNone     = "-"
 )
 
@@ -219,6 +223,10 @@ func osStorage(osName string, sizes map[string]StorageRelease, hosts map[string]
 		}
 	}
 	versions := slices.SortedFunc(maps.Keys(sizes), func(a, b string) int { return compareVersions(b, a) })
+	var reasons map[string]string
+	if block.Tracked {
+		reasons = retentionReasons(osName)
+	}
 	for _, version := range versions {
 		rel := sizes[version]
 		rel.Links, rel.Hosts = []string{}, StorageHosts{Running: []string{}, Pinned: []string{}}
@@ -241,25 +249,13 @@ func osStorage(osName string, sizes map[string]StorageRelease, hosts map[string]
 			}
 		}
 		rel.Retained = RetainedNone
-		if block.Tracked {
-			rel.Retained = retainedBy(rel)
+		if why, ok := reasons[version]; ok {
+			rel.Retained = why
 		}
 		block.Releases = append(block.Releases, rel)
 		block.Bytes += rel.Bytes
 	}
 	return block
-}
-
-func retainedBy(rel StorageRelease) string {
-	for _, link := range releaseLinks {
-		if slices.Contains(rel.Links, link) {
-			return link
-		}
-	}
-	if len(rel.Hosts.Pinned) > 0 {
-		return RetainedPinned
-	}
-	return RetainedNone
 }
 
 // dirSize sums the regular files below dir (symlinks are not followed,

@@ -448,12 +448,13 @@ func setupBluefin(t *testing.T, srvURL string) string {
 	t.Helper()
 	dir := setupVerify(t)
 	viper.Set(config.BluefinRepo, "acme/server")
-	origAPI, origDL := githubAPIBase, githubDownloadBase
-	githubAPIBase, githubDownloadBase = srvURL, srvURL
+	viper.Set(config.GithubAPIURL, srvURL)
+	viper.Set(config.GithubDownloadURL, srvURL)
 	state.SetCurrentBluefinVersion("")
 	state.SetRemoteBluefinVersion("")
 	t.Cleanup(func() {
-		githubAPIBase, githubDownloadBase = origAPI, origDL
+		viper.Set(config.GithubAPIURL, "")
+		viper.Set(config.GithubDownloadURL, "")
 		state.SetCurrentBluefinVersion("")
 		state.SetRemoteBluefinVersion("")
 		viper.Set(config.BluefinVersion, "")

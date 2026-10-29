@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jeefy/booty/pkg/config"
 	"github.com/jeefy/booty/pkg/hardware"
@@ -52,11 +53,10 @@ const (
 	BluefinSysextNvidiaContainerToolkit = "nvidia-container-toolkit"
 )
 
-// Overridable in tests to point at an httptest server.
-var (
-	githubAPIBase      = "https://api.github.com"
-	githubDownloadBase = "https://github.com"
-)
+// githubAPIBase and githubDownloadBase are --githubAPIURL and
+// --githubDownloadURL.
+func githubAPIBase() string      { return config.GithubAPIBase() }
+func githubDownloadBase() string { return config.GithubDownloadBase() }
 
 // bluefinVersionPattern bounds what a version may look like: it ends up in
 // file names, URLs and the tag (v<version>).
@@ -399,61 +399,54 @@ func ValidateBluefinFlags() error {
 // skipped and the version only advances once every file is on disk and
 // verified.
 func BluefinVersionCheck() {
-	if !state.BluefinUpdateMu.TryLock() {
-		slog.Info("Bluefin update already in progress, skipping version check")
-		return
-	}
-	defer state.BluefinUpdateMu.Unlock()
-	ctx := context.Background()
-	slog.Debug("Checking Bluefin version")
-
-	src, err := newBluefinSource()
-	if err != nil {
-		slog.Error("Bluefin release source unusable, skipping update", "error", err)
-		return
-	}
-
-	current := state.CurrentBluefinVersion()
-	if current == "" {
-		current = state.LoadLocalBluefinVersion()
-		if current == "" {
-			slog.Info("No local Bluefin version found, starting from 0.0.0")
-			current = unsetVersion
-		}
-		state.SetCurrentBluefinVersion(current)
-	}
-
-	target := state.BluefinPin()
-	if target != "" {
-		slog.Debug("Bluefin version is pinned", "version", target)
-	} else {
-		remote, err := src.latest(ctx)
-		if err != nil {
-			slog.Error("Could not determine remote Bluefin version, skipping update", "error", err)
-			return
-		}
-		state.SetRemoteBluefinVersion(remote)
-		target = remote
-	}
-	if !ValidBluefinVersion(target) {
-		slog.Error("Bluefin version is not usable, skipping update", "version", target)
-		return
-	}
-
-	if target == current {
-		return
-	}
-	slog.Info("Target Bluefin version differs from local", "target", target, "local", current)
-	manifest, err := installBluefinRelease(ctx, src, target)
-	if err != nil {
-		slog.Error("Bluefin release install failed, not advancing version", "target", target, "error", err)
-		return
-	}
-	state.SetCurrentBluefinVersion(target)
-	slog.Info("Bluefin updated", "version", target, "netbootUKI", manifest.NetbootUKI, "ddi", manifest.DDI, "sysexts", len(manifest.Sysexts))
-	for _, gap := range missingRequestedSysexts(manifest, hardware.Snapshot().Hosts) {
-		slog.Error("Bluefin release lacks sysexts a host requests; it boots without them", "version", manifest.Version, "mac", gap.mac, "hostname", gap.hostname, "missing", gap.missing)
-	}
+	var src bluefinSource
+	var manifest BluefinManifest
+	runReleaseSync(releaseSync{
+		os:      OSBluefin,
+		label:   "Bluefin",
+		tryLock: state.TryLockBluefinUpdate,
+		local: func() string {
+			current := state.CurrentBluefinVersion()
+			if current == "" {
+				current = state.LoadLocalBluefinVersion()
+				if current == "" {
+					slog.Info("No local Bluefin version found, starting from 0.0.0")
+					current = unsetVersion
+				}
+				state.SetCurrentBluefinVersion(current)
+			}
+			return current
+		},
+		target: func(ctx context.Context) (string, error) {
+			var err error
+			if src, err = newBluefinSource(); err != nil {
+				return "", fmt.Errorf("bluefin release source unusable: %w", err)
+			}
+			if pin := state.BluefinPin(); pin != "" {
+				slog.Debug("Bluefin version is pinned", "version", pin)
+				return pin, nil
+			}
+			remote, err := src.latest(ctx)
+			if err != nil {
+				return "", err
+			}
+			state.SetRemoteBluefinVersion(remote)
+			return remote, nil
+		},
+		valid: ValidBluefinVersion,
+		install: func(ctx context.Context, target, _ string) error {
+			var err error
+			manifest, err = installBluefinRelease(ctx, src, target)
+			return err
+		},
+		setCurrent: state.SetCurrentBluefinVersion,
+		after: func(string) {
+			slog.Info("Bluefin release installed", "version", manifest.Version, "netbootUKI", manifest.NetbootUKI, "ddi", manifest.DDI, "sysexts", len(manifest.Sysexts))
+			for _, gap := range missingRequestedSysexts(manifest, hardware.Snapshot().Hosts) {
+				slog.Error("Bluefin release lacks sysexts a host requests; it boots without them", "version", manifest.Version, "mac", gap.mac, "hostname", gap.hostname, "missing", gap.missing)
+			}
+		},
+	})
 }
 
 type sysextGap struct {
@@ -505,35 +498,76 @@ func bluefinRepo() string {
 }
 
 func bluefinReleasesURL() string {
-	return fmt.Sprintf("%s/repos/%s/releases?per_page=%d", githubAPIBase, bluefinRepo(), bluefinReleasePages)
+	return fmt.Sprintf("%s/repos/%s/releases?per_page=%d", githubAPIBase(), bluefinRepo(), bluefinReleasePages)
 }
 
 func bluefinAssetURL(version, asset string) string {
-	return fmt.Sprintf("%s/%s/releases/download/%s%s/%s", githubDownloadBase, bluefinRepo(), bluefinTagPrefix, version, asset)
+	return fmt.Sprintf("%s/%s/releases/download/%s%s/%s", githubDownloadBase(), bluefinRepo(), bluefinTagPrefix, version, asset)
 }
 
+// githubCache remembers, per URL, the ETag and body of the last 200 so
+// the next request can be conditional: GitHub answers an unchanged
+// resource with 304 and no body, which does not count against the rate
+// limit.
+var githubCache = struct {
+	sync.Mutex
+	m map[string]githubCached
+}{m: map[string]githubCached{}}
+
+type githubCached struct {
+	etag string
+	body []byte
+}
+
+// githubGet GETs url from the GitHub API (at most limit bytes), sending
+// If-None-Match when an earlier response carried an ETag; a 304 returns the
+// cached body.
 func githubGet(ctx context.Context, url string, limit int64) ([]byte, error) {
+	body, _, err := githubGetConditional(ctx, url, limit)
+	return body, err
+}
+
+// githubGetConditional is githubGet that also reports whether the body is
+// the cached one (the server said 304 Not Modified).
+func githubGetConditional(ctx context.Context, url string, limit int64) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	if token := strings.TrimSpace(viper.GetString(config.GithubToken)); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	githubCache.Lock()
+	cached, haveCached := githubCache.m[url]
+	githubCache.Unlock()
+	if haveCached {
+		req.Header.Set("If-None-Match", cached.etag)
+	}
 	resp, err := config.MetadataClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", url, err)
+		return nil, false, fmt.Errorf("%s: %w", url, err)
 	}
 	defer config.CloseQuietly(resp.Body, url)
+	if resp.StatusCode == http.StatusNotModified && haveCached {
+		slog.Debug("GitHub resource not modified", "url", url)
+		return cached.body, true, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: HTTP %d", url, resp.StatusCode)
+		return nil, false, fmt.Errorf("%s: HTTP %d", url, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", url, err)
+		return nil, false, fmt.Errorf("%s: %w", url, err)
 	}
-	return body, nil
+	githubCache.Lock()
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		githubCache.m[url] = githubCached{etag: etag, body: body}
+	} else {
+		delete(githubCache.m, url)
+	}
+	githubCache.Unlock()
+	return body, false, nil
 }
 
 // installBluefinRelease fetches SHA256SUMS and its signature (checked
@@ -611,7 +645,6 @@ func installBluefinRelease(ctx context.Context, src bluefinSource, version strin
 	if err := linkRelease(OSBluefin, version); err != nil {
 		return manifest, err
 	}
-	pruneReleases(OSBluefin)
 	return manifest, nil
 }
 

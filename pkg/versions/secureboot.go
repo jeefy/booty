@@ -70,15 +70,15 @@ var (
 		"shim-x64-16.1-7.x86_64.rpm":            "04b7132d6316bff71427120b6aba85eb4490b2621ccb2f2559bd321ccb25f028",
 		"grub2-efi-x64-2.12-64.fc44.x86_64.rpm": "3ed403514d8a8973814d553acd230a25eb355e93ebbb5a9a7da91f8393f58802",
 	}
-	// Fedora releases whose trees are tried, newest first, for a package
-	// whose version does not say (.fcNN) where it lives.
-	fedoraReleases = []string{"45", "44"}
 )
 
-// Overridable in tests.
-var (
-	fedoraMirrorBase = "https://dl.fedoraproject.org/pub/fedora/linux"
-	secureBootMu     sync.Mutex
+var secureBootMu sync.Mutex
+
+// Names under which state.SyncErrors reports Secure Boot failures (the OS
+// syncs use OSFlatcar, OSCoreOS and OSBluefin).
+const (
+	SyncSecureBoot = "secureboot"
+	SyncFlatcarCA  = "flatcar-ca"
 )
 
 // SecureBootFile is one member of the bundle manifest.
@@ -147,13 +147,18 @@ func SecureBootVersionCheck() {
 		slog.Info("Syncing Secure Boot bundle", "bundle", bundle)
 		if _, err := installSecureBootBundle(ctx, bundle); err != nil {
 			slog.Error("Secure Boot bundle sync failed; HTTP Boot clients will get 404 until it succeeds", "bundle", bundle, "error", err)
+			state.SetSyncError(SyncSecureBoot, err)
 		} else {
+			state.ClearSyncError(SyncSecureBoot)
 			slog.Info("Secure Boot bundle ready", "bundle", bundle)
 		}
 	}
 
 	if err := syncFlatcarCA(ctx); err != nil {
 		slog.Error("Flatcar Secure Boot CA sync failed", "error", err)
+		state.SetSyncError(SyncFlatcarCA, err)
+	} else {
+		state.ClearSyncError(SyncFlatcarCA)
 	}
 }
 
@@ -244,11 +249,11 @@ func installSecureBootBundle(ctx context.Context, bundle string) (SecureBootMani
 }
 
 func ipxeShimURL(version, asset string) string {
-	return fmt.Sprintf("%s/ipxe/shim/releases/download/%s/%s", githubDownloadBase, version, asset)
+	return fmt.Sprintf("%s/ipxe/shim/releases/download/%s/%s", githubDownloadBase(), version, asset)
 }
 
 func ipxeTarballURL(version string) string {
-	return fmt.Sprintf("%s/ipxe/ipxe/releases/download/%s/%s", githubDownloadBase, version, sbIPXETarball)
+	return fmt.Sprintf("%s/ipxe/ipxe/releases/download/%s/%s", githubDownloadBase(), version, sbIPXETarball)
 }
 
 // githubAssetDigest resolves the sha256 of a release asset: the pin for the
@@ -257,7 +262,7 @@ func githubAssetDigest(ctx context.Context, repo, tag, asset string, pins map[st
 	if sum, ok := pins[asset]; ok {
 		return sum, nil
 	}
-	url := fmt.Sprintf("%s/repos/%s/releases/tags/%s", githubAPIBase, repo, tag)
+	url := fmt.Sprintf("%s/repos/%s/releases/tags/%s", githubAPIBase(), repo, tag)
 	body, err := githubGet(ctx, url, 4<<20)
 	if err != nil {
 		return "", err
@@ -398,13 +403,15 @@ func fedoraReleaseOf(version string) string {
 
 // fedoraRPMURLs lists the mirror paths a package may live at, most likely
 // first: the release named by its version (if any), then every release in
-// fedoraReleases, each as updates/, releases/ and development/.
+// --fedoraReleases (config.FedoraReleaseList), each as updates/, releases/ and development/.
 func fedoraRPMURLs(rpmName, release string) []string {
 	letter := strings.ToLower(rpmName[:1])
+	fedoraReleases := config.FedoraReleaseList()
 	releases := fedoraReleases
 	if release != "" {
 		releases = append([]string{release}, fedoraReleases...)
 	}
+	mirror := config.FedoraMirrorBase()
 	var urls []string
 	seen := map[string]bool{}
 	for _, rel := range releases {
@@ -413,9 +420,9 @@ func fedoraRPMURLs(rpmName, release string) []string {
 		}
 		seen[rel] = true
 		urls = append(urls,
-			fmt.Sprintf("%s/updates/%s/Everything/x86_64/Packages/%s/%s", fedoraMirrorBase, rel, letter, rpmName),
-			fmt.Sprintf("%s/releases/%s/Everything/x86_64/os/Packages/%s/%s", fedoraMirrorBase, rel, letter, rpmName),
-			fmt.Sprintf("%s/development/%s/Everything/x86_64/os/Packages/%s/%s", fedoraMirrorBase, rel, letter, rpmName),
+			fmt.Sprintf("%s/updates/%s/Everything/x86_64/Packages/%s/%s", mirror, rel, letter, rpmName),
+			fmt.Sprintf("%s/releases/%s/Everything/x86_64/os/Packages/%s/%s", mirror, rel, letter, rpmName),
+			fmt.Sprintf("%s/development/%s/Everything/x86_64/os/Packages/%s/%s", mirror, rel, letter, rpmName),
 		)
 	}
 	return urls
@@ -423,26 +430,52 @@ func fedoraRPMURLs(rpmName, release string) []string {
 
 // installFedoraRPMMember downloads rpmName from the first mirror path that
 // has it, extracts member into dir/dest and removes the package. A pinned
-// package is verified; others are downloaded with a warning.
+// package is verified against its pin, any other against the sha256 its
+// repository's metadata (repomd.xml -> primary.xml) lists; when that cannot
+// be resolved the install is refused unless --allowUnverifiedFedoraRPMs.
 func installFedoraRPMMember(ctx context.Context, dir, rpmName, release, member, dest string) (string, error) {
 	destPath := filepath.Join(dir, dest)
-	sum, pinned := fedoraRPMPins[rpmName]
+	pinnedSum, pinned := fedoraRPMPins[rpmName]
 	if pinned {
 		if source, ok := existingSourceFor(dir, dest); ok {
 			slog.Info("Artifact already present", "path", destPath)
 			return source, nil
 		}
-	} else {
-		slog.Warn("No pinned sha256 for this Fedora package; downloading unverified", "rpm", rpmName)
 	}
+	allowUnverified := viper.GetBool(config.AllowUnverifiedFedoraRPMs)
 
 	rpmPath := filepath.Join(dir, rpmName)
 	var url string
-	var lastErr error
+	var lastErr, verifyErr error
 	for _, candidate := range fedoraRPMURLs(rpmName, release) {
-		hashAlgo := crypto.Hash(0)
-		if pinned {
-			hashAlgo = crypto.SHA256
+		hashAlgo, sum := crypto.SHA256, pinnedSum
+		if !pinned {
+			repoSum, err := retryMetadata(ctx, "repodata for "+candidate, func(ctx context.Context) (string, error) {
+				s, err := fedoraRepoSHA256(ctx, candidate)
+				if errors.Is(err, errNotInRepo) || errors.Is(err, errRepomdMissing) {
+					return "", errStopRetry{err}
+				}
+				return s, err
+			})
+			switch {
+			case err == nil:
+				sum = repoSum
+			case errors.Is(err, errRepomdMissing) && allowUnverified:
+				// The path may still carry the package; a 404 on it
+				// moves on to the next path below.
+				slog.Warn("Fedora repository has no repomd.xml; trying the package unverified (--allowUnverifiedFedoraRPMs)", "url", candidate, "error", err)
+				hashAlgo, sum = crypto.Hash(0), ""
+			case errors.Is(err, errNotInRepo), errors.Is(err, errRepomdMissing):
+				slog.Debug("Fedora repository does not carry the package", "url", candidate, "error", err)
+				lastErr = err
+				continue
+			case allowUnverified:
+				slog.Warn("Fedora repository metadata unavailable; downloading unverified (--allowUnverifiedFedoraRPMs)", "rpm", rpmName, "error", err)
+				hashAlgo, sum = crypto.Hash(0), ""
+			default:
+				verifyErr, lastErr = err, err
+				continue
+			}
 		}
 		if err := config.Download(ctx, config.DownloadClient, candidate, rpmPath, hashAlgo, sum); err != nil {
 			lastErr = err
@@ -456,6 +489,9 @@ func installFedoraRPMMember(ctx context.Context, dir, rpmName, release, member, 
 		break
 	}
 	if url == "" {
+		if verifyErr != nil {
+			return "", fmt.Errorf("%s: refusing to install without a verified sha256 (set --%s to override): %w", rpmName, config.AllowUnverifiedFedoraRPMs, verifyErr)
+		}
 		return "", fmt.Errorf("%s not found on any mirror path: %w", rpmName, lastErr)
 	}
 	defer removeQuietly(rpmPath)
@@ -510,14 +546,13 @@ func syncFlatcarCA(ctx context.Context) error {
 	base := flatcarReleaseURL(version)
 	url := base + "/" + flatcarCASourceFn
 	shimPath := config.SecureBootPath(sbFlatcarShim)
-	hashAlgo := crypto.Hash(0)
-	digest, err := LoadFlatcarDigest(ctx, base, flatcarCASourceFn)
+	digest, err := retryMetadata(ctx, flatcarCASourceFn+".DIGESTS", func(ctx context.Context) (string, error) {
+		return LoadFlatcarDigest(ctx, base, flatcarCASourceFn)
+	})
 	if err != nil {
-		slog.Warn("Could not load digest for the Flatcar shim, falling back to unverified download", "error", err)
-	} else {
-		hashAlgo = crypto.SHA512
+		return fmt.Errorf("refusing to extract the Flatcar CA from an unverified shim: %w", err)
 	}
-	if err := config.Download(ctx, config.DownloadClient, url, shimPath, hashAlgo, digest); err != nil {
+	if err := config.Download(ctx, config.DownloadClient, url, shimPath, crypto.SHA512, digest); err != nil {
 		return err
 	}
 	defer removeQuietly(shimPath)
