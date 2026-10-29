@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -161,6 +162,42 @@ func TestCoreOSVersionCheckFailsClosedWithoutChecksum(t *testing.T) {
 				t.Error("no sync error recorded")
 			}
 		})
+	}
+}
+
+func TestCoreOSMissingChecksumKeepsRetainedRelease(t *testing.T) {
+	srv, hits := fakeCoreOS(t, map[string]string{"rootfs": "-"})
+	dir := setupCoreOS(t, srv.URL)
+	release := filepath.Join(dir, OSCoreOS, coreOSTestVersion)
+	if err := os.MkdirAll(release, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	retained := map[string]string{}
+	for typ, name := range coreOSArtifactNames(coreOSTestVersion, "x86_64") {
+		retained[name] = "retained-" + typ
+		if err := os.WriteFile(filepath.Join(release, name), []byte(retained[name]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, _, err := LoadRemoteCoreOSVersion(context.Background(), "x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = downloadCoreOSArtifacts(context.Background(), body, coreOSTestVersion, "x86_64")
+
+	if err == nil || !errors.Is(err, errVerification) {
+		t.Fatalf("err = %v, want a verification error", err)
+	}
+	for name, want := range retained {
+		if got, err := os.ReadFile(filepath.Join(release, name)); err != nil || string(got) != want {
+			t.Errorf("%s: %q %v, retained release must survive untouched", name, got, err)
+		}
+	}
+	for path, h := range hits {
+		if path != "/streams/stable.json" && h.Load() != 0 {
+			t.Errorf("%s downloaded before every checksum was known", path)
+		}
 	}
 }
 

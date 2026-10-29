@@ -46,7 +46,7 @@ make image      # multi-stage container build (VERSION/TIMESTAMP stamped into /i
 make ipxe       # rebuild boot/*.kpxe|*.efi from the pinned iPXE release in a container (only when bumping iPXE or editing boot/embed.ipxe)
 ```
 
-Builds require **Go >= 1.26.10** (the `toolchain` directive in `go.mod`; the floor fixes 17 standard-library CVEs). The Web UI's Node version is single-sourced in [`web/.nvmrc`](../web/.nvmrc) (Node 26), which both CI and local builds read.
+Builds require **Go >= 1.26.10** (the `go` directive in `go.mod`; the floor fixes 17 standard-library CVEs). The Web UI's Node version is single-sourced in [`web/.nvmrc`](../web/.nvmrc) (Node 26), which both CI and local builds read.
 
 The iPXE binaries in `boot/` are committed, so a plain `go build` needs no cross toolchain and works air-gapped. `make ipxe` (see [hack/build-ipxe.sh](../hack/build-ipxe.sh)) rebuilds them reproducibly; verify with `cd boot && sha256sum -c SHA256SUMS`. Licensing details are in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 

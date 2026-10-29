@@ -277,9 +277,8 @@ function sameJSON(a: unknown, b: unknown): boolean {
 // a slow older request cannot overwrite a newer one (last-response-wins).
 let loadSeq = 0
 
-async function load(showSpinner = true) {
+async function load() {
   const seq = ++loadSeq
-  if (showSpinner) loading.value = true
   error.value = ''
   const [statusResult, hostsResult, powerResult] = await Promise.allSettled([
     getAutopilotStatus(statusQuery()),
@@ -323,7 +322,7 @@ async function showMoreEvents() {
   if (unfetchedEvents.value > 0) {
     allEvents.value = true
     eventsLoading.value = true
-    await load(false)
+    await refresh({ force: true })
     eventsLoading.value = false
   }
   shownEvents.value = Number.MAX_SAFE_INTEGER
@@ -338,7 +337,7 @@ async function clear(r: AutopilotRelease) {
       `/autopilot/${encodeURIComponent(r.os)}/release/${encodeURIComponent(r.version)}/clear`,
       {}
     )
-    await load(false)
+    await refresh({ force: true })
   } catch (err) {
     clearErrors[key] = errorMessage(err)
   } finally {
@@ -353,7 +352,7 @@ async function clearHost(h: AutopilotHost) {
   hostClearErrors[mac] = ''
   try {
     await apiPost<StatusResponse>(`/autopilot/host/${encodeURIComponent(mac)}/clear`, {})
-    await load(false)
+    await refresh({ force: true })
   } catch (err) {
     hostClearErrors[mac] = errorMessage(err)
   } finally {
@@ -385,17 +384,17 @@ function issueLabel(r: AutopilotReport): string {
   return m ? `#${m[1]}` : 'issue'
 }
 
-// The first poll runs on mount (immediate) with the spinner, so it counts
-// toward backoff and is shared with visibility refreshes.
-let firstLoad = true
-usePolling(
-  () => {
-    const showSpinner = firstLoad
-    firstLoad = false
-    return load(showSpinner)
-  },
-  { interval: REFRESH_INTERVAL_MS, immediate: true }
-)
+// The first poll runs on mount (immediate) under the initial spinner, so it
+// counts toward backoff and is shared with visibility refreshes. Every reload
+// goes through refresh() so a manual success resets the backoff; load() reads
+// allEvents, so a forced refresh after show-more fetches the whole ring.
+const { refresh } = usePolling(load, { interval: REFRESH_INTERVAL_MS, immediate: true })
+
+/** Manual Refresh/Retry: shows the spinner and joins any run in flight. */
+function reload() {
+  loading.value = true
+  return refresh()
+}
 </script>
 
 <template>
@@ -414,14 +413,14 @@ usePolling(
           type="button"
           class="btn btn-sm btn-outline-secondary"
           :disabled="loading"
-          @click="load()"
+          @click="reload()"
         >
           Refresh
         </button>
       </div>
     </div>
 
-    <ErrorAlert v-if="error" :message="error" @retry="load()" />
+    <ErrorAlert v-if="error" :message="error" @retry="reload()" />
     <LoadingState v-if="loading" label="Loading autopilot state…" />
 
     <template v-else>

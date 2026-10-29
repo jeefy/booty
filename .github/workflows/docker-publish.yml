@@ -56,7 +56,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        # go-version-file honours the `toolchain` directive in go.mod
+        # go-version-file reads the `go` directive in go.mod
         # (pinned to go1.26.10 to clear stdlib vulns found by govulncheck).
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -71,6 +71,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       # web/dist must exist before Go tests run (//go:embed all:web/dist)
+      - name: Check package-lock registry
+        run: |
+          # Fail if any "resolved" URL is not from registry.npmjs.org (e.g. a
+          # private proxy CI cannot reach).
+          ! grep -n '"resolved": "https://' web/package-lock.json | grep -v 'https://registry.npmjs.org/'
+
       - name: Lint, test, and build the web UI
         run: |
           cd web

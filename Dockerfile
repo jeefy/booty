@@ -35,18 +35,21 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
 
 RUN mkdir -p /out/data
 
-# File capabilities let the binary bind :69 (TFTP), :67/:4011 (ProxyDHCP) and
-# use raw ARP sockets while running as nonroot: exec() raises the file's
-# permitted+effective caps for any UID, as long as the container's bounding
-# set includes them (--cap-add NET_BIND_SERVICE,NET_RAW / the k8s
-# securityContext; ambient caps are not needed). BuildKit's COPY preserves
-# the xattr into the final stage.
+# File capabilities let the binary bind :67 (DHCP), :69 (TFTP) and :80
+# (HTTP when --httpPort=80) and use raw ARP sockets while running as
+# nonroot (ProxyDHCP's :4011 is above 1023 and needs no capability):
+# exec() raises the file's permitted+effective caps for any UID, as long
+# as the container's bounding set includes them
+# (--cap-add NET_BIND_SERVICE,NET_RAW / the k8s securityContext; ambient
+# caps are not needed). BuildKit's COPY preserves the xattr into the
+# final stage.
 RUN apk add --no-cache libcap \
     && setcap 'cap_net_bind_service,cap_net_raw=+ep' /out/booty
 
 ### Final stage
-# :nonroot runs as uid 65532 (nobody); combined with the file capabilities
-# above the server needs no root. Pinned by digest (gcr.io/distroless).
+# :nonroot runs as uid 65532 (nonroot, not nobody/65534); combined with
+# the file capabilities above the server needs no root. Pinned by digest
+# (gcr.io/distroless).
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 LABEL org.opencontainers.image.source="https://github.com/jeefy/booty" \

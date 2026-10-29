@@ -36,6 +36,8 @@ export function usePolling(task: PollTask, options: PollingOptions) {
   let timer: ReturnType<typeof setTimeout> | undefined
   let active = false
   let inFlight: Promise<void> | undefined
+  // Bumped per run; only the newest run updates the backoff and reschedules.
+  let generation = 0
 
   function clear() {
     if (timer !== undefined) clearTimeout(timer)
@@ -52,7 +54,7 @@ export function usePolling(task: PollTask, options: PollingOptions) {
     timer = setTimeout(() => void refresh(), backoffDelay(options.interval, failures.value, maxInterval))
   }
 
-  async function execute() {
+  async function execute(gen: number) {
     refreshing.value = true
     let ok: boolean
     try {
@@ -60,18 +62,27 @@ export function usePolling(task: PollTask, options: PollingOptions) {
     } catch {
       ok = false
     }
+    if (gen !== generation) return
     failures.value = ok ? 0 : failures.value + 1
     refreshing.value = false
   }
 
-  /** Runs the task now (joining a run already in flight) and reschedules. */
-  function refresh(): Promise<void> {
+  /**
+   * Runs the task now and reschedules. Joins a run already in flight unless
+   * `force` is set; a forced run supersedes it (use after a mutation, whose
+   * result an older run may predate), and the older run's outcome is ignored.
+   */
+  function refresh(opts: { force?: boolean } = {}): Promise<void> {
+    if (inFlight && !opts.force) return inFlight
     clear()
-    inFlight ??= execute().finally(() => {
+    const gen = ++generation
+    const run = execute(gen).finally(() => {
+      if (gen !== generation) return
       inFlight = undefined
       schedule()
     })
-    return inFlight
+    inFlight = run
+    return run
   }
 
   function onVisibility() {

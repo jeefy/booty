@@ -4,7 +4,7 @@ import HomeView from '../views/HomeView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
-  scrollBehavior: () => ({ top: 0 }),
+  scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },
   routes: [
     { path: '/', name: 'home', component: HomeView },
     { path: '/hosts', name: 'hosts', component: () => import('../views/HostsView.vue') },

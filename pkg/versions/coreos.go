@@ -144,13 +144,20 @@ func loadLocalCoreOSVersion(arch string) string {
 func downloadCoreOSArtifacts(ctx context.Context, body []byte, version, arch string) error {
 	base := coreOSReleaseURL(version, arch)
 	names := coreOSArtifactNames(version, arch)
-	for _, artifactType := range []string{"initramfs", "kernel", "rootfs"} {
-		file := names[artifactType]
+	types := []string{"initramfs", "kernel", "rootfs"}
+	// Every checksum is checked before anything is written, and a missing
+	// one removes nothing: coreos/<version>/ may be a retained release
+	// (previous, lastGood, pinned) that must survive.
+	shas := make(map[string]string, len(types))
+	for _, artifactType := range types {
 		sha, err := extractCoreOSChecksum(body, arch, artifactType)
 		if err != nil {
-			removeOldCoreOSArtifacts(version, arch)
-			return fmt.Errorf("%s: refusing to install without its sha256: %w: %w", file, errVerification, err)
+			return fmt.Errorf("%s: refusing to install without its sha256: %w: %w", names[artifactType], errVerification, err)
 		}
+		shas[artifactType] = sha
+	}
+	for _, artifactType := range types {
+		file, sha := names[artifactType], shas[artifactType]
 		// Fedora has renamed artifacts over time (e.g. -live-kernel-x86_64
 		// became -live-kernel.x86_64), so fetch from the location the stream
 		// publishes and keep our stable local name for the boot scripts.

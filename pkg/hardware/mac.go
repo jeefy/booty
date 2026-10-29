@@ -501,15 +501,29 @@ func (db *DB) Put(h Host) (*Host, error) {
 
 // oneShotChanged reports whether an update changed a field that drives a
 // one-shot transition (an install, the boot mode, the served release, the
-// autopilot pin). Losing such a change to the batch window, a crash or an
-// external edit can reinstall a host and wipe its disk, so it is written
-// synchronously.
+// autopilot pin, the power request and cordon). Losing such a change to the
+// batch window, a crash or an external edit can reinstall a host and wipe
+// its disk, repeat a reboot/shutdown or leave a node cordoned, so it is
+// written synchronously.
 func oneShotChanged(before, after *Host) bool {
 	return before.DoInstall != after.DoInstall ||
 		before.Mode != after.Mode ||
 		before.InstallServedAt != after.InstallServedAt ||
 		before.TargetVersion != after.TargetVersion ||
-		autopilotPinned(before) != autopilotPinned(after)
+		autopilotPinned(before) != autopilotPinned(after) ||
+		powerCordoned(before) != powerCordoned(after) ||
+		powerRequest(before) != powerRequest(after)
+}
+
+func powerCordoned(h *Host) bool {
+	return h.Power != nil && h.Power.Cordoned
+}
+
+func powerRequest(h *Host) string {
+	if h.Power == nil {
+		return ""
+	}
+	return h.Power.Request
 }
 
 func autopilotPinned(h *Host) bool {

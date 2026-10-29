@@ -51,7 +51,7 @@ docker run --rm -it \
   --serverIP=192.168.1.10
 ```
 
-The image runs as **nonroot** (uid 65532; applies to `:main` and releases after 1.0.0) with the `NET_BIND_SERVICE` and `NET_RAW` file capabilities on the binary, so the two `--cap-add` flags are required to keep them in the bounding set, and the `/data` volume must be writable by uid 65532 (`chown -R 65532:65532 data`, or `fsGroup: 65532` plus `runAsUser: 65532` on Kubernetes). See [Trust model and capabilities](docs/trust-model.md#running-as-root--capabilities).
+The image runs as **nonroot** (uid 65532; applies to `:main` and releases after 1.0.0) with the `NET_BIND_SERVICE` and `NET_RAW` file capabilities on the binary, so the two `--cap-add` flags are required to keep them in the bounding set, and the `/data` volume must be writable by uid 65532 (`chown -R 65532:65532 data`, or `fsGroup: 65532` plus `runAsUser: 65532` on Kubernetes). This also applies to **Podman**: its default capability set lacks `NET_RAW`, and with the setcap `+ep` binary exec fails with `EPERM` unless `NET_RAW` is in the bounding set, so Podman users must pass `--cap-add NET_RAW --cap-add NET_BIND_SERVICE` just like the docker example above. See [Trust model and capabilities](docs/trust-model.md#running-as-root--capabilities).
 
 ### Kubernetes
 

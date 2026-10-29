@@ -109,6 +109,42 @@ describe('usePolling', () => {
     expect(refreshing.value).toBe(false)
   })
 
+  it('resets the backoff after a successful manual refresh', async () => {
+    let fail = true
+    const task = vi.fn(() => {
+      if (fail) throw new Error('down')
+    })
+    const { failures, refresh } = poll(task, false, 8_000)
+    await vi.advanceTimersByTimeAsync(3_000) // fail at 1s and 3s -> next in 4s
+    expect(failures.value).toBe(2)
+    fail = false
+    await refresh()
+    expect(failures.value).toBe(0)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(task).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(task).toHaveBeenCalledTimes(4)
+  })
+
+  it('lets a forced refresh supersede the run in flight', async () => {
+    const resolvers: Array<(ok: boolean) => void> = []
+    const task = vi.fn(() => new Promise<boolean>((r) => resolvers.push(r)))
+    const { refresh, failures, refreshing } = poll(task)
+    const a = refresh()
+    const b = refresh({ force: true })
+    expect(a).not.toBe(b)
+    expect(task).toHaveBeenCalledTimes(2)
+    resolvers[1]!(true)
+    await b
+    expect(failures.value).toBe(0)
+    expect(refreshing.value).toBe(false)
+    resolvers[0]!(false) // stale failure is ignored
+    await a
+    expect(failures.value).toBe(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(task).toHaveBeenCalledTimes(3)
+  })
+
   it('stops with its scope and ignores visibility afterwards', async () => {
     const task = vi.fn()
     poll(task)

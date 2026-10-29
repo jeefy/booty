@@ -16,9 +16,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `fsGroupChangePolicy: OnRootMismatch` plus `runAsUser: 65532` and
   `runAsNonRoot: true`; the example in `examples/k8s.yaml` does all of
   these), and the bounding set must still include `NET_BIND_SERVICE` and
-  `NET_RAW` -- the `--cap-add` flags in the examples do exactly that, and
-  `allowPrivilegeEscalation` must not be `false` (file capabilities are
-  raised through the privilege-escalation path on exec). The autopilot's
+  `NET_RAW` -- the `--cap-add` flags in the examples do exactly that.
+  Note that `allowPrivilegeEscalation: false` does not fail at exec:
+  with `no_new_privs` the file capabilities are silently not granted,
+  so the binary starts but, as non-root, cannot bind :67/:69/:80 or
+  open raw sockets -- leave it unset (or true) so the caps apply. The autopilot's
   reboot/power Pods (`booty node-reboot`) now run as root
   (`runAsUser: 0`) because the main image is nonroot; they were already
   privileged and hostPID. `make image-run` maps the container to the
@@ -107,7 +109,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Build
 
-- **Builds require Go >= 1.26.10** (the `toolchain` directive in
+- **Builds require Go >= 1.26.10** (the `go` directive in
   `go.mod`; the floor fixes 17 standard-library CVEs). The Web UI's Node
   version is single-sourced in `web/.nvmrc` (Node 26). The Makefile
   gained `test-go`, `test-web`, `lint-go`, `lint-web` and `fmt-check`;

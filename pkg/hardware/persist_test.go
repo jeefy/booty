@@ -232,6 +232,10 @@ func TestOneShotUpdateIsPersistedImmediately(t *testing.T) {
 		{"installServedAt", Host{}, func(h *Host) { h.InstallServedAt = "2026-10-29T00:00:00Z" }, func(h *Host) bool { return h.InstallServedAt != "" }},
 		{"targetVersion", Host{}, func(h *Host) { h.TargetVersion = "1.2.3" }, func(h *Host) bool { return h.TargetVersion == "1.2.3" }},
 		{"pin", Host{Autopilot: &HostAutopilot{State: AutopilotIdle}}, func(h *Host) { h.Autopilot = &HostAutopilot{State: AutopilotIdle, Pinned: true} }, func(h *Host) bool { return h.Autopilot != nil && h.Autopilot.Pinned }},
+		{"cordon", Host{Power: &HostPower{State: PowerUp}}, func(h *Host) { h.Power.Cordoned = true }, func(h *Host) bool { return h.Power != nil && h.Power.Cordoned }},
+		{"uncordon", Host{Power: &HostPower{State: PowerUp, Cordoned: true}}, func(h *Host) { h.Power.Cordoned = false }, func(h *Host) bool { return h.Power != nil && !h.Power.Cordoned }},
+		{"powerRequest", Host{}, func(h *Host) { h.Power = &HostPower{State: PowerDraining, Request: PowerRequestReboot} }, func(h *Host) bool { return h.Power != nil && h.Power.Request == PowerRequestReboot }},
+		{"powerRequestCleared", Host{Power: &HostPower{State: PowerRebooting, Request: PowerRequestShutdown}}, func(h *Host) { h.Power = &HostPower{State: PowerUp} }, func(h *Host) bool { return h.Power != nil && h.Power.Request == "" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

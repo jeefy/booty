@@ -113,8 +113,7 @@ async function loadCluster() {
   }
 }
 
-async function load(showSpinner = true) {
-  if (showSpinner) loading.value = true
+async function load() {
   error.value = ''
   const clusterRequest = loadCluster()
   let ok = true
@@ -181,7 +180,7 @@ async function savePin(version: string) {
     pinStatus.value = result.pinned
       ? `Pinned to ${result.version}. Downloading in the background.`
       : 'Pin cleared. Tracking the latest channel release.'
-    await load(false)
+    await refresh({ force: true })
   } catch (err) {
     pinError.value = errorMessage(err)
   } finally {
@@ -199,17 +198,16 @@ function clearPin() {
   void savePin('')
 }
 
-// The first poll runs on mount (immediate) with the spinner, so it counts
-// toward backoff and is shared with visibility refreshes.
-let firstLoad = true
-usePolling(
-  () => {
-    const showSpinner = firstLoad
-    firstLoad = false
-    return load(showSpinner)
-  },
-  { interval: REFRESH_INTERVAL_MS, immediate: true }
-)
+// The first poll runs on mount (immediate) under the initial spinner, so it
+// counts toward backoff and is shared with visibility refreshes. Every reload
+// goes through refresh() so a manual success resets the backoff.
+const { refresh } = usePolling(load, { interval: REFRESH_INTERVAL_MS, immediate: true })
+
+/** Manual Retry: shows the spinner and joins any run in flight. */
+function reload() {
+  loading.value = true
+  return refresh()
+}
 
 onUnmounted(() => {
   if (copiedTimer) clearTimeout(copiedTimer)
@@ -224,7 +222,7 @@ onUnmounted(() => {
       <span class="small text-secondary">Refreshes every 30s</span>
     </div>
 
-    <ErrorAlert v-if="error" :message="error" @retry="load()" />
+    <ErrorAlert v-if="error" :message="error" @retry="reload()" />
     <LoadingState v-if="loading" label="Loading status…" />
 
     <template v-else>

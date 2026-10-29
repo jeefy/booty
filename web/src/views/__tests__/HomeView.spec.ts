@@ -392,6 +392,29 @@ describe('HomeView', () => {
     wrapper.unmount()
   })
 
+  it('resets the poll backoff to 30s after a successful manual Retry', async () => {
+    let failing = true
+    const { wrapper, spy } = mountHome({
+      '/info': () => (failing ? jsonResponse({ error: 'boom' }, 500) : jsonResponse(baseInfo))
+    })
+    await flushPromises()
+    const infoCalls = () => spy.mock.calls.filter(([url]) => url === '/info').length
+    await vi.advanceTimersByTimeAsync(60_000) // failure 2 -> next poll in 120s
+    expect(infoCalls()).toBe(2)
+
+    failing = false
+    await wrapper.find('.alert-danger button').trigger('click')
+    await flushPromises()
+    expect(infoCalls()).toBe(3)
+    expect(wrapper.find('.alert-danger').exists()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(infoCalls()).toBe(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(infoCalls()).toBe(4)
+    wrapper.unmount()
+  })
+
   it('renders the cluster card from /cluster with facts, readiness, role counts and fingerprint', async () => {
     const { wrapper } = mountHome({ '/cluster': () => jsonResponse(clusterInfo) })
     await flushPromises()
