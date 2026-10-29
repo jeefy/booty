@@ -201,3 +201,8 @@ a:hover {
     animation: none;
   }
 }
+
+/* <main> takes programmatic focus on route change; it is not interactive. */
+#main-content:focus {
+  outline: none;
+}

@@ -8,18 +8,61 @@ output must exist before starting `booty`).
 
 ```
 src/
-  api.ts          typed fetch helpers (apiGet / apiGetText / apiPost / apiPut) + ApiError from the JSON error envelope
-  types.ts        wire types mirroring the Go API (Host, UnknownHost, BootyData, Info, PinState, Storage) + normalisers
+  api.ts          fetch helpers (apiGet / apiGetText / apiPost / apiPut), ApiError from the JSON error envelope,
+                  and normalised endpoint getters (getBootyData, getInfo, getAutopilotStatus, getPowerStatus,
+                  getStorage, getClusterInfo, getEffectiveConfig)
+  types/          wire types mirroring the Go API + normalisers, one module per domain
+                  (host, power, autopilot, info, storage, config, cluster); import from `@/types`
+  composables/    usePolling (visibility-aware poll with error backoff)
   utils/time.ts   relative / absolute time formatting for RFC3339 timestamps
   utils/fleet.ts  fleet helpers: running-label splitting, host status, pending list, preview URLs
   components/     ErrorAlert, LoadingState, EmptyState, HostForm
   views/          HomeView (status + Flatcar pin), HostsView, StorageView, AutopilotView, ConfigView, AboutView
   router/         hash-based routes (/, /hosts, /storage, /autopilot, /config, /about)
+  assets/bootstrap.scss  the Bootstrap 5 Sass partials the UI uses
   assets/main.css design tokens (CSS variables) layered on top of Bootstrap 5
 ```
 
-Bootstrap CSS is imported from the npm package in `src/main.ts`; no Bootstrap
-JS is used (the navbar collapse is driven by Vue state).
+`src/assets/bootstrap.scss` compiles only the Bootstrap partials the templates
+use (layout, reboot/type, grid, tables, forms, buttons, transitions, nav,
+navbar, badge, alert, spinners, helpers, utilities). A component outside that
+list (card, modal, dropdown, progress, …) renders unstyled until its partial
+is added there. This cut the main CSS bundle from 238 kB (32.6 kB gzip) to
+163 kB (23.8 kB gzip). No Bootstrap JS is used (the navbar collapse is driven
+by Vue state).
+
+### API responses
+
+Views fetch through the `get*` helpers in `api.ts`, which run each body
+through its normaliser in `@/types`. A body that is not a JSON object, or is
+not JSON at all, becomes an `ApiError` ("Unexpected response from /info: …")
+that the page's error alert shows; missing or mistyped fields fall back to
+defaults inside the normalisers. The bare `apiGet<T>` is for endpoints
+without a normaliser.
+
+### Polling
+
+Home and Autopilot refresh every 30 s via `usePolling`. It pauses while the
+tab is hidden, refreshes as soon as it is visible again, and after a failed
+poll doubles the delay (up to 5 min) until a poll succeeds.
+
+### Why the wire types are hand-written
+
+Generating them from the Go structs (e.g. with
+[tygo](https://github.com/gzuidhof/tygo)) was evaluated and rejected for now:
+
+- the `/info`, `/config`, `/cluster` and `/flatcar/pin` response structs in
+  `pkg/server` are unexported, and some handlers return `map[string]any`, so
+  generation would need Go-side renames across the server package;
+- tygo emits `any` for `time.Time`, `time.Duration` and interface fields and
+  plain `string` for enum-like fields, losing the unions the UI switches on;
+- the `Raw*` types are deliberately looser than the Go structs so the UI
+  tolerates older servers, which a generator cannot express;
+- generating only `pkg/hardware` and the autopilot controller would leave two
+  sources of truth.
+
+Keep `src/types/*` in sync with the Go structs by hand; the normaliser tests
+in `src/__tests__/types.spec.ts` pin the expected shapes.
 
 ## Fleet status
 
@@ -31,8 +74,8 @@ Each `Host` carries three fleet fields reported by the running machine:
 value in the tooltip) and a relative **Last check** column; Ignition file,
 OSTree image and the install flag are folded into the Host cell to keep the
 table readable at 1280px. Hosts from older servers that omit the fields are
-normalised to `""`/`false` in `types.ts`. `hostReporting(host, now)` in
-`types.ts` derives `never` (no `lastCheck`, `booted` or `health` at all: the
+normalised to `""`/`false` in `@/types`. `hostReporting(host, now)` in
+`@/types` derives `never` (no `lastCheck`, `booted` or `health` at all: the
 host booted before the `update`/`health` builtin units existed, or with
 `--builtin=none`), `stale` (`lastCheck` older than 30 min) or `reporting`;
 `versionMatch(host, targets)` compares `running` (or the host's
@@ -69,7 +112,7 @@ the host's last boot script came through the Secure Boot path (UEFI HTTP Boot,
 signed iPXE) and cleared by a plain PXE fetch. The Hosts table shows it as a
 **Secure Boot** shield badge next to the OS badge; it is read-only in the form
 and simply echoed back to `/register` with the rest of the host. `GET /info`'s
-`secureBoot` block (`normalizeSecureBootInfo` in `types.ts`) feeds the Overview
+`secureBoot` block (`normalizeSecureBootInfo` in `@/types`) feeds the Overview
 page's **Secure Boot** card: state (`off` / `syncing artefacts` / `ready`),
 bundle version, boot URL, trusted CAs, the Flatcar CA fingerprint with copy and
 `.der` download buttons, and the server's warnings about hosts that cannot boot
@@ -79,7 +122,7 @@ discoverable; with `enabled: false` it collapses to the one-line off state.
 ## Autopilot
 
 `AutopilotView` renders `GET /autopilot` (`normalizeAutopilotStatus` in
-`types.ts`), polled every 30 s like the Overview: mode, actuator, cluster and
+`@/types`), polled every 30 s like the Overview: mode, actuator, cluster and
 attention counters as stat cards, a fleet-target table per OS (fleet target
 with a **held** badge, `current`, `lastGood`; the releases that need an eye on
 them -- anything not `good`, or `failing` -- listed with their state badge,
@@ -131,7 +174,8 @@ server. It defaults to `http://localhost:8080`; override with
 ```sh
 npm run lint         # ESLint 9 flat config: eslint-plugin-vue flat/recommended + TS + Prettier
 npm run type-check   # vue-tsc --build (views and tests are type-checked)
-npm run test:unit -- --run   # Vitest + jsdom + @vue/test-utils
+npm test             # Vitest + jsdom + @vue/test-utils, single run (test:unit watches)
+npm run test:coverage   # same, with V8 coverage -> coverage/ (text summary, html, lcov, json-summary)
 npm run format       # Prettier over src/
 ```
 

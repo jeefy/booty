@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ApiError, apiGet, apiPost, apiPut, errorMessage } from '@/api'
+import { ApiError, apiGet, getBootyData, getEffectiveConfig, apiPost, apiPut, errorMessage } from '@/api'
 import {
   normalizeBootyData,
   normalizeEffectiveConfig,
@@ -8,8 +8,6 @@ import {
   normalizeTemplateValidation,
   type BootyData,
   type EffectiveConfig,
-  type RawBootyData,
-  type RawEffectiveConfig,
   type RawTemplateValidation,
   type SettingSource,
   type TemplateDocument,
@@ -114,11 +112,11 @@ async function load() {
   error.value = ''
   try {
     const [rawConfig, rawHosts] = await Promise.all([
-      apiGet<RawEffectiveConfig>('/config'),
-      apiGet<RawBootyData>('/booty.json').catch(() => null)
+      getEffectiveConfig(),
+      getBootyData().catch(() => null)
     ])
-    config.value = normalizeEffectiveConfig(rawConfig)
-    hostData.value = normalizeBootyData(rawHosts)
+    config.value = rawConfig
+    hostData.value = rawHosts ?? normalizeBootyData(null)
     if (!templateOptions.value.some((o) => o.value === selectedTemplate.value)) {
       selectedTemplate.value = ''
     }
@@ -231,7 +229,7 @@ function describeSaveError(err: unknown): string {
 
 async function refreshConfigSummary() {
   try {
-    config.value = normalizeEffectiveConfig(await apiGet<RawEffectiveConfig>('/config'))
+    config.value = await getEffectiveConfig()
   } catch {
     // the template itself saved fine; the summary refreshes on the next full load
   }

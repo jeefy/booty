@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import { usePolling } from '@/composables/usePolling'
 import { RouterLink } from 'vue-router'
-import { apiGet, apiGetText, apiPost, errorMessage } from '@/api'
+import {
+  apiGetText,
+  getAutopilotStatus,
+  getBootyData,
+  getPowerStatus,
+  type AutopilotQuery, apiPost, errorMessage } from '@/api'
 import {
   AUTOPILOT_HOST_LABEL,
   OS_OPTIONS,
@@ -9,17 +15,12 @@ import {
   hostOS,
   isHistoryState,
   normalizeAutopilotStatus,
-  normalizeBootyData,
-  normalizePowerStatus,
   type AutopilotHost,
   type AutopilotRelease,
   type AutopilotReport,
   type AutopilotStatus,
   type HostOS,
   type PowerEvent,
-  type RawAutopilotStatus,
-  type RawBootyData,
-  type RawPowerStatus,
   type StatusResponse
 } from '@/types'
 import {
@@ -244,8 +245,8 @@ function episodeState(h: AutopilotHost) {
   return AUTOPILOT_HOST_LABEL[h.episode?.state ?? 'idle']
 }
 
-function statusURL(): string {
-  return allEvents.value ? '/autopilot?events=all' : '/autopilot'
+function statusQuery(): AutopilotQuery {
+  return allEvents.value ? '?events=all' : ''
 }
 
 /**
@@ -272,22 +273,30 @@ function sameJSON(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+// Bumped per load(); a response whose seq is no longer current is dropped so
+// a slow older request cannot overwrite a newer one (last-response-wins).
+let loadSeq = 0
+
 async function load(showSpinner = true) {
+  const seq = ++loadSeq
   if (showSpinner) loading.value = true
   error.value = ''
   const [statusResult, hostsResult, powerResult] = await Promise.allSettled([
-    apiGet<RawAutopilotStatus>(statusURL()),
-    apiGet<RawBootyData>('/booty.json'),
-    apiGet<RawPowerStatus>('/power')
+    getAutopilotStatus(statusQuery()),
+    getBootyData(),
+    getPowerStatus()
   ])
+  // Only the status call decides the poll's health; hosts and power are extras.
+  const ok = statusResult.status === 'fulfilled'
+  if (seq !== loadSeq) return ok
   if (statusResult.status === 'fulfilled') {
-    const next = normalizeAutopilotStatus(statusResult.value)
+    const next = statusResult.value
     if (!unchanged(next, status.value)) status.value = next
   } else {
     error.value = errorMessage(statusResult.reason)
   }
   if (hostsResult.status === 'fulfilled') {
-    const fleet = Object.values(normalizeBootyData(hostsResult.value).hosts)
+    const fleet = Object.values(hostsResult.value.hosts)
     const names = Object.fromEntries(fleet.map((h) => [h.mac, h.hostname]))
     if (!sameJSON(names, hostnames.value)) hostnames.value = names
     const movers: WaveHost[] = fleet.map((h) => ({
@@ -299,9 +308,10 @@ async function load(showSpinner = true) {
     if (!sameJSON(movers, waveHosts.value)) waveHosts.value = movers
   }
   const power =
-    powerResult.status === 'fulfilled' ? normalizePowerStatus(powerResult.value).events : []
+    powerResult.status === 'fulfilled' ? powerResult.value.events : []
   if (!sameJSON(power, powerEvents.value)) powerEvents.value = power
   loading.value = false
+  return ok
 }
 
 /** 50 events, then 100, then the whole ring, fetched only when asked for. */
@@ -375,16 +385,17 @@ function issueLabel(r: AutopilotReport): string {
   return m ? `#${m[1]}` : 'issue'
 }
 
-let timer: ReturnType<typeof setInterval> | undefined
-
-onMounted(() => {
-  void load()
-  timer = setInterval(() => void load(false), REFRESH_INTERVAL_MS)
-})
-
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
-})
+// The first poll runs on mount (immediate) with the spinner, so it counts
+// toward backoff and is shared with visibility refreshes.
+let firstLoad = true
+usePolling(
+  () => {
+    const showSpinner = firstLoad
+    firstLoad = false
+    return load(showSpinner)
+  },
+  { interval: REFRESH_INTERVAL_MS, immediate: true }
+)
 </script>
 
 <template>

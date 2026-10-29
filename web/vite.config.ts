@@ -36,6 +36,16 @@ export default defineConfig(({ mode }) => {
         '@': fileURLToPath(new URL('./src', import.meta.url))
       }
     },
+    css: {
+      preprocessorOptions: {
+        scss: {
+          // Bootstrap 5.3's Sass predates the module system; its warnings
+          // are not actionable here.
+          quietDeps: true,
+          silenceDeprecations: ['import', 'global-builtin', 'color-functions', 'if-function']
+        }
+      }
+    },
     server: {
       proxy: Object.fromEntries(API_ROUTES.map((route) => [route, { target, changeOrigin: true }]))
     }

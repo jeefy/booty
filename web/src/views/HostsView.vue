@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { apiGet, apiPost, errorMessage } from '@/api'
+import { apiPost, getBootyData, getInfo, getPowerStatus, errorMessage } from '@/api'
 import {
   AUTOPILOT_HOST_LABEL,
   autopilotHostState,
@@ -9,17 +9,13 @@ import {
   hostTarget,
   normalizeBootyData,
   normalizeHost,
-  normalizePowerStatus,
   registerPayload,
   versionMatch,
   type BootyData,
   type FleetTargets,
   type Host,
   type HostPower,
-  type Info,
   type PowerCapabilities,
-  type RawBootyData,
-  type RawPowerStatus,
   type RegisterResponse,
   type StatusResponse,
   type UnknownHost
@@ -75,7 +71,7 @@ function clearRowState(mac: string) {
 
 async function loadPower() {
   try {
-    powerCapabilities.value = normalizePowerStatus(await apiGet<RawPowerStatus>('/power')).capabilities
+    powerCapabilities.value = (await getPowerStatus()).capabilities
   } catch {
     powerCapabilities.value = null
   }
@@ -83,7 +79,7 @@ async function loadPower() {
 
 async function loadTargets() {
   try {
-    targets.value = fleetTargets((await apiGet<Info>('/info')) ?? {})
+    targets.value = fleetTargets(await getInfo())
   } catch {
     targets.value = {}
   }
@@ -96,7 +92,7 @@ async function load() {
   const power = loadPower()
   const info = loadTargets()
   try {
-    hostData.value = normalizeBootyData(await apiGet<RawBootyData>('/booty.json'))
+    hostData.value = await getBootyData()
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
@@ -201,13 +197,24 @@ const reporting = computed(() => {
   return states
 })
 
+interface HostMatch {
+  match: ReturnType<typeof versionMatch>
+  target: string
+}
+
+const NO_MATCH: HostMatch = { match: 'unknown', target: '' }
+
 const matches = computed(() => {
-  const result: Record<string, { match: ReturnType<typeof versionMatch>; target: string }> = {}
+  const result: Record<string, HostMatch> = {}
   for (const [mac, host] of hosts.value) {
     result[mac] = { match: versionMatch(host, targets.value), target: hostTarget(host, targets.value) }
   }
   return result
 })
+
+function matchFor(mac: string): HostMatch {
+  return matches.value[mac] ?? NO_MATCH
+}
 
 onMounted(() => {
   void load()
@@ -380,22 +387,22 @@ onMounted(() => {
                         {{ runningLabels[mac].image }}
                       </span>
                       <span
-                        v-if="matches[mac].match === 'match'"
+                        v-if="matchFor(mac).match === 'match'"
                         class="version-match version-match--ok"
-                        :title="`Running the target release ${matches[mac].target}`"
+                        :title="`Running the target release ${matchFor(mac).target}`"
                         data-testid="host-version-match"
                         data-match="match"
                         aria-label="on target"
                         >✓</span
                       >
                       <span
-                        v-else-if="matches[mac].match === 'behind'"
+                        v-else-if="matchFor(mac).match === 'behind'"
                         class="badge text-bg-warning version-behind"
-                        :title="`Target release is ${matches[mac].target}; the host runs ${host.running}`"
+                        :title="`Target release is ${matchFor(mac).target}; the host runs ${host.running}`"
                         data-testid="host-version-match"
                         data-match="behind"
                       >
-                        behind {{ matches[mac].target }}
+                        behind {{ matchFor(mac).target }}
                       </span>
                     </div>
                     <div
