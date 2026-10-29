@@ -176,6 +176,9 @@ spec:
       serviceAccountName: booty
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -228,9 +231,18 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 20
           securityContext:
+            runAsUser: 65532
+            # The image runs as nonroot (uid 65532) with file capabilities on
+            # /booty; the caps below populate the bounding set so exec() can
+            # raise them. NET_BIND_SERVICE: TFTP :69, ProxyDHCP :67/:4011 and
+            # --httpPort=80. NET_RAW: the ARP fallback for MAC-less requests.
+            # allowPrivilegeEscalation must NOT be false: setcap +ep file
+            # caps require the privilege-escalation path (file-cap raise) on
+            # exec; setting it to false would EPERM the binary at startup.
             capabilities:
               drop: ["ALL"]
               add: ["NET_BIND_SERVICE", "NET_RAW"]
+            runAsNonRoot: true
           resources:
             requests:
               cpu: 100m

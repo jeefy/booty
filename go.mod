@@ -2,6 +2,11 @@ module github.com/jeefy/booty
 
 go 1.26.0
 
+// Pin the minimum toolchain to go1.26.10: earlier 1.26 patch releases carry
+// 17 stdlib vulnerabilities (govulncheck, 2026-10-29). actions/setup-go
+// honours this directive for `go-version-file: go.mod`.
+toolchain go1.26.10
+
 require (
 	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/buger/jsonparser v1.6.1
