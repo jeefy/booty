@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -194,9 +195,26 @@ type unknownEntry struct {
 	count     int
 }
 
-// DB is an in-memory host database backed by a JSON file on disk. Every write
-// is persisted atomically; reads pick up external edits of the file by
-// comparing its size and mtime with the last load.
+// PersistInterval bounds how long a batched change (Update, MarkBooted,
+// SetSecureBoot) may sit in memory before the background flush writes it.
+const PersistInterval = 2 * time.Second
+
+// DB is an in-memory host database backed by a JSON file on disk.
+//
+// Persistence: operator-visible changes (Put, Delete) and one-shot
+// transitions made through Update (doInstall, mode, installServedAt,
+// targetVersion, the autopilot pin) are written synchronously, together
+// with any pending batched change. Runtime bookkeeping (other Update
+// changes, MarkBooted, SetSecureBoot) only marks the map dirty;
+// a single flush writes it at most PersistInterval later, and Flush/Close
+// write it at once. Every write is atomic and records the file's size and
+// mtime, so our own writes never trigger a reload.
+//
+// External edits: reads compare the file's size and mtime with the last
+// load or write. A change on disk is an operator edit and wins: the file is
+// reloaded. If batched changes were still pending they are discarded with
+// a warning naming the hosts they touched (the next boot, check or report
+// records them again); they are never written over the edit.
 type DB struct {
 	mu      sync.Mutex
 	path    string
@@ -205,15 +223,23 @@ type DB struct {
 	modTime time.Time
 	size    int64
 	now     func() time.Time
+
+	// dirty names the hosts with batched changes not yet on disk.
+	dirty    map[string]bool
+	flushing *time.Timer
+	interval time.Duration
+	closed   bool
 }
 
 // Open loads the host database at path, creating an empty one if missing.
 func Open(path string) (*DB, error) {
 	db := &DB{
-		path:    path,
-		hosts:   map[string]*Host{},
-		unknown: map[string]*unknownEntry{},
-		now:     time.Now,
+		path:     path,
+		hosts:    map[string]*Host{},
+		unknown:  map[string]*unknownEntry{},
+		now:      time.Now,
+		dirty:    map[string]bool{},
+		interval: PersistInterval,
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if err := config.WriteFileAtomic(path, []byte("{}\n"), 0o644); err != nil {
@@ -286,7 +312,82 @@ func (db *DB) maybeReload() {
 	slog.Info("Hardware map changed on disk, reloading", "path", db.path)
 	if err := db.reload(); err != nil {
 		slog.Error("Reloading hardware map failed; keeping in-memory copy", "error", err)
+		return
 	}
+	if len(db.dirty) > 0 {
+		macs := make([]string, 0, len(db.dirty))
+		for mac := range db.dirty {
+			macs = append(macs, mac)
+		}
+		slices.Sort(macs)
+		slog.Warn("Hardware map edited on disk while runtime updates were pending; the edit wins and the pending updates are dropped", "path", db.path, "hosts", macs)
+		clear(db.dirty)
+	}
+}
+
+// markDirty records a batched change of mac and schedules the flush. After
+// Close there is no background flush, so the change is written at once.
+func (db *DB) markDirty(mac string) {
+	db.dirty[mac] = true
+	if db.closed {
+		if err := db.persist(); err != nil {
+			slog.Error("Persisting hardware map after close failed", "mac", mac, "error", err)
+		}
+		return
+	}
+	db.scheduleFlush()
+}
+
+func (db *DB) scheduleFlush() {
+	if db.flushing != nil || db.closed {
+		return
+	}
+	db.flushing = time.AfterFunc(db.interval, db.backgroundFlush)
+}
+
+func (db *DB) backgroundFlush() {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.flushing = nil
+	if err := db.flushLocked(); err != nil {
+		slog.Error("Persisting hardware map failed; retrying", "error", err)
+		if !db.closed {
+			db.flushing = time.AfterFunc(db.interval, db.backgroundFlush)
+		}
+	}
+}
+
+// flushLocked writes pending batched changes. An external edit seen first
+// wins (see DB), which leaves nothing to write.
+func (db *DB) flushLocked() error {
+	if len(db.dirty) == 0 {
+		return nil
+	}
+	db.maybeReload()
+	if len(db.dirty) == 0 {
+		return nil
+	}
+	return db.persist()
+}
+
+// Flush writes pending batched changes now.
+func (db *DB) Flush() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.flushLocked()
+}
+
+// Close stops the background flush and writes pending changes. Later
+// changes are written synchronously.
+func (db *DB) Close() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.closed = true
+	if db.flushing != nil {
+		db.flushing.Stop()
+		db.flushing = nil
+	}
+	return db.flushLocked()
 }
 
 func (db *DB) persist() error {
@@ -297,11 +398,28 @@ func (db *DB) persist() error {
 	if err := config.WriteFileAtomic(db.path, append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("writing hardware map %s: %w", db.path, err)
 	}
+	clear(db.dirty)
 	return db.recordStat()
 }
 
+// copyHost deep-copies h: no slice or pointer is shared with the result.
 func copyHost(h *Host) *Host {
 	c := *h
+	c.Extensions = slices.Clone(h.Extensions)
+	if h.Autopilot != nil {
+		a := *h.Autopilot
+		c.Autopilot = &a
+	}
+	if h.Power != nil {
+		p := *h.Power
+		c.Power = &p
+	}
+	if h.Health != nil {
+		hl := *h.Health
+		hl.FailedUnits = slices.Clone(h.Health.FailedUnits)
+		hl.JournalErrors = slices.Clone(h.Health.JournalErrors)
+		c.Health = &hl
+	}
 	return &c
 }
 
@@ -381,7 +499,30 @@ func (db *DB) Put(h Host) (*Host, error) {
 	return copyHost(&h), nil
 }
 
-// Update applies fn to the registered host for mac and persists the result.
+// oneShotChanged reports whether an update changed a field that drives a
+// one-shot transition (an install, the boot mode, the served release, the
+// autopilot pin). Losing such a change to the batch window, a crash or an
+// external edit can reinstall a host and wipe its disk, so it is written
+// synchronously.
+func oneShotChanged(before, after *Host) bool {
+	return before.DoInstall != after.DoInstall ||
+		before.Mode != after.Mode ||
+		before.InstallServedAt != after.InstallServedAt ||
+		before.TargetVersion != after.TargetVersion ||
+		autopilotPinned(before) != autopilotPinned(after)
+}
+
+func autopilotPinned(h *Host) bool {
+	return h.Autopilot != nil && h.Autopilot.Pinned
+}
+
+// Update applies fn to the registered host for mac. A change to a one-shot
+// field (see oneShotChanged) is persisted before Update returns. A write
+// failure is returned together with the updated host: the change stays
+// applied in memory and the background flush retries the write, so an
+// install that was cleared is not served again. Any other change is
+// persisted in a
+// batch (see DB). An fn that changes nothing writes nothing.
 func (db *DB) Update(mac string, fn func(*Host)) (*Host, error) {
 	mac, err := NormalizeMAC(mac)
 	if err != nil {
@@ -394,10 +535,18 @@ func (db *DB) Update(mac string, fn func(*Host)) (*Host, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
+	before := copyHost(h)
 	fn(h)
 	h.MAC = mac
-	if err := db.persist(); err != nil {
-		return nil, err
+	switch {
+	case oneShotChanged(before, h):
+		if err := db.persist(); err != nil {
+			db.dirty[mac] = true
+			db.scheduleFlush()
+			return copyHost(h), err
+		}
+	case !reflect.DeepEqual(before, h):
+		db.markDirty(mac)
 	}
 	return copyHost(h), nil
 }
@@ -429,8 +578,8 @@ func (db *DB) MarkBooted(mac, ip string, at time.Time) error {
 }
 
 // SetSecureBoot records whether mac's last boot-script fetch came through
-// the Secure Boot path. It persists only when the value changes, so the
-// per-boot call does not rewrite the map. changed reports a persisted write.
+// the Secure Boot path. Only a change is recorded (batched, see DB), so the
+// per-boot call does not rewrite the map. changed reports a change.
 func (db *DB) SetSecureBoot(mac string, secureBoot bool) (changed bool, err error) {
 	mac, err = NormalizeMAC(mac)
 	if err != nil {
@@ -447,9 +596,7 @@ func (db *DB) SetSecureBoot(mac string, secureBoot bool) (changed bool, err erro
 		return false, nil
 	}
 	h.SecureBoot = secureBoot
-	if err := db.persist(); err != nil {
-		return false, err
-	}
+	db.markDirty(mac)
 	return true, nil
 }
 
@@ -490,8 +637,14 @@ func Load() error {
 		return err
 	}
 	defaultMu.Lock()
+	old := defaultDB
 	defaultDB = db
 	defaultMu.Unlock()
+	if old != nil {
+		if err := old.Close(); err != nil {
+			slog.Error("Flushing the previous hardware map failed", "path", old.path, "error", err)
+		}
+	}
 	slog.Info("Hardware map loaded", "path", db.path, "hosts", len(db.hosts))
 	return nil
 }
@@ -554,6 +707,24 @@ func SetSecureBoot(mac string, secureBoot bool) (bool, error) {
 		return false, ErrNoDatabase
 	}
 	return db.SetSecureBoot(mac, secureBoot)
+}
+
+// Flush writes the default database's pending changes; a no-op when none
+// is loaded.
+func Flush() error {
+	if db := current(); db != nil {
+		return db.Flush()
+	}
+	return nil
+}
+
+// Close stops the default database's background flush and writes its
+// pending changes. Call it on shutdown.
+func Close() error {
+	if db := current(); db != nil {
+		return db.Close()
+	}
+	return nil
 }
 
 func Snapshot() BootyData {

@@ -11,7 +11,6 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -112,7 +111,7 @@ func BluefinHTTPBoot(hw net.HardwareAddr) (string, bool) {
 // targetVersion, else current. It is routed before the mux
 // (firmware never follows the mux's clean-path redirects) and answers HEAD
 // like GET.
-func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -133,13 +132,13 @@ func handleBluefinRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case strings.EqualFold(path.Ext(name), ".efi"):
-		serveBluefinUKI(w, r, mac, name)
+		s.serveBluefinUKI(w, r, mac, name)
 		return
 	case isBluefinSectionName(name):
-		serveBluefinUKISection(w, r, mac, name)
+		s.serveBluefinUKISection(w, r, mac, name)
 		return
 	case name == bluefinNodeConfig:
-		serveBluefinNodeConfig(w, r, mac)
+		s.serveBluefinNodeConfig(w, r, mac)
 		return
 	}
 	host, ok := hardware.Get(mac)
@@ -222,7 +221,7 @@ func bluefinHost(r *http.Request, mac string) (*hardware.Host, bool) {
 
 // serveBluefinUKI answers the firmware's (or iPXE's) fetch of the netboot
 // UKI, the start of an EFI netboot.
-func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
+func (s *Server) serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
 	host, now, ok := bluefinBootHost(w, r, mac, hardware.PlatformEFI)
 	if !ok {
 		return
@@ -232,7 +231,7 @@ func serveBluefinUKI(w http.ResponseWriter, r *http.Request, mac, name string) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, m.Version, m.NetbootUKI, now)
+	s.recordBluefinNetboot(r, mac, host, hardware.PlatformEFI, m.Version, m.NetbootUKI, now)
 	serveBluefinFile(w, r, m.Version, m.NetbootUKI, efiContentType)
 }
 
@@ -265,7 +264,7 @@ func bluefinBootHost(w http.ResponseWriter, r *http.Request, mac, platform strin
 // L0 for the autopilot and the power tracker; an EFI boot of a host with
 // doInstall stamps installServedAt. A BIOS boot never installs, so it
 // stamps nothing that could later count as a finished install.
-func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, platform, version, file string, now time.Time) {
+func (s *Server) recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, platform, version, file string, now time.Time) {
 	if isPreview(r) {
 		return
 	}
@@ -286,8 +285,8 @@ func recordBluefinNetboot(r *http.Request, mac string, host *hardware.Host, plat
 		}
 		host.NetbootPlatform, host.NetbootVersion = platform, version
 		if byHost {
-			powerFetch(mac, power.FetchKernel)
-			autopilotFetch(mac, controller.FetchKernel)
+			s.powerFetch(mac, power.FetchKernel)
+			s.autopilotFetch(mac, controller.FetchKernel)
 		} else {
 			slog.Info("Bluefin netboot fetched from an address that is not the host's; not counting it as a boot", "mac", mac, "ip", ip, "hostIP", host.IP)
 		}
@@ -318,11 +317,10 @@ func bluefinInstallDone(mac string, host *hardware.Host, now time.Time) *hardwar
 		slog.Info("Netboot again too soon after the install boot; keeping doInstall", "mac", mac, "elapsed", elapsed.Round(time.Second), "min", viper.GetDuration(config.InstallMinDuration))
 		return host
 	}
-	updated, err := markBluefinInstalled(mac, "next boot after install")
-	if err != nil {
-		return host
+	if updated, _ := markBluefinInstalled(mac, "next boot after install"); updated != nil {
+		return updated
 	}
-	return updated
+	return host
 }
 
 // recordInstallServed stamps installServedAt when this boot of a Bluefin
@@ -339,14 +337,15 @@ func recordInstallServed(mac string, host *hardware.Host, now time.Time) {
 
 // markBluefinInstalled clears doInstall and switches the host to mode
 // installed, after which it gets no netboot answer until doInstall is set
-// again.
+// again. On a write failure the host is still returned when the change was
+// applied in memory (see hardware.Update), so it is not reinstalled.
 func markBluefinInstalled(mac, trigger string) (*hardware.Host, error) {
 	updated, err := hardware.Update(mac, func(h *hardware.Host) {
 		h.DoInstall, h.InstallServedAt, h.Mode = false, "", hardware.ModeInstalled
 	})
 	if err != nil {
 		slog.Error("Could not mark Bluefin host installed", "mac", mac, "error", err)
-		return nil, err
+		return updated, err
 	}
 	slog.Info("Cleared doInstall; Bluefin host now boots from disk", "mac", mac, "trigger", trigger)
 	return updated, nil
@@ -363,14 +362,14 @@ func bluefinInstallsNow(host *hardware.Host) bool {
 // is nothing to configure. Only a real GET records the boot and, under
 // --doInstallClearOn=ignition, marks an installing host installed: the
 // config it just received carries the install unit.
-func serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) {
+func (s *Server) serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) {
 	host, ok := hardware.Get(mac)
 	if !ok || host.OS != "bluefin" {
 		writeError(w, http.StatusNotFound, "host not registered as bluefin")
 		return
 	}
 	preview := isPreview(r)
-	cfg, err := renderBluefinNode(r.Context(), mac, host, !preview)
+	cfg, err := s.renderBluefinNode(r.Context(), mac, host, !preview)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
 		return
@@ -388,23 +387,15 @@ func serveBluefinNodeConfig(w http.ResponseWriter, r *http.Request, mac string) 
 		if err := hardware.MarkBooted(mac, remoteIP(r), time.Now()); err != nil {
 			slog.Error("Could not record boot", "mac", mac, "error", err)
 		}
-		powerFetch(mac, power.FetchIgnition)
-		autopilotFetch(mac, controller.FetchIgnition)
+		s.powerFetch(mac, power.FetchIgnition)
+		s.autopilotFetch(mac, controller.FetchIgnition)
 		if bluefinInstallsNow(host) && viper.GetString(config.DoInstallClearOn) == config.ClearOnIgnition {
 			_, _ = markBluefinInstalled(mac, "ignition fetch")
 		}
 		slog.Info("Serving Bluefin node Ignition", "mac", mac, "bytes", len(body))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return
-	}
-	if _, err := w.Write(body); err != nil {
-		slog.Debug("Writing Bluefin node Ignition failed", "mac", mac, "error", err)
-	}
+	writeJSONBody(w, r, http.StatusOK, body)
 }
 
 func serveBluefinFile(w http.ResponseWriter, r *http.Request, version, name, contentType string) {
@@ -428,9 +419,9 @@ func serveBluefinFile(w http.ResponseWriter, r *http.Request, version, name, con
 
 // bluefinExtensions is what the host runs: its own extensions plus k0s
 // when Booty provisions a k0s cluster, which every Bluefin host joins.
-func bluefinExtensions(host *hardware.Host) []string {
+func (s *Server) bluefinExtensions(host *hardware.Host) []string {
 	exts := slices.Clone(host.Extensions)
-	if m := clusterManager; m != nil && m.Settings.Distribution == cluster.K0s && !slices.Contains(exts, hardware.ExtensionK0s) {
+	if m := s.clusterManager; m != nil && m.Settings.Distribution == cluster.K0s && !slices.Contains(exts, hardware.ExtensionK0s) {
 		exts = append(exts, hardware.ExtensionK0s)
 	}
 	slices.Sort(exts)
@@ -443,7 +434,7 @@ func bluefinExtensions(host *hardware.Host) []string {
 // created once and never wiped. mint says whether a k0s worker token or a
 // kubeadm join token may be minted (false for previews); a real fetch also
 // renders for the release the host netbooted, a preview for its target.
-func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, mint bool) (ign36.Config, error) {
+func (s *Server) renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, mint bool) (ign36.Config, error) {
 	var cfg ign36.Config
 	cfg.Ignition.Version = ign36.MaxVersion.String()
 	features := builtinFeatures()
@@ -470,22 +461,22 @@ func renderBluefinNode(ctx context.Context, mac string, host *hardware.Host, min
 	if mint {
 		release, haveRelease = bluefinBootedRelease(host)
 	}
-	if exts := bluefinExtensions(host); len(exts) > 0 {
+	if exts := s.bluefinExtensions(host); len(exts) > 0 {
 		if !haveRelease {
 			slog.Warn("No Bluefin release cached; serving the node config without its extensions", "mac", mac, "extensions", exts)
 		} else {
 			addBluefinExtensions(&cfg, mac, release, exts)
 		}
 	}
-	if m := clusterManager; m != nil && m.Settings.Distribution == cluster.K0s {
+	if m := s.clusterManager; m != nil && m.Settings.Distribution == cluster.K0s {
 		node, err := m.K0sNodeFiles(ctx, hardware.Snapshot().Hosts, host, config.ServerHostPort(), mint)
 		if err != nil {
 			slog.Error("k0s node unavailable; serving the Bluefin node config without it", "mac", mac, "role", cluster.RoleOf(host), "error", err)
 		}
 		addK0sNode(&cfg, node)
 	}
-	if bluefinJoinsKubeadm(mac, host) {
-		addBluefinKubeadmWorker(ctx, &cfg, mac, host, release, haveRelease, mint)
+	if s.bluefinJoinsKubeadm(mac, host) {
+		s.addBluefinKubeadmWorker(ctx, &cfg, mac, host, release, haveRelease, mint)
 	}
 	if host.DoInstall {
 		switch {

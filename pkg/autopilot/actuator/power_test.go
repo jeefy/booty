@@ -65,7 +65,12 @@ func TestPowerPodManifestCarriesPoweroff(t *testing.T) {
 		var pod struct {
 			Spec struct {
 				Containers []struct {
-					Command []string `json:"command"`
+					Command         []string `json:"command"`
+					SecurityContext struct {
+						Privileged *bool  `json:"privileged"`
+						RunAsUser  *int64 `json:"runAsUser"`
+						RunAsGroup *int64 `json:"runAsGroup"`
+					} `json:"securityContext"`
 				} `json:"containers"`
 			} `json:"spec"`
 		}
@@ -79,6 +84,12 @@ func TestPowerPodManifestCarriesPoweroff(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("poweroff=%v: command %q, want %q", poweroff, got, want)
+		}
+		// The image runs as nonroot uid 65532; signalling the host's PID 1
+		// needs root.
+		sc := pod.Spec.Containers[0].SecurityContext
+		if sc.Privileged == nil || !*sc.Privileged || sc.RunAsUser == nil || *sc.RunAsUser != 0 || sc.RunAsGroup == nil || *sc.RunAsGroup != 0 {
+			t.Fatalf("poweroff=%v: securityContext must be privileged root (runAsUser/runAsGroup 0): %s", poweroff, raw)
 		}
 	}
 }

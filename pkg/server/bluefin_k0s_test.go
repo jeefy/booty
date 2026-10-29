@@ -90,7 +90,7 @@ func TestK0sBluefinTwoControlPlanesWithoutEndpoint(t *testing.T) {
 	register(t, srv.URL, `{"mac":"`+k0sBluefinCP+`","hostname":"bluefin-cp","os":"bluefin","role":"control-plane","stateDisk":"/dev/sdb"}`)
 	register(t, srv.URL, `{"mac":"`+k0sFlatcarCP+`","hostname":"flatcar-cp","os":"flatcar","role":"control-plane"}`)
 	viper.Set(config.ControlPlaneEndpt, "")
-	clusterManager.Settings.Endpoint = ""
+	cur().clusterManager.Settings.Endpoint = ""
 	_, files, _ := bluefinNode(t, srv.URL, k0sBluefinCP, "")
 	if _, ok := files[k0s.ConfigPath]; ok {
 		t.Fatal("two control planes without an endpoint: the node config is served without k0s cluster pieces")
@@ -116,7 +116,7 @@ func TestK0sExternalBluefin(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte(tok+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	clusterManager.Settings.K0sTokenFile = tokenFile
+	cur().clusterManager.Settings.K0sTokenFile = tokenFile
 	if _, files, _ := bluefinNode(t, srv.URL, k0sBluefinW, ""); files[k0s.TokenPath].contents != tok+"\n" {
 		t.Fatal("external bluefin worker carries the file's token")
 	}

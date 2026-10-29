@@ -211,6 +211,7 @@ func handleConfigTemplateSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to write template")
 		return
 	}
+	forgetCachedTemplate(rel)
 	slog.Info("Ignition template saved via API", "file", rel, "size_bytes", len(req.Content), "remote", r.RemoteAddr)
 	resp, err := loadTemplate(rel)
 	if err != nil {

@@ -7,11 +7,14 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/go-co-op/gocron/v2"
 	booty "github.com/jeefy/booty"
 	"github.com/jeefy/booty/pkg/autopilot"
 	"github.com/jeefy/booty/pkg/cluster"
@@ -106,6 +109,12 @@ func init() {
 	flags.String(config.SecureBootIPXE, config.DefaultSecureBootIPXE, "ipxe/ipxe release whose ipxeboot.tar.gz provides the iPXE-CA-signed x86_64-sb/ipxe.efi and snponly.efi (sha256 pinned in code for the default)")
 	flags.String(config.FedoraShimVersion, config.DefaultFedoraShimVersion, "Fedora shim-x64 package version (e.g. 16.1-7) whose shimx64.efi Secure-Boot CoreOS hosts chain through; sha256 pinned in code for the default")
 	flags.String(config.FedoraGrubVersion, config.DefaultFedoraGrubVersion, "Fedora grub2-efi-x64 package version (e.g. 2.12-64.fc44) whose grubx64.efi is served next to the Fedora shim; sha256 pinned in code for the default")
+	flags.String(config.GithubAPIURL, config.DefaultGithubAPIURL, "GitHub REST API base URL (GitHub Enterprise: https://host/api/v3)")
+	flags.String(config.GithubDownloadURL, config.DefaultGithubDownloadURL, "Base URL GitHub release assets are downloaded from")
+	flags.String(config.FedoraMirrorURL, config.DefaultFedoraMirrorURL, "Fedora mirror root (…/pub/fedora/linux) for shim/GRUB RPMs")
+	flags.String(config.FedoraReleases, "", "Comma-separated Fedora releases to search for RPMs, newest first (default: derived from --fedoraGrubVersion)")
+	flags.Bool(config.AllowUnverifiedFedoraRPMs, false, "Install unpinned Fedora RPMs even when their repository metadata cannot verify them")
+	flags.String(config.CoreOSStreamsURL, config.DefaultCoreOSStreamsURL, "Fedora CoreOS streams JSON URL template (%s = channel)")
 	flags.String(config.SecureBootTrusted, "", "Comma separated Secure Boot CAs the fleet's firmware db trusts besides the implied 'microsoft': 'flatcar' asserts the Flatcar CA (served at /boot/secureboot/flatcar-ca.der) is enrolled so Flatcar kernels may be booted under Secure Boot")
 	flags.String(config.Autopilot, config.AutopilotOff, "Self-healing upgrades: 'off', 'guard' (health gate, retry, downgrade to lastGood and fleet hold for every OS; rollout order unchanged) or 'full' (guard plus the Bluefin canary-serial rollout, timeout/retry, quarantine and skip-to-next). Reboots go through kured when it runs in the cluster, else --rebootSSHKey, else the Kubernetes API")
 	flags.Duration(config.AutopilotHealthWin, config.DefaultAutopilotHealthWindow, "Health-gate window: how long a host has, from its observed reboot (first kernel/UKI fetch), to come back Ready with its workloads healthy; the node must stay Ready for 5m or half the window, whichever is shorter")
@@ -156,54 +165,103 @@ func run(cmd *cobra.Command, argv []string) error {
 	configureLogging(viper.GetBool(config.Debug))
 	slog.Info("Starting Booty!", "version", viper.GetString(config.Version))
 	config.LoadConfig()
-	if err := config.ValidateDoInstallClearOn(viper.GetString(config.DoInstallClearOn)); err != nil {
-		return err
-	}
-	if err := hardware.ValidateAutoRegisterOS(viper.GetString(config.AutoRegister)); err != nil {
-		return fmt.Errorf("--%s: %w", config.AutoRegister, err)
-	}
-	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" && !versions.OSTracked(autoOS) {
-		return fmt.Errorf("--%s: %s", config.AutoRegister, versions.UntrackedReason(autoOS))
-	}
-	if _, err := hardware.ParseHostnameTemplate(viper.GetString(config.HostnameTemplate)); err != nil {
-		return fmt.Errorf("--%s: %w", config.HostnameTemplate, err)
-	}
-	builtin, err := ignition.ParseFeatures(viper.GetString(config.Builtin))
+	settings, err := validateFlags()
 	if err != nil {
-		return err
-	}
-	if err := profile.Validate(viper.GetString(config.Profile)); err != nil {
-		return err
-	}
-	if err := config.ValidateKubeadmJoin(viper.GetString(config.KubeadmJoin)); err != nil {
-		return err
-	}
-	if viper.GetDuration(config.JoinTokenTTL) <= 0 {
-		return fmt.Errorf("--%s must be positive, got %s", config.JoinTokenTTL, viper.GetDuration(config.JoinTokenTTL))
-	}
-	if viper.GetDuration(config.InstallMinDuration) <= 0 {
-		return fmt.Errorf("--%s must be positive, got %s", config.InstallMinDuration, viper.GetDuration(config.InstallMinDuration))
-	}
-	clusterSettings := cluster.FromConfig()
-	if err := clusterSettings.Validate(); err != nil {
-		return err
-	}
-	if err := config.ValidateEFIBootloader(viper.GetString(config.EFIBootloader)); err != nil {
-		return err
-	}
-	if err := versions.ValidateSecureBootFlags(); err != nil {
-		return err
-	}
-	if err := versions.ValidateBluefinFlags(); err != nil {
-		return err
-	}
-	autopilotSettings := autopilot.FromConfig()
-	if err := autopilotSettings.Validate(); err != nil {
 		return err
 	}
 	if err := config.ResolveServerAddress(); err != nil {
 		return err
 	}
+	logStartupSettings(settings)
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancel(sigCtx)
+	defer cancel()
+
+	subs, err := buildSubsystems(settings)
+	if err != nil {
+		return err
+	}
+	srv, err := startServers(subs)
+	if err != nil {
+		closeHardware()
+		return err
+	}
+	bg := startBackground(ctx, subs)
+	return waitForShutdown(ctx, cancel, srv, bg)
+}
+
+// startupSettings are the parsed flags the subsystems are built from.
+type startupSettings struct {
+	builtin   ignition.Features
+	cluster   cluster.Settings
+	autopilot autopilot.Settings
+}
+
+// validateFlags checks every flag that can be checked without touching the
+// network or the data directory, and returns the parsed settings.
+func validateFlags() (startupSettings, error) {
+	var s startupSettings
+	if err := config.ValidateDoInstallClearOn(viper.GetString(config.DoInstallClearOn)); err != nil {
+		return s, err
+	}
+	if err := hardware.ValidateAutoRegisterOS(viper.GetString(config.AutoRegister)); err != nil {
+		return s, fmt.Errorf("--%s: %w", config.AutoRegister, err)
+	}
+	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" && !versions.OSTracked(autoOS) {
+		return s, fmt.Errorf("--%s: %s", config.AutoRegister, versions.UntrackedReason(autoOS))
+	}
+	if _, err := hardware.ParseHostnameTemplate(viper.GetString(config.HostnameTemplate)); err != nil {
+		return s, fmt.Errorf("--%s: %w", config.HostnameTemplate, err)
+	}
+	builtin, err := ignition.ParseFeatures(viper.GetString(config.Builtin))
+	if err != nil {
+		return s, err
+	}
+	s.builtin = builtin
+	if err := profile.Validate(viper.GetString(config.Profile)); err != nil {
+		return s, err
+	}
+	if err := config.ValidateKubeadmJoin(viper.GetString(config.KubeadmJoin)); err != nil {
+		return s, err
+	}
+	if viper.GetDuration(config.JoinTokenTTL) <= 0 {
+		return s, fmt.Errorf("--%s must be positive, got %s", config.JoinTokenTTL, viper.GetDuration(config.JoinTokenTTL))
+	}
+	if viper.GetDuration(config.InstallMinDuration) <= 0 {
+		return s, fmt.Errorf("--%s must be positive, got %s", config.InstallMinDuration, viper.GetDuration(config.InstallMinDuration))
+	}
+	if err := tftp.ValidateBlockSize(viper.GetInt(config.TFTPBlockSize)); err != nil {
+		return s, fmt.Errorf("--%s: %w", config.TFTPBlockSize, err)
+	}
+	s.cluster = cluster.FromConfig()
+	if err := s.cluster.Validate(); err != nil {
+		return s, err
+	}
+	if err := config.ValidateEFIBootloader(viper.GetString(config.EFIBootloader)); err != nil {
+		return s, err
+	}
+	if err := config.ValidateEndpoints(); err != nil {
+		return s, err
+	}
+	if err := versions.ValidateSecureBootFlags(); err != nil {
+		return s, err
+	}
+	if err := versions.ValidateBluefinFlags(); err != nil {
+		return s, err
+	}
+	s.autopilot = autopilot.FromConfig()
+	if err := s.autopilot.Validate(); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+// logStartupSettings logs the effective settings and warns about
+// combinations that are valid but probably not what the operator meant.
+func logStartupSettings(s startupSettings) {
+	clusterSettings := s.cluster
 	slog.Info("Client-facing address", "server", config.ServerHostPort(), "builtin", viper.GetString(config.Builtin), "profile", viper.GetString(config.Profile), "kubeadmJoin", viper.GetString(config.KubeadmJoin))
 	slog.Info("Cluster settings", "distribution", clusterSettings.Distribution, "controlPlane", clusterSettings.ControlPlane, "endpoint", clusterSettings.Endpoint, "cni", clusterSettings.CNI, "controlPlaneDisk", clusterSettings.ControlPlaneDisk)
 	if clusterSettings.ManagedKubeadm() && clusterSettings.Profile == "" {
@@ -218,7 +276,7 @@ func run(cmd *cobra.Command, argv []string) error {
 			slog.Warn("--clusterDistribution=k0s with an external control plane but neither --k0sTokenFile nor --kubeconfig; workers get no k0s units")
 		}
 	}
-	if !builtin.Enabled() {
+	if !s.builtin.Enabled() {
 		slog.Info("Builtin Ignition fragment disabled; serving user configs as-is")
 	}
 	if keyring := viper.GetString(config.BluefinKeyring); keyring != "" {
@@ -229,7 +287,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if autoOS := viper.GetString(config.AutoRegister); autoOS != "" {
 		slog.Warn("Auto-registration enabled: any unknown MAC that boots becomes a registered host", "os", autoOS, "hostnameTemplate", viper.GetString(config.HostnameTemplate))
 	}
-	if p := viper.GetString(config.Profile); p != "" && !builtin.Enabled() {
+	if p := viper.GetString(config.Profile); p != "" && !s.builtin.Enabled() {
 		slog.Warn("--profile has no effect with --builtin=none", "profile", p)
 	}
 	if viper.GetBool(config.SecureBoot) {
@@ -239,13 +297,25 @@ func run(cmd *cobra.Command, argv []string) error {
 			slog.Warn("--secureBoot without --proxyDHCP: the signed shim is only ever handed out through the ProxyDHCP HTTP Boot OFFER, so no Secure Boot client will reach Booty")
 		}
 	}
+}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+// subsystems is everything the servers and background loops share.
+type subsystems struct {
+	cluster   *cluster.Manager
+	minter    *kubeadm.Minter
+	pilot     *autopilot.Autopilot
+	tracker   *power.Tracker
+	bootFiles fs.FS
+}
 
+// buildSubsystems prepares the data directory (layout migration, temp
+// sweep, state, hardware map) and builds the cluster manager, token
+// minter, autopilot and power tracker. Once the hardware map is loaded a
+// later failure closes it again.
+func buildSubsystems(s startupSettings) (*subsystems, error) {
 	dataDir := viper.GetString(config.DataDir)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return fmt.Errorf("creating data dir %s: %w", dataDir, err)
+		return nil, fmt.Errorf("creating data dir %s: %w", dataDir, err)
 	}
 	if keysFile := viper.GetString(config.SSHAuthorizedKeysFl); keysFile != "" {
 		if _, err := ignition.LoadSSHKeys(keysFile, nil); err != nil {
@@ -253,22 +323,32 @@ func run(cmd *cobra.Command, argv []string) error {
 		}
 	}
 	versions.MigrateReleaseLayout()
+	versions.SweepStaleTemp()
 	versions.CleanupLegacyRegistry()
 	state.Init()
 	versions.VerifyLocalArtifacts()
 	if err := hardware.Load(); err != nil {
-		return err
+		return nil, err
 	}
-	clusterManager, err := cluster.New(clusterSettings)
+	subs, err := buildClusterSubsystems(s)
 	if err != nil {
-		return err
+		closeHardware()
+		return nil, err
+	}
+	return subs, nil
+}
+
+func buildClusterSubsystems(s startupSettings) (*subsystems, error) {
+	clusterManager, err := cluster.New(s.cluster)
+	if err != nil {
+		return nil, err
 	}
 	if clusterManager.PKI != nil {
 		slog.Warn("Booty holds the cluster CA; --dataDir/cluster/ is cluster-admin material", "dir", clusterManager.PKI.Dir())
 	}
 	minter, err := newJoinMinter(clusterManager)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if clusterManager.Settings.Distribution == cluster.K0s {
 		clusterManager.Minter = minter
@@ -280,107 +360,231 @@ func run(cmd *cobra.Command, argv []string) error {
 			}
 		}
 	}
-	pilot, err := newAutopilot(autopilotSettings, minter)
+	pilot, err := newAutopilot(s.autopilot, minter)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tracker, err := newPowerTracker(pilot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if server.DefaultTemplateInUse() {
 		slog.Info("No Butane template found; serving the embedded default", "path", config.DataPath(config.DefaultIgnitionFile))
 	}
 	bootFiles, err := fs.Sub(booty.BootFiles, "boot")
 	if err != nil {
-		return fmt.Errorf("embedded boot files: %w", err)
+		return nil, fmt.Errorf("embedded boot files: %w", err)
 	}
 	ensureBootFilesInDataDir(bootFiles)
+	return &subsystems{cluster: clusterManager, minter: minter, pilot: pilot, tracker: tracker, bootFiles: bootFiles}, nil
+}
 
-	errCh := make(chan error, 4)
+// runningServers are the listeners started by startServers; errCh carries
+// their fatal errors.
+type runningServers struct {
+	tftp  *tftp.Server
+	http  *http.Server
+	dhcp  *dhcp.Server
+	errCh chan error
+}
 
-	tftpServer, err := tftp.Start(tftp.Config{
+// startServers starts TFTP, HTTP and (with --proxyDHCP) ProxyDHCP, stopping
+// the ones already running when a later one fails.
+func startServers(subs *subsystems) (*runningServers, error) {
+	srv := &runningServers{errCh: make(chan error, 4)}
+	var err error
+	srv.tftp, err = tftp.Start(tftp.Config{
 		Port:      viper.GetInt(config.TFTPPort),
 		BlockSize: viper.GetInt(config.TFTPBlockSize),
-		BootFiles: bootFiles,
-	}, errCh)
+		BootFiles: subs.bootFiles,
+	}, srv.errCh)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	webFS, err := fs.Sub(booty.WebDist, "web/dist")
 	if err != nil {
-		return fmt.Errorf("embedded web ui: %w", err)
+		srv.tftp.Shutdown(5 * time.Second)
+		return nil, fmt.Errorf("embedded web ui: %w", err)
 	}
-	httpServer, err := server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: bootFiles, Minter: minter, Cluster: clusterManager, Autopilot: pilot, Power: tracker}, errCh)
+	srv.http, err = server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: subs.bootFiles, Minter: subs.minter, Cluster: subs.cluster, Autopilot: subs.pilot, Power: subs.tracker}, srv.errCh)
 	if err != nil {
-		tftpServer.Shutdown(5 * time.Second)
-		return err
+		srv.tftp.Shutdown(5 * time.Second)
+		return nil, err
 	}
 
-	var dhcpServer *dhcp.Server
 	if viper.GetBool(config.ProxyDHCP) {
-		dhcpServer, err = startProxyDHCP(errCh)
+		srv.dhcp, err = startProxyDHCP(srv.errCh)
 		if err != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if herr := httpServer.Shutdown(shutdownCtx); herr != nil {
+			if herr := srv.http.Shutdown(shutdownCtx); herr != nil {
 				slog.Warn("HTTP shutdown failed", "error", herr)
 			}
-			tftpServer.Shutdown(5 * time.Second)
-			return err
+			srv.tftp.Shutdown(5 * time.Second)
+			return nil, err
 		}
 	}
+	return srv, nil
+}
 
-	go pilot.LogStatus(ctx)
-	if pilot.Controller != nil {
-		go pilot.Controller.Run(ctx)
-	}
-	go tracker.Run(ctx)
+// initialVersionChecks run once at startup, in order, before the scheduler
+// takes over.
+var initialVersionChecks = []versions.Job{
+	{Name: "flatcar", Fn: versions.FlatcarVersionCheck},
+	{Name: "coreos", Fn: versions.CoreOSVersionCheck},
+	{Name: "bluefin", Fn: versions.BluefinVersionCheck},
+	{Name: "secureboot", Fn: versions.SecureBootVersionCheck},
+}
 
+// background holds the scheduler, the long-running loops and the startup
+// version checks so shutdown can stop the scheduler and wait for the rest.
+type background struct {
+	scheduler gocron.Scheduler
+	// loops tracks the autopilot, controller and power tracker goroutines,
+	// which write the hardware map; shutdown waits for them before
+	// flushing it.
+	loops         sync.WaitGroup
+	initialChecks sync.WaitGroup
+}
+
+// goLoop runs fn in a goroutine tracked by bg.loops.
+func (bg *background) goLoop(fn func()) {
+	bg.loops.Add(1)
 	go func() {
-		versions.FlatcarVersionCheck()
-		versions.CoreOSVersionCheck()
-		versions.BluefinVersionCheck()
-		versions.SecureBootVersionCheck()
+		defer bg.loops.Done()
+		fn()
+	}()
+}
+
+// startBackground starts the autopilot, power tracker, startup version
+// checks and the update scheduler. A scheduler that fails to start is
+// logged at error level and recorded as the "scheduler" sync error, which
+// /info reports.
+func startBackground(ctx context.Context, subs *subsystems) *background {
+	bg := &background{}
+	bg.goLoop(func() { subs.pilot.LogStatus(ctx) })
+	if controller := subs.pilot.Controller; controller != nil {
+		bg.goLoop(func() { controller.Run(ctx) })
+	}
+	bg.goLoop(func() { subs.tracker.Run(ctx) })
+
+	bg.initialChecks.Add(1)
+	go func() {
+		defer bg.initialChecks.Done()
+		runVersionChecks(ctx, initialVersionChecks)
 	}()
 
 	extraJobs := []versions.Job{{Name: "secureboot", Fn: versions.SecureBootVersionCheck}}
-	if minter != nil {
+	if subs.minter != nil {
+		minter := subs.minter
 		extraJobs = append(extraJobs, versions.Job{Name: "bootstrap-token-cleanup", Fn: func() { cleanupJoinTokens(ctx, minter) }})
 	}
-	scheduler, err := versions.StartScheduler(viper.GetString(config.UpdateSchedule), extraJobs...)
-	if err != nil {
-		slog.Error("Scheduler failed to start; periodic checks disabled", "error", err)
-	}
+	bg.scheduler = startScheduler(viper.GetString(config.UpdateSchedule), extraJobs)
+	return bg
+}
 
+// startScheduler starts the update scheduler; on failure it returns nil
+// after logging the error and recording it for /info.
+func startScheduler(schedule string, extraJobs []versions.Job) gocron.Scheduler {
+	scheduler, err := versions.StartScheduler(schedule, extraJobs...)
+	if err != nil {
+		slog.Error("Scheduler failed to start; periodic checks disabled", "schedule", schedule, "error", err)
+		state.SetSyncError(schedulerSyncError, fmt.Errorf("periodic checks disabled: %w", err))
+		return nil
+	}
+	state.ClearSyncError(schedulerSyncError)
+	return scheduler
+}
+
+// schedulerSyncError is the /info syncErrors key of a scheduler that did
+// not start.
+const schedulerSyncError = "scheduler"
+
+// runVersionChecks runs checks in order and stops early once ctx is done.
+// The checks themselves take no context, so one already running finishes.
+func runVersionChecks(ctx context.Context, checks []versions.Job) {
+	for _, check := range checks {
+		if ctx.Err() != nil {
+			slog.Info("Shutting down; skipping the remaining startup version checks", "next", check.Name)
+			return
+		}
+		check.Fn()
+	}
+}
+
+// initialChecksTimeout bounds how long shutdown waits for the startup
+// version checks.
+const initialChecksTimeout = 10 * time.Second
+
+// loopsTimeout bounds how long shutdown waits for the background loops
+// before flushing the hardware map without them.
+const loopsTimeout = 10 * time.Second
+
+// waitForShutdown blocks until a signal or a fatal server error, then
+// stops everything: background loops (cancel), the scheduler, the HTTP
+// server; waits (bounded) for the loops so their last hardware map updates
+// are in, flushes the hardware map's pending writes, stops TFTP and
+// ProxyDHCP, and waits (bounded) for the startup version checks.
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, srv *runningServers, bg *background) error {
 	var runErr error
 	select {
 	case <-ctx.Done():
 		slog.Info("Shutdown signal received")
-	case runErr = <-errCh:
+	case runErr = <-srv.errCh:
 		slog.Error("Server failed", "error", runErr)
 	}
+	cancel()
 
-	if scheduler != nil {
-		if err := scheduler.Shutdown(); err != nil {
+	if bg.scheduler != nil {
+		if err := bg.scheduler.Shutdown(); err != nil {
 			slog.Warn("Scheduler shutdown failed", "error", err)
 		}
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := srv.http.Shutdown(shutdownCtx); err != nil {
 		slog.Error("HTTP shutdown failed", "error", err)
 		runErr = errors.Join(runErr, err)
 	} else {
 		slog.Info("HTTP server stopped")
 	}
-	tftpServer.Shutdown(10 * time.Second)
-	if dhcpServer != nil {
-		dhcpServer.Shutdown(10 * time.Second)
+	waitBounded(&bg.loops, loopsTimeout, "Background loops still running at shutdown; flushing the hardware map without their last updates")
+	closeHardware()
+	srv.tftp.Shutdown(10 * time.Second)
+	if srv.dhcp != nil {
+		srv.dhcp.Shutdown(10 * time.Second)
 	}
+	waitBounded(&bg.initialChecks, initialChecksTimeout, "Startup version checks still running at shutdown; exiting without them")
 	slog.Info("Booty stopped")
 	return runErr
+}
+
+// waitBounded waits for wg up to timeout, logging warning when it times
+// out; it reports whether wg finished.
+func waitBounded(wg *sync.WaitGroup, timeout time.Duration, warning string) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		slog.Warn(warning, "waited", timeout)
+		return false
+	}
+}
+
+// closeHardware flushes the hardware map's batched writes and stops its
+// flush timer.
+func closeHardware() {
+	if err := hardware.Close(); err != nil {
+		slog.Error("Flushing the hardware map failed", "error", err)
+	}
 }
 
 // ensureBootFilesInDataDir copies the embedded iPXE binaries into DataDir when

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -34,9 +35,88 @@ import (
 	"github.com/spf13/viper"
 )
 
+// arpTimeout bounds the ARP fallback of a request without ?mac=, so a
+// silent IP cannot hold a handler; arpNegativeTTL is how long a failed
+// lookup is remembered per IP, and arpNegativeMax bounds that memory.
+const (
+	arpTimeout     = 500 * time.Millisecond
+	arpNegativeTTL = 30 * time.Second
+	arpNegativeMax = 1024
+)
+
+func init() { arping.SetTimeout(arpTimeout) }
+
+// arpLookup is the raw lookup, a test seam.
 var arpLookup = func(ip net.IP) (net.HardwareAddr, error) {
 	hw, _, err := arping.Ping(ip)
 	return hw, err
+}
+
+var errARPTimeout = errors.New("ARP lookup timed out")
+
+// arpFailures remembers IPs whose lookup failed recently, so a client that
+// never answers ARP costs one timeout per arpNegativeTTL, not one per
+// request.
+var arpFailures = struct {
+	sync.Mutex
+	m   map[string]time.Time
+	now func() time.Time
+}{m: map[string]time.Time{}, now: time.Now}
+
+// resolveARP runs arpLookup with arpTimeout as deadline, answering from
+// and feeding the negative cache.
+func resolveARP(ip net.IP) (net.HardwareAddr, error) {
+	key := ip.String()
+	arpFailures.Lock()
+	now := arpFailures.now()
+	if until, ok := arpFailures.m[key]; ok {
+		if now.Before(until) {
+			arpFailures.Unlock()
+			return nil, fmt.Errorf("ARP lookup of %s failed less than %s ago", key, arpNegativeTTL)
+		}
+		delete(arpFailures.m, key)
+	}
+	arpFailures.Unlock()
+
+	type result struct {
+		hw  net.HardwareAddr
+		err error
+	}
+	done := make(chan result, 1)
+	lookup := arpLookup
+	go func() {
+		hw, err := lookup(ip)
+		done <- result{hw, err}
+	}()
+	var res result
+	timer := time.NewTimer(arpTimeout)
+	select {
+	case res = <-done:
+		timer.Stop()
+	case <-timer.C:
+		res.err = errARPTimeout
+	}
+	if res.err == nil {
+		return res.hw, nil
+	}
+	arpFailures.Lock()
+	defer arpFailures.Unlock()
+	now = arpFailures.now()
+	if len(arpFailures.m) >= arpNegativeMax {
+		for k, until := range arpFailures.m {
+			if !now.Before(until) {
+				delete(arpFailures.m, k)
+			}
+		}
+		for k := range arpFailures.m {
+			if len(arpFailures.m) < arpNegativeMax {
+				break
+			}
+			delete(arpFailures.m, k)
+		}
+	}
+	arpFailures.m[key] = now.Add(arpNegativeTTL)
+	return nil, res.err
 }
 
 // identifyClient returns the normalized MAC for the request, preferring the
@@ -56,7 +136,7 @@ func identifyClient(r *http.Request) (mac string, ok bool) {
 		slog.Warn("Cannot determine client IP for ARP lookup", "remote", r.RemoteAddr)
 		return "", true
 	}
-	hw, err := arpLookup(ip)
+	hw, err := resolveARP(ip)
 	if err != nil {
 		slog.Error("ARP lookup failed", "ip", ip, "error", err)
 		return "", true
@@ -127,7 +207,7 @@ func hostOSTreeImage(host *hardware.Host) string {
 	return host.OSTreeImage
 }
 
-func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -172,8 +252,8 @@ func handleIPXERequest(w http.ResponseWriter, r *http.Request) {
 	if host != nil && os != "bluefin" && !isPreview(r) {
 		if fromHost(r, host) {
 			learnIP(mac, host, remoteIP(r))
-			powerFetch(mac, power.FetchKernel)
-			autopilotFetch(mac, controller.FetchKernel)
+			s.powerFetch(mac, power.FetchKernel)
+			s.autopilotFetch(mac, controller.FetchKernel)
 		} else {
 			slog.Info("Boot script fetched from an address that is not the host's; not counting it as a boot", "mac", mac, "ip", remoteIP(r), "hostIP", host.IP)
 		}
@@ -203,25 +283,98 @@ func setReleaseVars(host *hardware.Host, vars *tftp.TemplateVars) {
 }
 
 func readIgnitionTemplate(name string) (string, error) {
-	rel, err := config.CleanRelPath(name)
-	if err != nil {
-		return "", fmt.Errorf("ignition file %q: %w", name, err)
-	}
-	root, err := os.OpenRoot(viper.GetString(config.DataDir))
+	t, err := cachedIgnitionTemplate(name)
 	if err != nil {
 		return "", err
+	}
+	return t.src, nil
+}
+
+// parsedTemplate is a Butane template's source and its parsed Go template
+// (or the parse error). It is host-independent and safe to share: executing
+// a text/template concurrently is safe.
+type parsedTemplate struct {
+	name  string
+	src   string
+	tmpl  *template.Template
+	parse error
+}
+
+func parseTemplate(name, src string) *parsedTemplate {
+	t, err := template.New(name).Parse(src)
+	return &parsedTemplate{name: name, src: src, tmpl: t, parse: err}
+}
+
+type templateCacheEntry struct {
+	size    int64
+	modTime time.Time
+	inode   uint64
+	t       *parsedTemplate
+}
+
+// maxCachedTemplates bounds templateCache: the default template plus the
+// per-host ignitionFiles in use.
+const maxCachedTemplates = 64
+
+// templateCache holds the parsed Butane templates by data directory and
+// cleaned path; an entry is reused only while the file's size, mtime and
+// inode are unchanged, so edits on disk are picked up on the next render.
+var templateCache = struct {
+	sync.Mutex
+	m map[string]templateCacheEntry
+}{m: map[string]templateCacheEntry{}}
+
+func cachedIgnitionTemplate(name string) (*parsedTemplate, error) {
+	rel, err := config.CleanRelPath(name)
+	if err != nil {
+		return nil, fmt.Errorf("ignition file %q: %w", name, err)
+	}
+	dataDir := viper.GetString(config.DataDir)
+	root, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return nil, err
 	}
 	defer config.CloseQuietly(root, "data root")
 	f, err := root.Open(rel)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer config.CloseQuietly(f, rel)
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	key := templateCacheKey(dataDir, rel)
+	templateCache.Lock()
+	e, ok := templateCache.m[key]
+	templateCache.Unlock()
+	if ok && e.size == info.Size() && e.modTime.Equal(info.ModTime()) && e.inode == fileInode(info) {
+		return e.t, nil
+	}
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(data), nil
+	t := parseTemplate(name, string(data))
+	templateCache.Lock()
+	if len(templateCache.m) >= maxCachedTemplates {
+		clear(templateCache.m)
+	}
+	templateCache.m[key] = templateCacheEntry{size: info.Size(), modTime: info.ModTime(), inode: fileInode(info), t: t}
+	templateCache.Unlock()
+	return t, nil
+}
+
+func templateCacheKey(dataDir, rel string) string {
+	return dataDir + "\x00" + rel
+}
+
+// forgetCachedTemplate drops the cache entry of rel (a cleaned path under
+// the data directory), so the next render rereads the file.
+func forgetCachedTemplate(rel string) {
+	templateCache.Lock()
+	delete(templateCache.m, templateCacheKey(viper.GetString(config.DataDir), rel))
+	templateCache.Unlock()
 }
 
 // defaultButane is rendered when the operator never created
@@ -247,16 +400,19 @@ func DefaultTemplateInUse() bool {
 	return errors.Is(err, fs.ErrNotExist)
 }
 
-func loadIgnitionTemplate(host *hardware.Host) (name, src string, err error) {
+// embeddedDefaultTemplate is defaultButane, parsed once.
+var embeddedDefaultTemplate = parseTemplate("embedded-default", defaultButane)
+
+func loadIgnitionTemplate(host *hardware.Host) (name string, t *parsedTemplate, err error) {
 	name = viper.GetString(config.IgnitionFile)
 	if host.IgnitionFile != "" {
 		name = host.IgnitionFile
 	}
-	src, err = readIgnitionTemplate(name)
+	t, err = cachedIgnitionTemplate(name)
 	if err != nil && host.IgnitionFile == "" && name == config.DefaultIgnitionFile && errors.Is(err, fs.ErrNotExist) {
-		return "embedded-default", defaultButane, nil
+		return embeddedDefaultTemplate.name, embeddedDefaultTemplate, nil
 	}
-	return name, src, err
+	return name, t, err
 }
 
 type ignitionPart string
@@ -299,20 +455,12 @@ func identifyRegisteredClient(w http.ResponseWriter, r *http.Request) (mac strin
 	return mac, host, true
 }
 
-func writeRawJSON(w http.ResponseWriter, body []byte) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		slog.Debug("Writing ignition response failed", "error", err)
-	}
-}
-
 // handleIgnitionRequest serves the config a booting machine fetches. For a
 // registered host it is a wrapper that tells Ignition to merge Booty's
 // builtin fragment and then the user's rendered config (later entries win),
 // unless --builtin=none in which case the user config is returned directly.
 // Unregistered hosts get the brig. Boot side effects fire here only.
-func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -330,7 +478,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !renderCheck(w, host) {
+	if !s.renderCheck(w, host) {
 		return
 	}
 	features := builtinFeatures()
@@ -338,11 +486,11 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	part := ignitionPart(r.URL.Query().Get("part"))
 	if !preview {
 		part = partWrapper
-		recordBoot(mac, ip, host)
+		s.recordBoot(mac, ip, host)
 	} else {
 		slog.Debug("Ignition preview; not recording boot", "mac", mac, "ip", ip, "part", part)
 	}
-	joinString := resolveJoinString(r.Context(), w, mac, host, !preview)
+	joinString := s.resolveJoinString(r.Context(), w, mac, host, !preview)
 
 	user, err := renderUserIgnition(mac, host, joinString)
 	if err != nil {
@@ -351,7 +499,7 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !features.Enabled() {
-		writeRawJSON(w, user)
+		writeJSONBody(w, r, http.StatusOK, user)
 		return
 	}
 
@@ -365,11 +513,11 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, mergeWrapper(version, mac))
 	case partUser:
-		writeRawJSON(w, user)
+		writeJSONBody(w, r, http.StatusOK, user)
 	case partBuiltin:
-		writeJSON(w, http.StatusOK, builtinFragment(r.Context(), host, features, joinString, !preview))
+		writeJSON(w, http.StatusOK, s.builtinFragment(r.Context(), host, features, joinString, !preview))
 	case partMerged:
-		builtin, err := json.Marshal(builtinFragment(r.Context(), host, features, joinString, !preview))
+		builtin, err := json.Marshal(s.builtinFragment(r.Context(), host, features, joinString, !preview))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to encode builtin fragment")
 			return
@@ -380,52 +528,52 @@ func handleIgnitionRequest(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to merge ignition configs: "+err.Error())
 			return
 		}
-		writeRawJSON(w, merged)
+		writeJSONBody(w, r, http.StatusOK, merged)
 	default:
 		writeError(w, http.StatusBadRequest, "part must be user, builtin or merged")
 	}
 }
 
-func handleIgnitionUserRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleIgnitionUserRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	mac, host, ok := identifyRegisteredClient(w, r)
-	if !ok || !renderCheck(w, host) {
+	if !ok || !s.renderCheck(w, host) {
 		return
 	}
-	user, err := renderUserIgnition(mac, host, resolveJoinString(r.Context(), w, mac, host, true))
+	user, err := renderUserIgnition(mac, host, s.resolveJoinString(r.Context(), w, mac, host, true))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to render ignition config")
 		return
 	}
-	writeRawJSON(w, user)
+	writeJSONBody(w, r, http.StatusOK, user)
 }
 
-func handleIgnitionBuiltinRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleIgnitionBuiltinRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	mac, host, ok := identifyRegisteredClient(w, r)
-	if !ok || !renderCheck(w, host) {
+	if !ok || !s.renderCheck(w, host) {
 		return
 	}
 	mint := !isPreview(r)
-	writeJSON(w, http.StatusOK, builtinFragment(r.Context(), host, builtinFeatures(), resolveJoinString(r.Context(), w, mac, host, mint), mint))
+	writeJSON(w, http.StatusOK, s.builtinFragment(r.Context(), host, builtinFeatures(), s.resolveJoinString(r.Context(), w, mac, host, mint), mint))
 }
 
 // builtinFragment is the /ignition/builtin.json child: Booty's builtin
 // pieces followed by the selected --profile. mint is false for previews,
 // which must not create k0s join tokens.
-func builtinFragment(ctx context.Context, host *hardware.Host, features ign.Features, joinString string, mint bool) ignTypes.Config {
+func (s *Server) builtinFragment(ctx context.Context, host *hardware.Host, features ign.Features, joinString string, mint bool) ignTypes.Config {
 	keys, err := ign.LoadSSHKeys(viper.GetString(config.SSHAuthorizedKeysFl), viper.GetStringSlice(config.SSHAuthorizedKeys))
 	if err != nil {
 		slog.Warn("Could not read SSH authorized keys file", "file", viper.GetString(config.SSHAuthorizedKeysFl), "error", err)
 	}
 	cfg := ign.Fragment(ign.Input{Hostname: host.Hostname, Server: config.ServerHostPort(), SSHKeys: keys, MAC: host.MAC}, features)
-	return appendProfile(ctx, cfg, host, joinString, mint)
+	return s.appendProfile(ctx, cfg, host, joinString, mint)
 }
 
 type mergeSource struct {
@@ -484,12 +632,12 @@ func mergePreview(builtin, user []byte) ([]byte, error) {
 }
 
 func renderUserIgnition(mac string, host *hardware.Host, joinString string) ([]byte, error) {
-	name, src, err := loadIgnitionTemplate(host)
+	name, t, err := loadIgnitionTemplate(host)
 	if err != nil {
 		slog.Error("Reading ignition template failed", "mac", mac, "file", name, "error", err)
 		return nil, err
 	}
-	rendered, err := renderIgnition(name, src, host, joinString)
+	rendered, err := renderParsedIgnition(t, host, joinString)
 	if err != nil {
 		slog.Error("Rendering ignition failed", "mac", mac, "file", name, "error", err)
 		return nil, err
@@ -498,7 +646,11 @@ func renderUserIgnition(mac string, host *hardware.Host, joinString string) ([]b
 }
 
 func renderIgnition(name, src string, host *hardware.Host, joinString string) ([]byte, error) {
-	ignCfg, rendered, entries, err := renderButane(name, src, templateDataFor(host, joinString))
+	return renderParsedIgnition(parseTemplate(name, src), host, joinString)
+}
+
+func renderParsedIgnition(t *parsedTemplate, host *hardware.Host, joinString string) ([]byte, error) {
+	ignCfg, rendered, entries, err := renderParsedButane(t, templateDataFor(host, joinString))
 	if err != nil {
 		if rendered != "" {
 			slog.Error("Butane template contents", "template", rendered)
@@ -553,12 +705,17 @@ func reportText(entries []reportEntry) string {
 // itself failed to parse or execute); err covers template errors,
 // translation errors and fatal reports, with the entries explaining why.
 func renderButane(name, src string, data templateData) (ignCfg []byte, rendered string, entries []reportEntry, err error) {
-	t, err := template.New(name).Parse(src)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("parsing template: %w", err)
+	return renderParsedButane(parseTemplate(name, src), data)
+}
+
+// renderParsedButane is renderButane for an already parsed template; only
+// the execution and the Butane translation are per host.
+func renderParsedButane(t *parsedTemplate, data templateData) (ignCfg []byte, rendered string, entries []reportEntry, err error) {
+	if t.parse != nil {
+		return nil, "", nil, fmt.Errorf("parsing template: %w", t.parse)
 	}
 	var tpl bytes.Buffer
-	if err := t.Execute(&tpl, data); err != nil {
+	if err := t.tmpl.Execute(&tpl, data); err != nil {
 		return nil, "", nil, fmt.Errorf("executing template: %w", err)
 	}
 	rendered = tpl.String()
@@ -659,12 +816,12 @@ func learnIP(mac string, host *hardware.Host, ip string) {
 	slog.Info("Learned the host's IP from its kernel fetch", "mac", mac, "ip", ip)
 }
 
-func recordBoot(mac, ip string, host *hardware.Host) {
+func (s *Server) recordBoot(mac, ip string, host *hardware.Host) {
 	if err := hardware.MarkBooted(mac, ip, time.Now()); err != nil {
 		slog.Error("Could not record boot", "mac", mac, "error", err)
 	}
-	powerFetch(mac, power.FetchIgnition)
-	autopilotFetch(mac, controller.FetchIgnition)
+	s.powerFetch(mac, power.FetchIgnition)
+	s.autopilotFetch(mac, controller.FetchIgnition)
 	if !host.DoInstall {
 		return
 	}

@@ -89,6 +89,7 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	if err := os.WriteFile(filepath.Join(dir, "registry", "blobs", "x"), []byte("blob"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = hardware.Close() })
 	if err := hardware.Load(); err != nil {
 		t.Fatalf("hardware.Load: %v", err)
 	}

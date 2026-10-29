@@ -50,6 +50,7 @@ func openTestDB(t *testing.T) (*DB, string) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
 	return db, path
 }
 
@@ -255,6 +256,9 @@ func TestMarkBooted(t *testing.T) {
 	if h.Booted != "2026-09-24T11:00:00Z" || h.IP != "10.1.2.3" {
 		t.Fatalf("unexpected host after MarkBooted: %+v", h)
 	}
+	if err := db.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	reopened, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -297,6 +301,9 @@ func TestSetSecureBoot(t *testing.T) {
 	}
 	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
 		t.Fatal("unchanged flag must not rewrite the hardware map")
+	}
+	if err := db.Flush(); err != nil {
+		t.Fatal(err)
 	}
 
 	reopened, err := Open(path)

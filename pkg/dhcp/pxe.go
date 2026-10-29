@@ -366,11 +366,10 @@ func httpBootFileForArch(arch iana.Arch, c Config, log *slog.Logger) string {
 	}
 }
 
+// hasUserClass reports whether option 77 names want. pkt.UserClass()
+// decodes both encodings clients use: RFC 3004 length-prefixed entries and
+// the bare string iPXE and most PXE ROMs send.
 func hasUserClass(pkt *dhcpv4.DHCPv4, want string) bool {
-	raw := pkt.Options.Get(dhcpv4.OptionUserClassInformation)
-	if string(raw) == want {
-		return true
-	}
 	for _, uc := range pkt.UserClass() {
 		if uc == want {
 			return true

@@ -9,13 +9,20 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/jeefy/booty/pkg/config"
 )
 
-const maxPacket = 1500
+// maxPacket is the read buffer per datagram. DHCP over Ethernet fits in
+// 1500 bytes, but jumbo-frame links and option-heavy clients can send more;
+// a read that fills the whole buffer was probably cut short.
+const maxPacket = 4096
+
+// truncatedWarnEvery rate-limits the warning about full-buffer reads.
+const truncatedWarnEvery = time.Minute
 
 // Server is the ProxyDHCP listener pair (port 67 for DHCPDISCOVER, port
 // 4011 for the PXE DHCPREQUEST).
@@ -23,6 +30,8 @@ type Server struct {
 	cfg   Config
 	conns []*net.UDPConn
 	wg    sync.WaitGroup
+	// lastTruncWarn is the UnixNano of the last full-buffer warning.
+	lastTruncWarn atomic.Int64
 }
 
 // Start binds both UDP sockets synchronously (so bind errors are returned)
@@ -92,6 +101,9 @@ func (s *Server) serve(conn *net.UDPConn, errCh chan<- error) {
 			errCh <- fmt.Errorf("proxydhcp read on %s: %w", conn.LocalAddr(), err)
 			return
 		}
+		if n == len(buf) {
+			s.warnTruncated(src, n, time.Now())
+		}
 		pkt, err := dhcpv4.FromBytes(buf[:n])
 		if err != nil {
 			slog.Debug("ProxyDHCP dropping malformed packet", "from", src, "error", err)
@@ -106,6 +118,20 @@ func (s *Server) serve(conn *net.UDPConn, errCh chan<- error) {
 			slog.Warn("ProxyDHCP reply failed", "to", dst, "error", err)
 		}
 	}
+}
+
+// warnTruncated logs a read that filled the whole buffer, at most once per
+// truncatedWarnEvery; it reports whether it logged.
+func (s *Server) warnTruncated(src *net.UDPAddr, n int, now time.Time) bool {
+	last := s.lastTruncWarn.Load()
+	if last != 0 && now.UnixNano()-last < int64(truncatedWarnEvery) {
+		return false
+	}
+	if !s.lastTruncWarn.CompareAndSwap(last, now.UnixNano()) {
+		return false
+	}
+	slog.Warn("ProxyDHCP datagram filled the read buffer and may be truncated", "from", src, "bytes", n, "buffer", maxPacket)
+	return true
 }
 
 // listen binds 0.0.0.0:port (optionally restricted to an interface) or

@@ -182,16 +182,22 @@ func ipxeSafeArgs(s string) error {
 }
 
 type cachedUKIEntry struct {
-	uki *ukiInfo
-	err error
+	uki     *ukiInfo
+	err     error
+	lastUse uint64
 }
 
+// maxCachedUKIs bounds ukiCache: a handful of retained releases.
+const maxCachedUKIs = 8
+
 // ukiCache holds the parsed UKI per release file (version, sha256, size and
-// mtime), so a UKI is parsed once per release.
+// mtime), so a UKI is parsed once per release. When full, the least
+// recently used entry is evicted.
 var ukiCache = struct {
 	sync.Mutex
-	m map[string]cachedUKIEntry
-}{m: map[string]cachedUKIEntry{}}
+	m    map[string]*cachedUKIEntry
+	tick uint64
+}{m: map[string]*cachedUKIEntry{}}
 
 // bluefinUKIPath is the netboot UKI of release m.
 func bluefinUKIPath(m versions.BluefinManifest) string {
@@ -208,15 +214,30 @@ func cachedUKI(m versions.BluefinManifest) (*ukiInfo, os.FileInfo, error) {
 	key := fmt.Sprintf("%s|%s|%d|%d", m.Version, m.SHA256Sums[m.NetbootUKI], info.Size(), info.ModTime().UnixNano())
 	ukiCache.Lock()
 	defer ukiCache.Unlock()
+	ukiCache.tick++
 	if e, ok := ukiCache.m[key]; ok {
+		e.lastUse = ukiCache.tick
 		return e.uki, info, e.err
 	}
 	uki, err := readUKI(path)
-	if len(ukiCache.m) >= 8 {
-		clear(ukiCache.m)
+	if len(ukiCache.m) >= maxCachedUKIs {
+		evictLRUUKI()
 	}
-	ukiCache.m[key] = cachedUKIEntry{uki: uki, err: err}
+	ukiCache.m[key] = &cachedUKIEntry{uki: uki, err: err, lastUse: ukiCache.tick}
 	return uki, info, err
+}
+
+// evictLRUUKI drops the least recently used ukiCache entry; the caller
+// holds the lock.
+func evictLRUUKI() {
+	var oldest string
+	var oldestUse uint64
+	for k, e := range ukiCache.m {
+		if oldest == "" || e.lastUse < oldestUse {
+			oldest, oldestUse = k, e.lastUse
+		}
+	}
+	delete(ukiCache.m, oldest)
 }
 
 func cachedUKICmdline(m versions.BluefinManifest) (string, error) {

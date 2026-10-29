@@ -16,8 +16,6 @@ import (
 // rewritten to hardware.json; the timer fires every 10 minutes per host.
 const updateCheckPersistInterval = time.Minute
 
-var nowFunc = time.Now
-
 var coreOSVersionRe = regexp.MustCompile(`^\d+\.\d{8}\.\d+\.\d+$`)
 
 // bluefinUpdateReason is the reboot reason for a diskless Bluefin host: a
@@ -52,7 +50,7 @@ func (r updateReport) running() string {
 // handleUpdateCheckRequest answers the booty-update-check script. It never
 // reports rebootRequired=true unless Booty positively knows the host is
 // behind what it serves; the client treats non-2xx as "leave state alone".
-func handleUpdateCheckRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUpdateCheckRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -80,11 +78,11 @@ func handleUpdateCheckRequest(w http.ResponseWriter, r *http.Request) {
 		Digest:  strings.TrimSpace(q.Get("digest")),
 	}
 	resp := evaluateUpdate(host, rep)
-	if want, reason := autopilotRebootWanted(mac); want && !resp.RebootRequired && resp.Target != "" {
+	if want, reason := s.autopilotRebootWanted(mac); want && !resp.RebootRequired && resp.Target != "" {
 		resp.RebootRequired, resp.Reason = true, reason
 	}
-	recordUpdateCheck(mac, host, resp)
-	powerSeen(mac)
+	s.recordUpdateCheck(mac, host, resp)
+	s.powerSeen(mac)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -223,8 +221,8 @@ func normalizeImageRef(image string) string {
 	return image
 }
 
-func recordUpdateCheck(mac string, host *hardware.Host, resp updateCheckResponse) {
-	now := nowFunc().UTC()
+func (s *Server) recordUpdateCheck(mac string, host *hardware.Host, resp updateCheckResponse) {
+	now := s.nowFunc().UTC()
 	if host.Running == resp.Running && host.RebootPending == resp.RebootRequired {
 		if last, err := time.Parse(time.RFC3339, host.LastCheck); err == nil && now.Sub(last) < updateCheckPersistInterval {
 			return

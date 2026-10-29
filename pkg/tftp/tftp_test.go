@@ -35,6 +35,12 @@ func setupDataDir(t *testing.T) string {
 	return dir
 }
 
+// newHandler builds a request handler the way Start does, reading the
+// data dir and server address set up by setupDataDir.
+func newHandler(c Config) *handler {
+	return &handler{cfg: c.withDefaults()}
+}
+
 func readAll(t *testing.T, r io.ReadCloser) string {
 	t.Helper()
 	defer func() {
@@ -61,6 +67,7 @@ func TestOpenRequestRejectsTraversal(t *testing.T) {
 	if err := os.Symlink("plain.txt", filepath.Join(dir, "inside")); err != nil {
 		t.Fatal(err)
 	}
+	h := newHandler(Config{})
 
 	for _, name := range []string{
 		"../outside.txt",
@@ -72,7 +79,7 @@ func TestOpenRequestRejectsTraversal(t *testing.T) {
 		"sub",
 		"missing.bin",
 	} {
-		r, err := openRequest(name)
+		r, err := h.open(name)
 		if err == nil {
 			readAll(t, r)
 			t.Errorf("%q should have been rejected", name)
@@ -84,7 +91,7 @@ func TestOpenRequestRejectsTraversal(t *testing.T) {
 		"sub/inner.txt": "inner",
 		"inside":        "plain",
 	} {
-		r, err := openRequest(name)
+		r, err := h.open(name)
 		if err != nil {
 			t.Errorf("%q should be served: %v", name, err)
 			continue
@@ -100,19 +107,18 @@ func TestOpenRequestServesEmbeddedBootFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ipxe.efi"), []byte("STALE ON DISK"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg = Config{BootFiles: fstest.MapFS{
+	h := newHandler(Config{BootFiles: fstest.MapFS{
 		"undionly.kpxe": {Data: []byte("BIOS")},
 		"ipxe.efi":      {Data: []byte("EFI")},
 		"snponly.efi":   {Data: []byte("SNP")},
-	}}
-	t.Cleanup(func() { cfg = Config{} })
+	}})
 
 	for name, want := range map[string]string{
 		"undionly.kpxe": "BIOS",
 		"ipxe.efi":      "EFI",
 		"snponly.efi":   "SNP",
 	} {
-		r, err := openRequest(name)
+		r, err := h.open(name)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -127,29 +133,30 @@ func TestOpenRequestBootFilesFallBackToDataDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "undionly.kpxe"), []byte("FROM DISK"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg = Config{}
+	h := newHandler(Config{})
 
-	r, err := openRequest("undionly.kpxe")
+	r, err := h.open("undionly.kpxe")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := readAll(t, r); got != "FROM DISK" {
 		t.Fatalf("got %q", got)
 	}
-	if _, err := openRequest("ipxe.efi"); err == nil {
+	if _, err := h.open("ipxe.efi"); err == nil {
 		t.Fatal("ipxe.efi should be not found without embedded files or a copy in DataDir")
 	}
 }
 
 func TestOpenRequestNoPxelinux(t *testing.T) {
 	setupDataDir(t)
+	h := newHandler(Config{})
 	for _, name := range []string{
 		"pxelinux.cfg/default",
 		"pxelinux.cfg/01-aa-bb-cc-dd-ee-ff",
 		"pxelinux.0",
 		"ldlinux.c32",
 	} {
-		if r, err := openRequest(name); err == nil {
+		if r, err := h.open(name); err == nil {
 			readAll(t, r)
 			t.Errorf("%q should be a file-not-found: pxelinux support was removed", name)
 		}
@@ -158,7 +165,8 @@ func TestOpenRequestNoPxelinux(t *testing.T) {
 
 func TestOpenRequestBootyIPXEStub(t *testing.T) {
 	setupDataDir(t)
-	r, err := openRequest("booty.ipxe")
+	h := newHandler(Config{})
+	r, err := h.open("booty.ipxe")
 	if err != nil {
 		t.Fatal(err)
 	}

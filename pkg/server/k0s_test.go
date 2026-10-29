@@ -157,7 +157,7 @@ func TestK0sManagedFlatcarController(t *testing.T) {
 	}
 
 	viper.Set(config.ControlPlaneDisk, "")
-	clusterManager.Settings.ControlPlaneDisk = ""
+	cur().clusterManager.Settings.ControlPlaneDisk = ""
 	for _, url := range []string{"/ignition.json?mac=" + k0sFlatcarCP + "&preview=1", "/ignition/builtin.json?mac=" + k0sFlatcarCP + "&preview=1", "/ignition/user.json?mac=" + k0sFlatcarCP} {
 		r := do(t, http.MethodGet, srv.URL+url, "")
 		assertJSONError(t, r, http.StatusBadRequest)
@@ -171,7 +171,7 @@ func TestK0sManagedFlatcarController(t *testing.T) {
 	}
 	register(t, srv.URL, `{"mac":"`+k0sBluefinCP+`","hostname":"bluefin-cp","os":"bluefin","role":"control-plane"}`)
 	viper.Set(config.ControlPlaneEndpt, "")
-	clusterManager.Settings.Endpoint = ""
+	cur().clusterManager.Settings.Endpoint = ""
 	r = do(t, http.MethodGet, srv.URL+"/cluster", "")
 	if !strings.Contains(r.body, "2 control-plane hosts registered but --controlPlaneEndpoint is not set") {
 		t.Fatalf("/cluster warns about the endpoint: %s", r.body)
@@ -194,7 +194,7 @@ func TestK0sExternal(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte(tok+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	clusterManager.Settings.K0sTokenFile = tokenFile
+	cur().clusterManager.Settings.K0sTokenFile = tokenFile
 	for _, mac := range []string{k0sFlatcarW, k0sCoreOSW} {
 		r := do(t, http.MethodGet, srv.URL+"/ignition/builtin.json?mac="+mac, "")
 		if r.status != 200 || !strings.Contains(r.body, k0s.WorkerUnit) || ignitionFiles(t, r.body)[k0s.TokenPath] != tok+"\n" {

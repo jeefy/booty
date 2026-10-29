@@ -21,13 +21,11 @@ const WarningHeader = "X-Booty-Warning"
 
 const joinUnavailableWarning = "kubeadm join token unavailable"
 
-var joinMinter *kubeadm.Minter
-
-func setJoinMinter(m *kubeadm.Minter) {
+func (s *Server) setJoinMinter(m *kubeadm.Minter) {
 	if m == nil {
 		m = kubeadm.New(kubeadm.InClusterConfig(), viper.GetDuration(config.JoinTokenTTL))
 	}
-	joinMinter = m
+	s.joinMinter = m
 }
 
 // resolveJoinString picks the kubeadm join string for host. In static mode
@@ -44,11 +42,11 @@ func setJoinMinter(m *kubeadm.Minter) {
 // workers join with /etc/k0s/token, so only an explicit static
 // --joinString (a template variable the operator asked for) passes
 // through.
-func resolveJoinString(ctx context.Context, w http.ResponseWriter, mac string, host *hardware.Host, mint bool) string {
-	if host.IsControlPlane() && clusterManager != nil && clusterManager.Settings.Managed() {
+func (s *Server) resolveJoinString(ctx context.Context, w http.ResponseWriter, mac string, host *hardware.Host, mint bool) string {
+	if host.IsControlPlane() && s.clusterManager != nil && s.clusterManager.Settings.Managed() {
 		return ""
 	}
-	if clusterManager != nil && clusterManager.Settings.Distribution == cluster.K0s {
+	if s.clusterManager != nil && s.clusterManager.Settings.Distribution == cluster.K0s {
 		if viper.GetString(config.KubeadmJoin) == config.KubeadmJoinAuto {
 			return ""
 		}
@@ -62,7 +60,7 @@ func resolveJoinString(ctx context.Context, w http.ResponseWriter, mac string, h
 	if viper.GetString(config.KubeadmJoin) == config.KubeadmJoinAuto && !profile.AppliesTo(host.OS) {
 		return ""
 	}
-	join, ok := kubeadmJoinString(ctx, mac, host, mint)
+	join, ok := s.kubeadmJoinString(ctx, mac, host, mint)
 	if !ok {
 		w.Header().Set(WarningHeader, joinUnavailableWarning)
 	}
@@ -74,27 +72,27 @@ func resolveJoinString(ctx context.Context, w http.ResponseWriter, mac string, h
 // --kubeadmJoin=auto (the per-MAC cache only when mint is false), with the
 // managed control plane's pre-generated one as the fallback. ok is false
 // when Booty could not provide one it should have; the failure is logged.
-func kubeadmJoinString(ctx context.Context, mac string, host *hardware.Host, mint bool) (string, bool) {
+func (s *Server) kubeadmJoinString(ctx context.Context, mac string, host *hardware.Host, mint bool) (string, bool) {
 	if viper.GetString(config.KubeadmJoin) != config.KubeadmJoinAuto {
 		join, err := config.StaticJoinString()
 		if err != nil {
 			slog.Error("Static kubeadm join string unavailable", "mac", mac, "error", err)
 		}
 		if join == "" {
-			join = managedJoinString(mac)
+			join = s.managedJoinString(mac)
 		}
 		return join, err == nil
 	}
 	if !mint {
-		join, ok := joinMinter.Cached(mac)
+		join, ok := s.joinMinter.Cached(mac)
 		if !ok {
-			join = managedJoinString(mac)
+			join = s.managedJoinString(mac)
 		}
 		return join, true
 	}
-	join, err := joinMinter.JoinString(ctx, mac, host.Hostname)
+	join, err := s.joinMinter.JoinString(ctx, mac, host.Hostname)
 	if err != nil {
-		if pre := managedJoinString(mac); pre != "" {
+		if pre := s.managedJoinString(mac); pre != "" {
 			slog.Debug("Minting a kubeadm join token failed; serving the pre-generated join string", "mac", mac, "error", err)
 			return pre, true
 		}
@@ -107,8 +105,8 @@ func kubeadmJoinString(ctx context.Context, mac string, host *hardware.Host, min
 // managedJoinString is the pre-generated join string of a managed kubeadm
 // control plane, or "" when the control plane is external or the endpoint
 // is not known yet.
-func managedJoinString(mac string) string {
-	m := clusterManager
+func (s *Server) managedJoinString(mac string) string {
+	m := s.clusterManager
 	if m == nil || !m.Settings.ManagedKubeadm() {
 		return ""
 	}
@@ -128,7 +126,7 @@ func managedJoinString(mac string) string {
 // unsupported OS, missing --controlPlaneDisk, no endpoint. mint lets a
 // k0s worker's join token be minted through the API (a real boot);
 // previews pass false.
-func profileOptions(ctx context.Context, host *hardware.Host, joinString string, mint bool) (profile.Options, error) {
+func (s *Server) profileOptions(ctx context.Context, host *hardware.Host, joinString string, mint bool) (profile.Options, error) {
 	opts := profile.Options{
 		Profile:         viper.GetString(config.Profile),
 		K8sVersion:      viper.GetString(config.K8sVersion),
@@ -138,7 +136,7 @@ func profileOptions(ctx context.Context, host *hardware.Host, joinString string,
 		KubeletUnitsURL: viper.GetString(config.KubeletUnitsURL),
 		JoinString:      joinString,
 	}
-	m := clusterManager
+	m := s.clusterManager
 	if m != nil && m.Settings.Distribution == cluster.K0s {
 		opts.Profile = ""
 		if !profile.AppliesTo(host.OS) {
@@ -175,8 +173,8 @@ func profileOptions(ctx context.Context, host *hardware.Host, joinString string,
 
 // renderCheck refuses hosts the cluster settings cannot render (HTTP 400)
 // and returns false after writing the response.
-func renderCheck(w http.ResponseWriter, host *hardware.Host) bool {
-	m := clusterManager
+func (s *Server) renderCheck(w http.ResponseWriter, host *hardware.Host) bool {
+	m := s.clusterManager
 	if m == nil {
 		return true
 	}
@@ -190,8 +188,8 @@ func renderCheck(w http.ResponseWriter, host *hardware.Host) bool {
 
 // appendProfile adds the selected profile's files, filesystems and units
 // after the builtin ones so the merge order is builtin -> profile -> user.
-func appendProfile(ctx context.Context, cfg ignTypes.Config, host *hardware.Host, joinString string, mint bool) ignTypes.Config {
-	opts, err := profileOptions(ctx, host, joinString, mint)
+func (s *Server) appendProfile(ctx context.Context, cfg ignTypes.Config, host *hardware.Host, joinString string, mint bool) ignTypes.Config {
+	opts, err := s.profileOptions(ctx, host, joinString, mint)
 	if err != nil {
 		slog.Error("Cluster options unavailable; serving builtin fragment without the profile", "mac", host.MAC, "error", err)
 		return cfg

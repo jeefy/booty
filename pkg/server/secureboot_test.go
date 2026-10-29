@@ -70,6 +70,9 @@ func TestIPXESecureBootFlagFollowsThePath(t *testing.T) {
 	if !hostSecureBoot(t, srv.URL, mac) {
 		t.Fatal("sb=1 must set secureBoot")
 	}
+	if err := hardware.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "hardware.json"))
 	if err != nil {
 		t.Fatal(err)

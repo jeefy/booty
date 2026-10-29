@@ -39,8 +39,8 @@ func captureInfoLogs(t *testing.T) *bytes.Buffer {
 func TestHealthReport(t *testing.T) {
 	srv, _ := newTestServer(t)
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	nowFunc = func() time.Time { return now }
-	t.Cleanup(func() { nowFunc = time.Now })
+	cur().nowFunc = func() time.Time { return now }
+	t.Cleanup(func() { cur().nowFunc = time.Now })
 	logs := captureInfoLogs(t)
 
 	assertJSONError(t, do(t, http.MethodGet, srv.URL+"/health?mac=aa:bb:cc:dd:ee:01", healthFixture), http.StatusMethodNotAllowed)
