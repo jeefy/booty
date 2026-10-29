@@ -6,7 +6,69 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Breaking changes
+
+- **The container image runs as nonroot (uid 65532)** with
+  `cap_net_bind_service` and `cap_net_raw` as file capabilities on the
+  binary instead of running as root (`USER 65532:65532`, with a
+  65532-owned `/data`). The `/data` volume must now be writable by uid
+  65532 (`chown -R 65532:65532`, or on Kubernetes `fsGroup: 65532` with
+  `fsGroupChangePolicy: OnRootMismatch` plus `runAsUser: 65532` and
+  `runAsNonRoot: true`; the example in `examples/k8s.yaml` does all of
+  these), and the bounding set must still include `NET_BIND_SERVICE` and
+  `NET_RAW` -- the `--cap-add` flags in the examples do exactly that, and
+  `allowPrivilegeEscalation` must not be `false` (file capabilities are
+  raised through the privilege-escalation path on exec). The autopilot's
+  reboot/power Pods (`booty node-reboot`) now run as root
+  (`runAsUser: 0`) because the main image is nonroot; they were already
+  privileged and hostPID. `make image-run` maps the container to the
+  invoking user (`--user $(id -u):$(id -g)`) so the bind-mounted `./data`
+  is writable.
+- **Fail-closed verification.** The Flatcar, CoreOS, Secure Boot bundle and
+  Flatcar CA syncs now refuse to install when the checksums or digests they
+  verify against cannot be fetched (after three tries) -- they previously
+  fell back to an unverified download. Unpinned Fedora RPMs (a
+  non-default `--fedoraShimVersion`/`--fedoraGrubVersion`) are verified
+  against the mirror's own repository metadata (`repomd.xml` to the
+  primary metadata, sha256 only, xz-compressed metadata refused); when the
+  metadata cannot verify them the install is refused unless
+  `--allowUnverifiedFedoraRPMs` is set.
+
 ### Added
+
+- **New endpoint-override flags** (each also `BOOTY_<FLAG>`):
+  `--githubAPIURL`, `--githubDownloadURL`, `--fedoraMirrorURL`,
+  `--fedoraReleases` (default derived from the `.fcNN` of
+  `--fedoraGrubVersion` as `NN+1` and `NN`), `--coreOSStreamsURL` and
+  `--allowUnverifiedFedoraRPMs` (default false). Startup validates the
+  endpoint settings and exits on malformed values (a wrong `%s` count in
+  the Flatcar/CoreOS download templates (3) or `--coreOSStreamsURL` (1), a
+  non-`http(s)` URL, a non-numeric `--fedoraReleases`).
+  `--tftpBlockSize` is validated to the legal 512..65464 range; `0` is
+  accepted and means "library default (512)".
+- **Resumable, retried downloads.** Release downloads retry three times
+  with exponential backoff and resume partial files over HTTP Range;
+  temporary files are named `<name>.*.tmp` and swept at startup. GitHub
+  release fetches use ETag/`If-None-Match`, and a `304` does not count
+  against the rate limit. Bluefin sysext zstd decompression is capped at
+  16 GiB.
+- **Wider prune retention.** Pruning now also keeps releases named by a
+  configured pin (`--flatcarVersion`/`--bluefinVersion`), the autopilot's
+  fleet hold, each host's `netbootVersion` (the release a Bluefin host
+  last netbooted) and any release demoted from `current` less than an
+  hour ago (kept in memory; a restart shortens the window), so hosts
+  mid-boot into a replaced release can always finish.
+- **`/info` gains an optional `syncErrors` field** (`{error, at}` per OS
+  and scheduler) and the Home page shows them as a warning, so a stuck
+  upstream is visible without reading the log.
+- **Batched `hardware.json` writes.** Only routine bookkeeping (boot,
+  health and power updates) is batched, flushing at most every 2 s and
+  on shutdown. Register/unregister and every one-shot transition made
+  through `Update` (`doInstall`, `mode`, `installServedAt`,
+  `targetVersion`, the autopilot pin) is written synchronously, together
+  with any pending batched change. A hand edit to `hardware.json` while
+  Booty runs wins: the unflushed batched changes are dropped with a
+  warning and the file is reloaded.
 
 - **Soak and cooldown: paced autopilot rollouts.** Two new flags pace how the
   fleet adopts releases: `--autopilotSoak` (how long a release must have been
@@ -30,6 +92,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   line per OS card, soaking/soaked badges on release rows, and folds `skipped`
   in with the good history.
 
+### Fixed
+
+- **ARP fallback is bounded.** The ARP lookup for requests without
+  `?mac=` times out after 500 ms and an IP whose lookup failed is not
+  retried for 30 s.
+- **Template and key-file caching.** Butane templates and SSH
+  authorized-keys files are cached; an on-disk edit is picked up on the
+  next request (keyed by size and mtime).
+- **Web UI robustness.** Polling pauses while the tab is hidden and backs
+  off on errors (up to 5 min); API responses are validated; the Bootstrap
+  CSS subset is ~31% smaller; focus moves to the main content on
+  navigation.
+
+### Build
+
+- **Builds require Go >= 1.26.10** (the `toolchain` directive in
+  `go.mod`; the floor fixes 17 standard-library CVEs). The Web UI's Node
+  version is single-sourced in `web/.nvmrc` (Node 26). The Makefile
+  gained `test-go`, `test-web`, `lint-go`, `lint-web` and `fmt-check`;
+  Go tests run with `-timeout=5m`. Base images are pinned by digest.
+
 ## [1.0.0] - 2026-10-06
 
 No code changes since 1.0.0-rc.1 apart from the CI tagging fix (#77: `latest`
@@ -49,7 +132,7 @@ from the same UI. Proven on a five-node homelab of Bluefin Server and Flatcar
 hosts.
 
 This is a release candidate. See
-[docs/releases/v1.0.0-rc.1.md](docs/releases/v1.0.0-rc.1.md) for upgrade
+[docs/releases/v1.0.0.md](docs/releases/v1.0.0.md) for upgrade
 notes and known limitations.
 
 ### Breaking changes

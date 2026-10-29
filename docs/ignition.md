@@ -1,0 +1,61 @@
+# Ignition: Composition, Profiles and Join Tokens
+
+How Booty composes every host's Ignition config: the builtin fragment, the kubeadm worker profile, and automatic kubeadm join tokens.
+
+## Composition
+
+Every Booty deployment used to hand-write the same Butane boilerplate: `/etc/hostname` from `{{ .Hostname }}`, an update timer plus a `version-check.sh` that polls `/version.txt` and touches `/var/run/reboot-required` for [kured](https://github.com/kubereboot/kured), and the `booty-booted.service` callback. Booty now provides those itself and composes them with your config using Ignition's own merge mechanism.
+
+`GET /ignition.json?mac=<mac>` for a registered host returns:
+
+```json
+{"ignition":{"version":"3.4.0","config":{"merge":[
+  {"source":"http://192.168.1.10/ignition/builtin.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01"},
+  {"source":"http://192.168.1.10/ignition/user.json?mac=aa%3Abb%3Acc%3Add%3Aee%3A01"}]}}}
+```
+
+* `ignition.version` is taken from your rendered config, so the wrapper never asks for a newer spec than your template does.
+* Ignition merges the children **in order, later entries winning**: files are keyed by path, units by name, users by name, list fields append. Anything in your template with the same path/name overrides the builtin, e.g. define your own `booty-update.timer` to change the schedule.
+* `/ignition/builtin.json` (spec 3.4.0, understood by Flatcar >= 3760 and Fedora CoreOS) carries, selectable with `--builtin` (default `hostname,update,booted,sshkeys,health,wol`; `none` disables composition and `/ignition.json` serves your config verbatim, exactly as before):
+  * `hostname` -- `/etc/hostname` (0644) with the hostname from the hardware database. Skipped when the host has no hostname.
+  * `sshkeys` -- `passwd.users[core].sshAuthorizedKeys` from `--sshAuthorizedKeysFile` (one key per line, `#` comments ignored) and/or repeated `--sshAuthorizedKeys`. Skipped when there are no keys.
+  * `booted` -- `booty-booted.service` (oneshot, enabled) that POSTs `/booted?mac=<mac>` once the installed system is up.
+  * `update` -- `/opt/booty/update-check` (0755, inline, nothing fetched over HTTP at run time) plus `booty-update.service` and `booty-update.timer` (`OnCalendar=*:0/10`, `RandomizedDelaySec=60`). The script reads `/etc/os-release` (and `rpm-ostree status` on OSTree systems), calls `GET /update-check`, and touches or removes `/var/run/reboot-required` for kured. It fails closed: when Booty is unreachable or answers with anything but `rebootRequired:true|false`, the reboot flag is left alone.
+  * `wol` -- `/etc/systemd/network/10-booty-wol.link` (0644) with `[Match] MACAddress=<mac>` and `[Link] WakeOnLan=magic`, so the NIC is armed for the [Power](power.md#power) page's *Power on* button on every boot. udev's `net_setup_link` applies `.link` files on the `add` event the real root's `systemd-udev-trigger.service` re-issues for every NIC, under networkd (Flatcar, CoreOS) and NetworkManager alike and without `ethtool` (which Bluefin does not ship); the homelab's NICs otherwise boot with `Wake-on: d`. The same file goes into the Bluefin node Ignition.
+  * `health` -- `/opt/booty/health-report` (0755, inline) plus `booty-health.service`: a oneshot ordered `After=multi-user.target` (and `booty-booted.service`), `RemainAfterExit=yes`, retried every 30 s on failure, that POSTs the node's health to `/health?mac=<mac>` once the system is up. The script is plain bash over `systemctl`, `journalctl`, `uname` and `curl` (no `jq`; it escapes the JSON itself) and sends `running` (`OSTREE_VERSION`, else `VERSION_ID`, from `/etc/os-release`), `failedUnits` (`systemctl list-units --state=failed`), `journalErrors` (the last 50 lines of `journalctl -p err -b`, each at most 300 bytes, at most 8 KiB in total), `dmi` (`sys_vendor`, `product_name`, `bios_version` and the root-readable `product_uuid` from `/sys/class/dmi/id`, no serial numbers; the UUID identifies the machine and stays out of reports), `firmware` (`uefi` when `/sys/firmware/efi` exists, else `bios`), `kernel` (`uname -r`) and `bootID`. See [Autopilot](autopilot.md#autopilot) for what Booty does with it.
+ * `/ignition/user.json` is your Butane template rendered and translated to Ignition -- the same bytes `/ignition.json` used to return. When neither `--ignitionFile` nor a per-host `ignitionFile` is set and `config/ignition.yaml` does not exist, Booty renders an embedded minimal template (hostname only) so a fresh data directory boots without any Butane at all. A per-host `ignitionFile` that is missing is still a 500 (that is a configuration error). Templates and the `--sshAuthorizedKeysFile` are cached and re-read when the file changes: an on-disk edit is picked up on the next request (the cache is keyed by the file's size and mtime).
+* Previews (`preview=1`, no side effects): `part=user` and `part=builtin` return the children, `part=merged` returns a pretty-printed **server-side** merge (both children upconverted to spec 3.5, builtin as parent, user as child) so you can see what the node will end up with. This is display-only; the node always performs its own merge.
+
+## kubeadm worker profile
+
+`--profile=kubeadm-worker` turns a registered `flatcar` or `coreos` host into a stateless Kubernetes worker without any Kubernetes-specific Butane. Booty appends the profile to `/ignition/builtin.json` after the builtin pieces, so the merge order on the node is **builtin -> profile -> user** and your template still overrides anything by path or unit name. `bluefin` hosts do not get this fragment: Bluefin workers join through their node Ignition and the `kubeadm` sysext instead, see [Bluefin hosts joining a kubeadm cluster](bluefin.md#bluefin-hosts-joining-a-kubeadm-cluster).
+
+What the profile installs, all as inline files under `/opt/booty/` (0755, embedded as `data:` URLs -- nothing is fetched from Booty at run time) and a chain of enabled oneshot units, each `Requires=`/`After=` the previous one. Every script that calls kubeadm/kubectl puts `/opt/bin` first on `PATH`:
+
+| Unit | Script | Does |
+|---|---|---|
+| `booty-cni-install.service` (`Wants=network-online.target`) | `cni.sh` | Unpacks [containernetworking/plugins](https://github.com/containernetworking/plugins) `--cniVersion` into `/opt/bin/` |
+| `booty-kube-tools.service` | `kube-tools.sh` | Downloads the `--k8sVersion` `kubeadm`/`kubelet`/`kubectl` static binaries from `dl.k8s.io` and `crictl` `--crictlVersion` (default = `--k8sVersion` minor) from [cri-tools](https://github.com/kubernetes-sigs/cri-tools) into `/opt/bin/` and creates `/etc/kubernetes/manifests`. The same on **Flatcar** and **Fedora CoreOS**: a PXE-booted FCOS runs from a read-only `erofs` `/usr` where neither `dnf` nor `rpm-ostree` can layer packages, so the former `pkgs.k8s.io` RPM path is gone; `/opt` (`/var/opt` on FCOS) is writable on both. |
+| `booty-containerd-setup.service` | `containerd.sh` | Makes sure a containerd with the **systemd cgroup driver** is running before the kubelet. **Flatcar** already runs one (`--config /usr/share/containerd/config.toml`, `SystemdCgroup = true`): the script reads the config path from the unit's `CONTAINERD_CONFIG=` environment, sees the setting and does nothing. **Fedora CoreOS** ships `/usr/bin/containerd` with `containerd.service` disabled and a stock `/etc/containerd/config.toml` without it: the stock file is kept as `config.toml.booty-orig`, `containerd config default` (version 3) regenerates it, `SystemdCgroup = false` is flipped by a `sed` that refuses to run (unit fails, visible in `journalctl`) unless the generated file has exactly one such line, then `systemctl enable containerd` + `restart`. Either way it writes `/etc/crictl.yaml` pointing at `unix:///run/containerd/containerd.sock`. |
+| `booty-kubelet-setup.service` | `systemd.sh` | Fetches `kubelet/kubelet.service` and `kubeadm/10-kubeadm.conf` from `--kubeletUnitsURL` (default: the `master` templates in [kubernetes/release](https://github.com/kubernetes/release/tree/master/cmd/krel/templates/latest); pin or mirror it if you want reproducible boots), rewrites `/usr/bin` to `/opt/bin` (so both `ExecStart=` lines run the absolute `/opt/bin/kubelet`), sets `KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --fail-swap-on=false`, enables and starts the kubelet |
+| `booty-k8s-join.service` (`Restart=on-failure RestartSec=30s`) | `join.sh` | `Environment="JOIN_STRING=..."`; exits 0 when `/etc/kubernetes/kubelet.conf` already exists (a node that joined earlier and kept its disk), otherwise loads `br_netfilter`, sets the bridge/forwarding sysctls, runs `kubeadm reset -f` and then the join string. A failed join is retried every 30 s; an empty `JOIN_STRING` logs a message and exits 0, so the node still boots. |
+
+`--containerdDisk=/dev/sda` additionally adds an ext4 filesystem (`wipe_filesystem: true`, label `ssd`) mounted at `/var/lib/containerd` through `var-lib-containerd.mount` and a `containerd.service` drop-in that `Requires=`/`After=` the mount -- an ephemeral image cache that is wiped on every boot together with the rest of the stateless worker.
+
+Flags: `--profile` (`""` or `kubeadm-worker`, validated at start-up), `--k8sVersion` (default `v1.34.3`), `--cniVersion` (default `v1.1.1`), `--crictlVersion` (default `--k8sVersion`), `--containerdDisk` (default none), `--kubeletUnitsURL`. `part=merged` previews show the profile merged with your template.
+
+## Automatic join tokens
+
+`--kubeadmJoin` decides where `{{ .JoinString }}` and the profile's `JOIN_STRING` come from:
+
+* `static` (default): `--joinString`, or the trimmed contents of `--joinStringFile` when set (re-read on every render, so a rotated mounted Secret is picked up; the file wins over the flag).
+* `auto`: Booty mints a **bootstrap token per boot** through the Kubernetes API it runs in. When a registered `flatcar`/`coreos` host fetches `/ignition.json` (the real fetch, not `preview=1`), Booty
+  1. reads `kube-public/cluster-info` (cached 10 minutes) for the **external** API endpoint (`clusters[0].cluster.server`) and the CA, and computes the discovery hash `sha256(SubjectPublicKeyInfo)`;
+  2. creates the Secret `kube-system/bootstrap-token-<id>` (type `bootstrap.kubernetes.io/token`, 6-char id + 16-char secret from `crypto/rand`, `usage-bootstrap-authentication`/`-signing`, `auth-extra-groups: system:bootstrappers:kubeadm:default-node-token`, `expiration` = now + `--joinTokenTTL` (default `1h`), `description: "booty: <hostname> <mac>"`);
+  3. renders `kubeadm join <endpoint> --token <id>.<secret> --discovery-token-ca-cert-hash sha256:<hex>` and caches it per MAC for `ttl/2`. The `builtin.json`/`user.json` children Ignition fetches seconds later reuse the cached value (and mint if the cache is cold, e.g. after a Booty restart); retries within a boot do not churn tokens; previews only ever show the cache.
+
+  Booty talks to the API server in-cluster by default: `KUBERNETES_SERVICE_HOST`/`_PORT`, the service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token` (re-read per request, it rotates) and the CA from `.../ca.crt`; 10 s timeouts; no client-go, plain `net/http`. Outside the cluster, `--kubeconfig` points it at a kubeconfig (current context; token or client certificate), and with `--controlPlane=managed` it authenticates with an admin certificate from Booty's own CA (see [Cluster bootstrap](cluster.md#cluster-bootstrap)). RBAC needed (see [examples/k8s.yaml](../examples/k8s.yaml)): a Role in `kube-system` on `secrets` with `create`, `list`, `delete`, `get`, and a Role in `kube-public` on `configmaps` named `cluster-info` with `get`.
+
+  **Cleanup**: on every `--updateSchedule` tick Booty lists `kube-system` Secrets of type `bootstrap.kubernetes.io/token` and deletes the ones whose `description` starts with `booty:` and whose `expiration` has passed (kubeadm and k0s flavours alike). Tokens it did not create are never touched.
+
+  **Failure mode**: if minting fails (RBAC, API down, not running in a cluster) Booty logs an error, sets `X-Booty-Warning: kubeadm join token unavailable` on the `/ignition.json` response and still serves the config with an empty `JOIN_STRING`. The node boots but does not join; fix the cause and reboot it.
