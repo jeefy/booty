@@ -40,7 +40,7 @@ make test-go    # go test -race -timeout=5m
 make test-web   # Vitest
 make lint       # lint-go + lint-web
 make lint-go    # golangci-lint
-make lint-web   # eslint + vue-tsc
+make lint-web   # eslint + prettier --check + vue-tsc
 make fmt-check  # fails when any Go file is not gofmt-clean (for CI)
 make image      # multi-stage container build (VERSION/TIMESTAMP stamped into /info)
 make ipxe       # rebuild boot/*.kpxe|*.efi from the pinned iPXE release in a container (only when bumping iPXE or editing boot/embed.ipxe)
@@ -59,4 +59,7 @@ SLSA provenance and its verification. Docs-only changes (Markdown, `docs/`,
 `LICENSE`, `.gitignore`) skip all of that through the `changes` job; `v*.*.*`
 tags always build. Publishing the GitHub release does not trigger a second
 build, so a release tag, its `major.minor` tag and `latest` share one digest.
-CI lints the web UI with `npm run lint:check` (no `--fix`, zero warnings).
+CI lints the web UI with `npm run lint:check` (no `--fix`, zero warnings) and
+`npm run format:check` (Prettier over `web/src/`; fix with `npm run format`).
+The commit that first applied Prettier is listed in `.git-blame-ignore-revs`
+(`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
