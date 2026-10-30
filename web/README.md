@@ -177,6 +177,8 @@ npm run type-check   # vue-tsc --build (views and tests are type-checked)
 npm test             # Vitest + jsdom + @vue/test-utils, single run (test:unit watches)
 npm run test:coverage   # same, with V8 coverage -> coverage/ (text summary, html, lcov, json-summary)
 npm run format       # Prettier over src/
+npm run format:check # what CI runs: fails on any file Prettier would change
+npm run lint:check   # what CI runs: ESLint without --fix, zero warnings
 ```
 
 ## Build

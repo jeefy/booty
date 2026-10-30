@@ -209,9 +209,7 @@ async function load() {
     error.value = errorMessage(storageResult.reason)
   }
   autopilot.value =
-    autopilotResult.status === 'fulfilled'
-      ? autopilotResult.value
-      : normalizeAutopilotStatus(null)
+    autopilotResult.status === 'fulfilled' ? autopilotResult.value : normalizeAutopilotStatus(null)
   hostData.value =
     hostsResult.status === 'fulfilled'
       ? normalizeBootyData(hostsResult.value)

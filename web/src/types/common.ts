@@ -16,6 +16,10 @@ export function strings(values: (string | null)[] | null | undefined): string[] 
   return (values ?? []).filter((v): v is string => typeof v === 'string' && v !== '')
 }
 
-export function oneOf<T extends string>(value: string | undefined, options: readonly T[], fallback: T): T {
+export function oneOf<T extends string>(
+  value: string | undefined,
+  options: readonly T[],
+  fallback: T
+): T {
   return options.includes(value as T) ? (value as T) : fallback
 }

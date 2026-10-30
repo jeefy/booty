@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ApiError, apiGet, getBootyData, getEffectiveConfig, apiPost, apiPut, errorMessage } from '@/api'
+import {
+  ApiError,
+  apiGet,
+  getBootyData,
+  getEffectiveConfig,
+  apiPost,
+  apiPut,
+  errorMessage
+} from '@/api'
 import {
   normalizeBootyData,
   normalizeEffectiveConfig,

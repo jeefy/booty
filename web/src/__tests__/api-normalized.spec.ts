@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  ApiError,
-  apiGetNormalized,
-  getAutopilotStatus,
-  getBootyData,
-  getInfo
-} from '@/api'
+import { ApiError, apiGetNormalized, getAutopilotStatus, getBootyData, getInfo } from '@/api'
 import { jsonResponse, mockFetch, textResponse } from './helpers'
 
 afterEach(() => {

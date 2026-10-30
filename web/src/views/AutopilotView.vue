@@ -7,7 +7,10 @@ import {
   getAutopilotStatus,
   getBootyData,
   getPowerStatus,
-  type AutopilotQuery, apiPost, errorMessage } from '@/api'
+  type AutopilotQuery,
+  apiPost,
+  errorMessage
+} from '@/api'
 import {
   AUTOPILOT_HOST_LABEL,
   OS_OPTIONS,
@@ -155,7 +158,8 @@ function historyCount(os: HostOS): number {
 
 const clocks = computed(() => {
   const parts: string[] = []
-  if (status.value.healthWindow) parts.push(`health window ${formatDuration(status.value.healthWindow)}`)
+  if (status.value.healthWindow)
+    parts.push(`health window ${formatDuration(status.value.healthWindow)}`)
   if (status.value.retryAfter) parts.push(`retry after ${formatDuration(status.value.retryAfter)}`)
   if (status.value.soak) parts.push(`soak ${formatDuration(status.value.soak)}`)
   if (status.value.cooldown) parts.push(`cooldown ${formatDuration(status.value.cooldown)}`)
@@ -306,8 +310,7 @@ async function load() {
     }))
     if (!sameJSON(movers, waveHosts.value)) waveHosts.value = movers
   }
-  const power =
-    powerResult.status === 'fulfilled' ? powerResult.value.events : []
+  const power = powerResult.status === 'fulfilled' ? powerResult.value.events : []
   if (!sameJSON(power, powerEvents.value)) powerEvents.value = power
   loading.value = false
   return ok

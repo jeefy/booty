@@ -35,7 +35,7 @@ lint-go:
 	golangci-lint run $(GOPKGS)
 
 lint-web:
-	cd web && npm run lint && npm run type-check
+	cd web && npm run lint && npm run format:check && npm run type-check
 
 vet:
 	go vet $(GOPKGS)

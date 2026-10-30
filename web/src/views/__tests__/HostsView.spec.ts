@@ -443,7 +443,9 @@ describe('HostsView', () => {
       expect(cell.attributes('data-reporting')).toBe('never')
       const badge = cell.find('[data-testid="host-no-agent"]')
       expect(badge.text()).toBe('no agent yet')
-      expect(badge.attributes('title')).toContain("Booted before Booty's update/health units existed")
+      expect(badge.attributes('title')).toContain(
+        "Booted before Booty's update/health units existed"
+      )
       expect(badge.attributes('title')).toContain('reports every 10 min')
       expect(badge.classes()).toContain('badge')
       expect(row.find('[data-testid="host-status"]').exists()).toBe(false)
@@ -497,9 +499,9 @@ describe('HostsView', () => {
         { '/info': () => jsonResponse(withoutTargets) }
       )
       await flushPromises()
-      expect(
-        fallback.wrapper.find('[data-testid="host-version-match"]').text()
-      ).toBe('behind 4593.2.1')
+      expect(fallback.wrapper.find('[data-testid="host-version-match"]').text()).toBe(
+        'behind 4593.2.1'
+      )
 
       const failing = mountWithData(
         { hosts: { [behind.mac]: behind }, unknownHosts: {} },
@@ -661,7 +663,10 @@ describe('HostsView', () => {
   })
 
   it('shows the power badge, enables the power buttons from /power and updates the row on 202', async () => {
-    const up = { ...hostA, power: { state: 'up', since: '2026-09-24T10:00:00Z', reason: 'answers on tcp/22' } }
+    const up = {
+      ...hostA,
+      power: { state: 'up', since: '2026-09-24T10:00:00Z', reason: 'answers on tcp/22' }
+    }
     const off = { ...hostB, power: { state: 'off', since: '2026-09-24T09:00:00Z' } }
     const { wrapper, calls, handlers } = mountWithData(
       { hosts: { [up.mac]: up, [off.mac]: off }, unknownHosts: {} },
@@ -692,16 +697,25 @@ describe('HostsView', () => {
     expect(bravo.find('[data-action="power-reboot"]').attributes('disabled')).toBeDefined()
 
     handlers['/power/aa%3Abb%3Acc%3Add%3Aee%3A02/on'] = () =>
-      jsonResponse({ status: 'ok', mac: off.mac, power: { state: 'powering-on', request: 'on' } }, 202)
+      jsonResponse(
+        { status: 'ok', mac: off.mac, power: { state: 'powering-on', request: 'on' } },
+        202
+      )
     await bravo.find('[data-action="power-on"]').trigger('click')
     expect(bravo.find('[data-testid="power-confirm"]').exists()).toBe(true)
     expect(bravo.find('[data-action="edit"]').attributes('disabled')).toBeDefined()
     await bravo.find('[data-action="power-confirm"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-power"]').attributes('data-state')).toBe(
-      'powering-on'
-    )
-    expect(wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-action="power-on"]').attributes('disabled')).toBeDefined()
+    expect(
+      wrapper
+        .find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-testid="host-power"]')
+        .attributes('data-state')
+    ).toBe('powering-on')
+    expect(
+      wrapper
+        .find('tr[data-mac="aa:bb:cc:dd:ee:02"] [data-action="power-on"]')
+        .attributes('disabled')
+    ).toBeDefined()
   })
 
   it('disables reboot and shutdown with the no-actuator reason when /power says none or fails', async () => {
@@ -718,14 +732,19 @@ describe('HostsView', () => {
     const failing = mountWithData({ hosts: { [up.mac]: up }, unknownHosts: {} })
     await flushPromises()
     expect(
-      failing.wrapper.find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="power-shutdown"]').attributes('disabled')
+      failing.wrapper
+        .find('tr[data-mac="aa:bb:cc:dd:ee:01"] [data-action="power-shutdown"]')
+        .attributes('disabled')
     ).toBeDefined()
   })
 
   it('offers force only for the last up worker on shutdown', async () => {
     const up = { ...hostA, power: { state: 'up' } }
     const { wrapper } = mountWithData(
-      { hosts: { [up.mac]: up, [hostC.mac]: { ...hostC, power: { state: 'off' } } }, unknownHosts: {} },
+      {
+        hosts: { [up.mac]: up, [hostC.mac]: { ...hostC, power: { state: 'off' } } },
+        unknownHosts: {}
+      },
       { '/power': () => jsonResponse({ capabilities: { wol: true, actuator: 'api' } }) }
     )
     await flushPromises()

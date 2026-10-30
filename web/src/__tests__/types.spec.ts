@@ -119,11 +119,19 @@ describe('fleetTargets', () => {
   })
 
   it('falls back to the version blocks for older servers, preferring a Flatcar pin', () => {
-    expect(fleetTargets(info)).toEqual({ flatcar: '4593.2.1', coreos: '44.1', bluefin: '26.10.816' })
-    expect(fleetTargets({ ...info, flatcar: { version: '4593.2.1', pinnedVersion: '4500.0.0' } }).flatcar).toBe(
-      '4500.0.0'
-    )
-    expect(fleetTargets({ bluefin: { version: '0.0.0' } })).toEqual({ flatcar: '', coreos: '', bluefin: '' })
+    expect(fleetTargets(info)).toEqual({
+      flatcar: '4593.2.1',
+      coreos: '44.1',
+      bluefin: '26.10.816'
+    })
+    expect(
+      fleetTargets({ ...info, flatcar: { version: '4593.2.1', pinnedVersion: '4500.0.0' } }).flatcar
+    ).toBe('4500.0.0')
+    expect(fleetTargets({ bluefin: { version: '0.0.0' } })).toEqual({
+      flatcar: '',
+      coreos: '',
+      bluefin: ''
+    })
     expect(fleetTargets({})).toEqual({ flatcar: '', coreos: '', bluefin: '' })
   })
 })
