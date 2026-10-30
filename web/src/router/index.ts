@@ -28,7 +28,10 @@ export const MAIN_CONTENT_ID = 'main-content'
  * The first load is left alone (the browser owns initial focus), and so are
  * query/hash-only changes on the same page.
  */
-export function focusMainAfterNavigation(to: RouteLocationNormalized, from: RouteLocationNormalized) {
+export function focusMainAfterNavigation(
+  to: RouteLocationNormalized,
+  from: RouteLocationNormalized
+) {
   if (from.matched.length === 0 || to.path === from.path) return
   void nextTick(() => {
     document.getElementById(MAIN_CONTENT_ID)?.focus({ preventScroll: true })

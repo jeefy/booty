@@ -1,4 +1,11 @@
-import { getCurrentInstance, getCurrentScope, onBeforeUnmount, onMounted, onScopeDispose, ref } from 'vue'
+import {
+  getCurrentInstance,
+  getCurrentScope,
+  onBeforeUnmount,
+  onMounted,
+  onScopeDispose,
+  ref
+} from 'vue'
 
 /**
  * A poll task. It counts as failed when it throws/rejects or resolves to
@@ -51,7 +58,10 @@ export function usePolling(task: PollTask, options: PollingOptions) {
   function schedule() {
     clear()
     if (!active || hidden()) return
-    timer = setTimeout(() => void refresh(), backoffDelay(options.interval, failures.value, maxInterval))
+    timer = setTimeout(
+      () => void refresh(),
+      backoffDelay(options.interval, failures.value, maxInterval)
+    )
   }
 
   async function execute(gen: number) {
@@ -102,7 +112,8 @@ export function usePolling(task: PollTask, options: PollingOptions) {
   function stop() {
     active = false
     clear()
-    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+    if (typeof document !== 'undefined')
+      document.removeEventListener('visibilitychange', onVisibility)
   }
 
   if (getCurrentInstance()) {

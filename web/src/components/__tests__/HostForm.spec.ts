@@ -242,7 +242,11 @@ describe('HostForm', () => {
 
     it('shows the running version once the host reports', () => {
       const wrapper = mountForm(
-        draft({ running: '26.10.816', lastCheck: '2026-10-01T18:00:43Z', booted: '2026-10-01T05:01:33Z' })
+        draft({
+          running: '26.10.816',
+          lastCheck: '2026-10-01T18:00:43Z',
+          booted: '2026-10-01T05:01:33Z'
+        })
       )
       const line = wrapper.find(RUNNING)
       expect(line.find('.mono').text()).toBe('26.10.816')

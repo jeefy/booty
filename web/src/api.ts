@@ -50,7 +50,10 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
   return new ApiError(response.status, fallback)
 }
 
-async function fetchJSON(path: string, init?: RequestInit): Promise<{ body: unknown; status: number }> {
+async function fetchJSON(
+  path: string,
+  init?: RequestInit
+): Promise<{ body: unknown; status: number }> {
   const response = await fetch(path, init)
   if (!response.ok) {
     throw await errorFromResponse(response)

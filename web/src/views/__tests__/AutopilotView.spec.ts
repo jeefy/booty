@@ -11,7 +11,12 @@ const RouterLinkStub = {
 const hosts = {
   hosts: {
     'aa:bb:cc:dd:ee:01': { mac: 'aa:bb:cc:dd:ee:01', hostname: 'ehrlitan', os: 'flatcar' },
-    'aa:bb:cc:dd:ee:02': { mac: 'aa:bb:cc:dd:ee:02', hostname: 'aren', os: 'bluefin', canary: true },
+    'aa:bb:cc:dd:ee:02': {
+      mac: 'aa:bb:cc:dd:ee:02',
+      hostname: 'aren',
+      os: 'bluefin',
+      canary: true
+    },
     'aa:bb:cc:dd:ee:03': { mac: 'aa:bb:cc:dd:ee:03', hostname: 'gredfallan', os: 'flatcar' },
     'aa:bb:cc:dd:ee:04': { mac: 'aa:bb:cc:dd:ee:04', hostname: 'kalam', os: 'flatcar' },
     'aa:bb:cc:dd:ee:05': { mac: 'aa:bb:cc:dd:ee:05', hostname: 'brys', os: 'bluefin' },
@@ -289,7 +294,10 @@ function mountView(
     }
     return jsonResponse({ error: `unexpected ${url}` }, 500)
   })
-  return { wrapper: mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } }), spy }
+  return {
+    wrapper: mount(AutopilotView, { global: { stubs: { RouterLink: RouterLinkStub } } }),
+    spy
+  }
 }
 
 afterEach(() => {
@@ -427,7 +435,9 @@ describe('AutopilotView', () => {
   it('asks for confirmation, then POSTs the host clear endpoint and reloads', async () => {
     const { wrapper, spy } = mountView(guard)
     await flushPromises()
-    const row = wrapper.find('[data-testid="autopilot-hosts-table"] tr[data-mac="aa:bb:cc:dd:ee:03"]')
+    const row = wrapper.find(
+      '[data-testid="autopilot-hosts-table"] tr[data-mac="aa:bb:cc:dd:ee:03"]'
+    )
     await row.find('[data-action="clear-host"]').trigger('click')
     expect(spy.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
     const confirm = row.find('[data-testid="clear-host-confirm"]')
@@ -457,7 +467,9 @@ describe('AutopilotView', () => {
         : jsonResponse({ status: 'ok' })
     )
     await flushPromises()
-    const row = wrapper.find('[data-testid="autopilot-hosts-table"] tr[data-mac="aa:bb:cc:dd:ee:03"]')
+    const row = wrapper.find(
+      '[data-testid="autopilot-hosts-table"] tr[data-mac="aa:bb:cc:dd:ee:03"]'
+    )
     await row.find('[data-action="clear-host"]').trigger('click')
     await row.find('[data-action="clear-host-confirm"]').trigger('click')
     await flushPromises()
@@ -521,12 +533,17 @@ describe('AutopilotView', () => {
     ).toContain('no such report')
   })
 
-  it('merges the power tracker\'s events into the timeline with a power badge, without duplicates', async () => {
+  it("merges the power tracker's events into the timeline with a power badge, without duplicates", async () => {
     const withDuplicate = {
       ...guard,
       events: [
         ...guard.events,
-        { at: '2026-09-28T12:00:00Z', kind: 'power', mac: 'aa:bb:cc:dd:ee:01', text: 'duplicate of the autopilot ring' }
+        {
+          at: '2026-09-28T12:00:00Z',
+          kind: 'power',
+          mac: 'aa:bb:cc:dd:ee:01',
+          text: 'duplicate of the autopilot ring'
+        }
       ]
     }
     const { wrapper } = mountView(withDuplicate, undefined, powerEvents)
@@ -536,11 +553,17 @@ describe('AutopilotView', () => {
     expect(items[0]!.text()).toContain('reboot requested through the ssh actuator')
     expect(items[0]!.text()).toContain('aren')
     expect(items[0]!.find('[data-testid="event-kind"]').classes()).toContain('text-bg-info')
-    expect(wrapper.findAll('[data-testid="autopilot-timeline"] li')[1]!.attributes('data-kind')).toBe('power')
+    expect(
+      wrapper.findAll('[data-testid="autopilot-timeline"] li')[1]!.attributes('data-kind')
+    ).toBe('power')
   })
 
   it('shows power events even when the autopilot is off', async () => {
-    const { wrapper } = mountView({ mode: 'off', actuator: 'none', dryRun: true }, undefined, powerEvents)
+    const { wrapper } = mountView(
+      { mode: 'off', actuator: 'none', dryRun: true },
+      undefined,
+      powerEvents
+    )
     await flushPromises()
     const items = wrapper.findAll('[data-testid="autopilot-timeline"] li')
     expect(items).toHaveLength(2)
@@ -749,7 +772,9 @@ describe('AutopilotView', () => {
       expect(wave.attributes('data-wave')).toBe('rolling')
       expect(wave.text()).toBe('Wave wave into 26.10.880 · 1/2 hosts · started 3h ago')
       expect(
-        wrapper.find('[data-testid="autopilot-os-table"] tr[data-os="flatcar"] [data-wave]').exists()
+        wrapper
+          .find('[data-testid="autopilot-os-table"] tr[data-os="flatcar"] [data-wave]')
+          .exists()
       ).toBe(false)
     })
 

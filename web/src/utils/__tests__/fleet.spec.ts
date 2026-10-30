@@ -86,7 +86,9 @@ describe('targetVersion', () => {
     expect(targetVersion(host({ os: 'coreos' }), info)).toBe('40.1')
     expect(targetVersion(host({ os: 'bluefin' }), info)).toBe('42.20260901')
     expect(
-      targetVersion(host({ os: 'flatcar' }), { flatcar: { version: '3815.2.0', pinnedVersion: '3760.2.0' } })
+      targetVersion(host({ os: 'flatcar' }), {
+        flatcar: { version: '3815.2.0', pinnedVersion: '3760.2.0' }
+      })
     ).toBe('3760.2.0')
   })
 
@@ -140,6 +142,10 @@ describe('pendingHosts / noAgentHosts / fleetSummary', () => {
       pendingReboots: 4,
       fromServer: true
     })
-    expect(fleetSummary(data, { fleet: {} })).toEqual({ hosts: 3, pendingReboots: 2, fromServer: true })
+    expect(fleetSummary(data, { fleet: {} })).toEqual({
+      hosts: 3,
+      pendingReboots: 2,
+      fromServer: true
+    })
   })
 })

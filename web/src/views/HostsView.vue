@@ -207,7 +207,10 @@ const NO_MATCH: HostMatch = { match: 'unknown', target: '' }
 const matches = computed(() => {
   const result: Record<string, HostMatch> = {}
   for (const [mac, host] of hosts.value) {
-    result[mac] = { match: versionMatch(host, targets.value), target: hostTarget(host, targets.value) }
+    result[mac] = {
+      match: versionMatch(host, targets.value),
+      target: hostTarget(host, targets.value)
+    }
   }
   return result
 })
