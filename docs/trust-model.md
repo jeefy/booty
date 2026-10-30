@@ -17,7 +17,7 @@ Binding UDP 69 needs `CAP_NET_BIND_SERVICE` (as do UDP 67 for `--proxyDHCP` and 
 ```
 docker run --rm --network=host \
   --cap-drop ALL --cap-add NET_BIND_SERVICE --cap-add NET_RAW \
-  -v $PWD/data:/data ghcr.io/jeefy/booty:main --serverIP=192.168.1.10
+  -v $PWD/data:/data ghcr.io/jeefy/booty:v1.1.0 --serverIP=192.168.1.10
 ```
 
 The same applies to **Podman**: its default capability set lacks `NET_RAW`, and with the setcap `+ep` binary exec fails with `EPERM` unless `NET_RAW` is in the bounding set, so Podman users must pass `--cap-add NET_RAW --cap-add NET_BIND_SERVICE` exactly as above.

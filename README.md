@@ -47,11 +47,11 @@ docker run --rm -it \
   --network=host \
   --cap-drop ALL --cap-add NET_BIND_SERVICE --cap-add NET_RAW \
   -v $PWD/data:/data/ \
-  ghcr.io/jeefy/booty:main \
+  ghcr.io/jeefy/booty:v1.1.0 \
   --serverIP=192.168.1.10
 ```
 
-The image runs as **nonroot** (uid 65532; applies to `:main` and releases after 1.0.0) with the `NET_BIND_SERVICE` and `NET_RAW` file capabilities on the binary, so the two `--cap-add` flags are required to keep them in the bounding set, and the `/data` volume must be writable by uid 65532 (`chown -R 65532:65532 data`, or `fsGroup: 65532` plus `runAsUser: 65532` on Kubernetes). This also applies to **Podman**: its default capability set lacks `NET_RAW`, and with the setcap `+ep` binary exec fails with `EPERM` unless `NET_RAW` is in the bounding set, so Podman users must pass `--cap-add NET_RAW --cap-add NET_BIND_SERVICE` just like the docker example above. See [Trust model and capabilities](docs/trust-model.md#running-as-root--capabilities).
+The image runs as **nonroot** (uid 65532; applies to `:main` and v1.1.0 and later) with the `NET_BIND_SERVICE` and `NET_RAW` file capabilities on the binary, so the two `--cap-add` flags are required to keep them in the bounding set, and the `/data` volume must be writable by uid 65532 (`chown -R 65532:65532 data`, or `fsGroup: 65532` plus `runAsUser: 65532` on Kubernetes). This also applies to **Podman**: its default capability set lacks `NET_RAW`, and with the setcap `+ep` binary exec fails with `EPERM` unless `NET_RAW` is in the bounding set, so Podman users must pass `--cap-add NET_RAW --cap-add NET_BIND_SERVICE` just like the docker example above. See [Trust model and capabilities](docs/trust-model.md#running-as-root--capabilities).
 
 ### Kubernetes
 
@@ -73,7 +73,9 @@ COSIGN_EXPERIMENTAL=1 cosign verify-attestation --new-bundle-format=false \
 
 The `:main` tag tracks the default branch. Release-candidate tags
 (`-rc.N`) do **not** move `:latest`. Base images are pinned by digest.
-Notable changes between releases are listed in [CHANGELOG.md](CHANGELOG.md).
+Notable changes between releases are listed in [CHANGELOG.md](CHANGELOG.md);
+release notes with upgrade steps live under `docs/releases/`
+([v1.0.0](docs/releases/v1.0.0.md), [v1.1.0](docs/releases/v1.1.0.md)).
 
 ## Flags
 
