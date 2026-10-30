@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage",
     "type-check": "vue-tsc --build --force",
     "lint": "eslint . --fix",
+    "lint:check": "eslint . --max-warnings=0",
     "format": "prettier --write src/"
   },
   "dependencies": {
