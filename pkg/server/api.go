@@ -364,7 +364,7 @@ func currentPin() pinResponse {
 	return pinResponse{Pinned: pin != "", Version: pin, Current: state.CurrentFlatcarVersion()}
 }
 
-func handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, currentPin())
@@ -390,7 +390,9 @@ func handleFlatcarPinRequest(w http.ResponseWriter, r *http.Request) {
 		} else {
 			slog.Info("Flatcar version pinned via API", "version", pin)
 		}
-		go versions.FlatcarVersionCheck()
+		// The check outlives this request, so it runs under the app
+		// lifetime ctx (cancelled at shutdown), not r.Context().
+		go versions.FlatcarVersionCheck(s.ctx)
 		writeJSON(w, http.StatusOK, currentPin())
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

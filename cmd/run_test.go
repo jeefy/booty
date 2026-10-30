@@ -71,8 +71,8 @@ func TestRunVersionChecksStopsWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var ran []string
 	checks := []versions.Job{
-		{Name: "a", Fn: func() { ran = append(ran, "a"); cancel() }},
-		{Name: "b", Fn: func() { ran = append(ran, "b") }},
+		{Name: "a", Fn: func(context.Context) { ran = append(ran, "a"); cancel() }},
+		{Name: "b", Fn: func(context.Context) { ran = append(ran, "b") }},
 	}
 	runVersionChecks(ctx, checks)
 	if strings.Join(ran, ",") != "a" {
@@ -153,7 +153,7 @@ func TestShutdownWaitsForLoopsBeforeFlushingHardware(t *testing.T) {
 
 func TestStartSchedulerFailureIsRecorded(t *testing.T) {
 	t.Cleanup(func() { state.ClearSyncError(schedulerSyncError) })
-	if s := startScheduler("not a cron spec", nil); s != nil {
+	if s := startScheduler(t.Context(), "not a cron spec", nil); s != nil {
 		_ = s.Shutdown()
 		t.Fatal("an invalid schedule must not start a scheduler")
 	}
@@ -166,7 +166,7 @@ func TestStartSchedulerFailureIsRecorded(t *testing.T) {
 func TestStartSchedulerSuccessClearsError(t *testing.T) {
 	state.SetSyncError(schedulerSyncError, errors.New("stale"))
 	t.Cleanup(func() { state.ClearSyncError(schedulerSyncError) })
-	s := startScheduler("0 3 * * *", nil)
+	s := startScheduler(t.Context(), "0 3 * * *", nil)
 	if s == nil {
 		t.Fatal("a valid schedule must start")
 	}

@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,7 +118,7 @@ func TestCoreOSVersionCheckInstalls(t *testing.T) {
 	srv, _ := fakeCoreOS(t, nil)
 	dir := setupCoreOS(t, srv.URL)
 
-	CoreOSVersionCheck()
+	CoreOSVersionCheck(t.Context())
 
 	if got := state.CurrentCoreOSVersion(); got != coreOSTestVersion {
 		t.Fatalf("current = %q", got)
@@ -131,6 +133,72 @@ func TestCoreOSVersionCheckInstalls(t *testing.T) {
 	}
 }
 
+// Cancelling ctx (shutdown) mid-download makes the check return at once
+// without advancing the version, linking the release or recording a sync
+// error.
+func TestCoreOSVersionCheckStopsWhenCancelled(t *testing.T) {
+	fake, _ := fakeCoreOS(t, nil)
+	resp, err := http.Get(fake.URL + "/streams/stable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams, err := io.ReadAll(resp.Body)
+	config.CloseQuietly(resp.Body, "streams")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	downloading := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/streams/stable.json" {
+			_, _ = w.Write(streams)
+			return
+		}
+		once.Do(func() { close(downloading) })
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) }) // runs first: unblock handlers so Close returns
+	dir := setupCoreOS(t, srv.URL)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		CoreOSVersionCheck(ctx)
+	}()
+	select {
+	case <-downloading:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check never started downloading")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check did not return after ctx was cancelled")
+	}
+
+	if got := state.CurrentCoreOSVersion(); got == coreOSTestVersion {
+		t.Fatalf("version advanced to %q", got)
+	}
+	if CurrentRelease(OSCoreOS) != "" {
+		t.Error("current linked")
+	}
+	if _, err := os.Stat(filepath.Join(dir, OSCoreOS, coreOSTestVersion)); !os.IsNotExist(err) {
+		t.Error("partial release left on disk")
+	}
+	if e, ok := state.SyncErrors()[OSCoreOS]; ok {
+		t.Errorf("a cancelled check recorded a sync error: %+v", e)
+	}
+}
+
 func TestCoreOSVersionCheckFailsClosedWithoutChecksum(t *testing.T) {
 	for name, sums := range map[string]map[string]string{
 		"missing":  {"rootfs": "-"},
@@ -141,7 +209,7 @@ func TestCoreOSVersionCheckFailsClosedWithoutChecksum(t *testing.T) {
 			srv, hits := fakeCoreOS(t, sums)
 			dir := setupCoreOS(t, srv.URL)
 
-			CoreOSVersionCheck()
+			CoreOSVersionCheck(t.Context())
 
 			if got := state.CurrentCoreOSVersion(); got == coreOSTestVersion {
 				t.Fatal("advanced to a release with an unverified artifact")
@@ -210,7 +278,7 @@ func TestCoreOSStreamsRetriedThenSyncError(t *testing.T) {
 	t.Cleanup(srv.Close)
 	setupCoreOS(t, srv.URL)
 
-	CoreOSVersionCheck()
+	CoreOSVersionCheck(t.Context())
 
 	if int(n.Load()) != metadataAttempts {
 		t.Errorf("streams fetched %d times, want %d", n.Load(), metadataAttempts)

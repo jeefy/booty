@@ -183,7 +183,7 @@ func run(cmd *cobra.Command, argv []string) error {
 	if err != nil {
 		return err
 	}
-	srv, err := startServers(subs)
+	srv, err := startServers(ctx, subs)
 	if err != nil {
 		closeHardware()
 		return err
@@ -389,8 +389,9 @@ type runningServers struct {
 }
 
 // startServers starts TFTP, HTTP and (with --proxyDHCP) ProxyDHCP, stopping
-// the ones already running when a later one fails.
-func startServers(subs *subsystems) (*runningServers, error) {
+// the ones already running when a later one fails. ctx bounds background
+// work the HTTP handlers start (the version check after a pin change).
+func startServers(ctx context.Context, subs *subsystems) (*runningServers, error) {
 	srv := &runningServers{errCh: make(chan error, 4)}
 	var err error
 	srv.tftp, err = tftp.Start(tftp.Config{
@@ -407,7 +408,7 @@ func startServers(subs *subsystems) (*runningServers, error) {
 		srv.tftp.Shutdown(5 * time.Second)
 		return nil, fmt.Errorf("embedded web ui: %w", err)
 	}
-	srv.http, err = server.Start(server.Options{WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: subs.bootFiles, Minter: subs.minter, Cluster: subs.cluster, Autopilot: subs.pilot, Power: subs.tracker}, srv.errCh)
+	srv.http, err = server.Start(server.Options{Context: ctx, WebFS: webFS, WebDir: viper.GetString(config.WebDir), BootFiles: subs.bootFiles, Minter: subs.minter, Cluster: subs.cluster, Autopilot: subs.pilot, Power: subs.tracker}, srv.errCh)
 	if err != nil {
 		srv.tftp.Shutdown(5 * time.Second)
 		return nil, err
@@ -478,16 +479,16 @@ func startBackground(ctx context.Context, subs *subsystems) *background {
 	extraJobs := []versions.Job{{Name: "secureboot", Fn: versions.SecureBootVersionCheck}}
 	if subs.minter != nil {
 		minter := subs.minter
-		extraJobs = append(extraJobs, versions.Job{Name: "bootstrap-token-cleanup", Fn: func() { cleanupJoinTokens(ctx, minter) }})
+		extraJobs = append(extraJobs, versions.Job{Name: "bootstrap-token-cleanup", Fn: func(ctx context.Context) { cleanupJoinTokens(ctx, minter) }})
 	}
-	bg.scheduler = startScheduler(viper.GetString(config.UpdateSchedule), extraJobs)
+	bg.scheduler = startScheduler(ctx, viper.GetString(config.UpdateSchedule), extraJobs)
 	return bg
 }
 
-// startScheduler starts the update scheduler; on failure it returns nil
-// after logging the error and recording it for /info.
-func startScheduler(schedule string, extraJobs []versions.Job) gocron.Scheduler {
-	scheduler, err := versions.StartScheduler(schedule, extraJobs...)
+// startScheduler starts the update scheduler, whose jobs run with ctx; on
+// failure it returns nil after logging the error and recording it for /info.
+func startScheduler(ctx context.Context, schedule string, extraJobs []versions.Job) gocron.Scheduler {
+	scheduler, err := versions.StartScheduler(ctx, schedule, extraJobs...)
 	if err != nil {
 		slog.Error("Scheduler failed to start; periodic checks disabled", "schedule", schedule, "error", err)
 		state.SetSyncError(schedulerSyncError, fmt.Errorf("periodic checks disabled: %w", err))
@@ -501,15 +502,15 @@ func startScheduler(schedule string, extraJobs []versions.Job) gocron.Scheduler 
 // not start.
 const schedulerSyncError = "scheduler"
 
-// runVersionChecks runs checks in order and stops early once ctx is done.
-// The checks themselves take no context, so one already running finishes.
+// runVersionChecks runs checks in order with ctx and stops early once ctx
+// is done; cancelling ctx also cuts short the check already running.
 func runVersionChecks(ctx context.Context, checks []versions.Job) {
 	for _, check := range checks {
 		if ctx.Err() != nil {
 			slog.Info("Shutting down; skipping the remaining startup version checks", "next", check.Name)
 			return
 		}
-		check.Fn()
+		check.Fn(ctx)
 	}
 }
 

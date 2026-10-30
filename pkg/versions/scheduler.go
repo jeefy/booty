@@ -1,6 +1,7 @@
 package versions
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,22 +10,24 @@ import (
 )
 
 // Job is an extra periodic task run on the same cron schedule as the
-// version checks.
+// version checks. Fn gets the scheduler's ctx and should return promptly
+// once it is done.
 type Job struct {
 	Name string
-	Fn   func()
+	Fn   func(ctx context.Context)
 }
 
 // StartScheduler runs the Flatcar, CoreOS and Bluefin checks, plus any extra
 // jobs, on schedule. Every job is a singleton: a tick that arrives while the
-// previous run is still executing is dropped.
-func StartScheduler(schedule string, extra ...Job) (gocron.Scheduler, error) {
+// previous run is still executing is dropped. Every run gets ctx, so
+// cancelling it stops in-flight checks.
+func StartScheduler(ctx context.Context, schedule string, extra ...Job) (gocron.Scheduler, error) {
 	jobs := append([]Job{
 		{"flatcar", FlatcarVersionCheck},
 		{"coreos", CoreOSVersionCheck},
 		{"bluefin", BluefinVersionCheck},
 	}, extra...)
-	s, err := newScheduler(func() gocron.JobDefinition { return gocron.CronJob(schedule, false) }, schedule, jobs)
+	s, err := newScheduler(ctx, func() gocron.JobDefinition { return gocron.CronJob(schedule, false) }, schedule, jobs)
 	if err != nil {
 		return nil, err
 	}
@@ -32,8 +35,9 @@ func StartScheduler(schedule string, extra ...Job) (gocron.Scheduler, error) {
 	return s, nil
 }
 
-// newScheduler starts jobs, each a singleton on its own definition.
-func newScheduler(def func() gocron.JobDefinition, schedule string, jobs []Job) (gocron.Scheduler, error) {
+// newScheduler starts jobs, each a singleton on its own definition and
+// run with ctx.
+func newScheduler(ctx context.Context, def func() gocron.JobDefinition, schedule string, jobs []Job) (gocron.Scheduler, error) {
 	s, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, err
@@ -41,7 +45,7 @@ func newScheduler(def func() gocron.JobDefinition, schedule string, jobs []Job) 
 	for _, job := range jobs {
 		_, err := s.NewJob(
 			def(),
-			gocron.NewTask(job.Fn),
+			gocron.NewTask(func() { job.Fn(ctx) }),
 			gocron.WithName(job.Name),
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 		)

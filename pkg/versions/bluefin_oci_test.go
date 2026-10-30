@@ -78,7 +78,7 @@ func TestBluefinVersionCheckFromOCI(t *testing.T) {
 	dir := setupBluefin(t, github.URL)
 	viper.Set(config.BluefinOCI, "http://"+host+"/projectbluefin/bluefin-server")
 
-	BluefinVersionCheck()
+	BluefinVersionCheck(t.Context())
 
 	if got := state.CurrentBluefinVersion(); got != ver {
 		t.Fatalf("current=%q want %s (latest)", got, ver)
@@ -109,7 +109,7 @@ func TestBluefinVersionCheckFromOCI(t *testing.T) {
 	t.Run("pin resolves the version tag", func(t *testing.T) {
 		viper.Set(config.BluefinVersion, old.version)
 		state.Init()
-		BluefinVersionCheck()
+		BluefinVersionCheck(t.Context())
 		if got := state.CurrentBluefinVersion(); got != old.version {
 			t.Fatalf("current=%q want pinned %s", got, old.version)
 		}
@@ -124,7 +124,7 @@ func TestBluefinVersionCheckFromOCI(t *testing.T) {
 		pushBluefinArtifact(t, host, bad)
 		viper.Set(config.BluefinVersion, bad.version)
 		state.Init()
-		BluefinVersionCheck()
+		BluefinVersionCheck(t.Context())
 		if got := state.CurrentBluefinVersion(); got != old.version {
 			t.Fatalf("version advanced to %q", got)
 		}

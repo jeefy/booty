@@ -308,7 +308,7 @@ func TestBluefinVersionCheckInstallsNvidiaSysexts(t *testing.T) {
 	srv, _ := fakeGitHub(t, releasesJSON(ver), rel)
 	dir := setupBluefin(t, srv.URL)
 
-	BluefinVersionCheck()
+	BluefinVersionCheck(t.Context())
 
 	if got := state.CurrentBluefinVersion(); got != ver {
 		t.Fatalf("current=%q want %s", got, ver)
@@ -485,7 +485,7 @@ func TestBluefinVersionCheckInstallsRelease(t *testing.T) {
 	viper.Set(config.GithubToken, "ghp_test")
 	touch(t, filepath.Join(dir, "bluefin", "1.0.0", "manifest.json"))
 
-	BluefinVersionCheck()
+	BluefinVersionCheck(t.Context())
 
 	if got := state.CurrentBluefinVersion(); got != ver {
 		t.Fatalf("current=%q want %s", got, ver)
@@ -550,7 +550,7 @@ func TestBluefinVersionCheckInstallsRelease(t *testing.T) {
 		t.Fatalf("missing %v", missing)
 	}
 
-	BluefinVersionCheck()
+	BluefinVersionCheck(t.Context())
 	if n := hits["/acme/server/releases/download/v"+ver+"/bluefin-server_"+ver+".raw"]; n != 1 {
 		t.Fatalf("second run must not download again; DDI fetched %d times", n)
 	}
@@ -590,7 +590,7 @@ func TestBluefinVersionCheckKeepsPreviousRelease(t *testing.T) {
 
 	for i, v := range versions {
 		current = v
-		BluefinVersionCheck()
+		BluefinVersionCheck(t.Context())
 		if state.CurrentBluefinVersion() != v {
 			t.Fatalf("step %d: current %q", i, state.CurrentBluefinVersion())
 		}
@@ -643,7 +643,7 @@ func TestBluefinVersionCheckPinSkipsAPIAndReusesVerifiedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	BluefinVersionCheck()
+	BluefinVersionCheck(t.Context())
 
 	if got := state.CurrentBluefinVersion(); got != ver {
 		t.Fatalf("current=%q", got)
@@ -686,7 +686,7 @@ func TestBluefinVersionCheckDoesNotAdvanceOnFailure(t *testing.T) {
 			srv, _ := fakeGitHub(t, releasesJSON(ver), rel)
 			dir := setupBluefin(t, srv.URL)
 
-			BluefinVersionCheck()
+			BluefinVersionCheck(t.Context())
 
 			if got := state.CurrentBluefinVersion(); got != "0.0.0" {
 				t.Fatalf("version advanced to %q", got)
@@ -704,7 +704,7 @@ func TestBluefinVersionCheckDoesNotAdvanceOnFailure(t *testing.T) {
 		unreachable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 		t.Cleanup(unreachable.Close)
 		setupBluefin(t, unreachable.URL)
-		BluefinVersionCheck()
+		BluefinVersionCheck(t.Context())
 		if got := state.CurrentBluefinVersion(); got != "0.0.0" {
 			t.Fatalf("API failure must leave 0.0.0, got %q", got)
 		}
@@ -770,20 +770,20 @@ func TestBluefinKeyringVerifiesSHA256SUMS(t *testing.T) {
 			}
 
 			rel.sig = detachSign(t, signer, rel.sums+"\n", armored)
-			BluefinVersionCheck()
+			BluefinVersionCheck(t.Context())
 			if got := state.CurrentBluefinVersion(); got != "0.0.0" {
 				t.Fatalf("a signature over other bytes must fail closed, version %q", got)
 			}
 
 			_, stranger := testKeyring(t, t.TempDir(), armored)
 			rel.sig = detachSign(t, stranger, rel.sums, armored)
-			BluefinVersionCheck()
+			BluefinVersionCheck(t.Context())
 			if got := state.CurrentBluefinVersion(); got != "0.0.0" {
 				t.Fatalf("a signature by an unknown key must fail closed, version %q", got)
 			}
 
 			rel.sig = detachSign(t, signer, rel.sums, armored)
-			BluefinVersionCheck()
+			BluefinVersionCheck(t.Context())
 			if got := state.CurrentBluefinVersion(); got != ver {
 				t.Fatalf("a good signature must install, version %q", got)
 			}

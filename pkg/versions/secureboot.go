@@ -128,9 +128,10 @@ func SecureBootBundleVersion() string {
 
 // SecureBootVersionCheck syncs the Secure Boot bundle for the configured
 // versions and the Flatcar CA for the served Flatcar release. It does
-// nothing unless --secureBoot is on, and concurrent runs are skipped.
-func SecureBootVersionCheck() {
-	if !viper.GetBool(config.SecureBoot) {
+// nothing unless --secureBoot is on, and concurrent runs are skipped. A
+// sync stopped by ctx (shutdown) records no sync error.
+func SecureBootVersionCheck(ctx context.Context) {
+	if !viper.GetBool(config.SecureBoot) || ctx.Err() != nil {
 		return
 	}
 	if !secureBootMu.TryLock() {
@@ -138,27 +139,34 @@ func SecureBootVersionCheck() {
 		return
 	}
 	defer secureBootMu.Unlock()
-	ctx := context.Background()
 
 	bundle := SecureBootBundleVersion()
 	if m, ok := CurrentSecureBootManifest(); ok && m.BundleVersion == bundle && len(MissingSecureBootArtifacts(viper.GetString(config.DataDir))) == 0 {
 		slog.Debug("Secure Boot bundle up to date", "bundle", bundle)
 	} else {
 		slog.Info("Syncing Secure Boot bundle", "bundle", bundle)
-		if _, err := installSecureBootBundle(ctx, bundle); err != nil {
-			slog.Error("Secure Boot bundle sync failed; HTTP Boot clients will get 404 until it succeeds", "bundle", bundle, "error", err)
-			state.SetSyncError(SyncSecureBoot, err)
-		} else {
+		_, err := installSecureBootBundle(ctx, bundle)
+		switch {
+		case err == nil:
 			state.ClearSyncError(SyncSecureBoot)
 			slog.Info("Secure Boot bundle ready", "bundle", bundle)
+		case ctx.Err() != nil:
+			slog.Info("Secure Boot sync interrupted by shutdown", "bundle", bundle, "error", err)
+			return
+		default:
+			slog.Error("Secure Boot bundle sync failed; HTTP Boot clients will get 404 until it succeeds", "bundle", bundle, "error", err)
+			state.SetSyncError(SyncSecureBoot, err)
 		}
 	}
 
-	if err := syncFlatcarCA(ctx); err != nil {
+	switch err := syncFlatcarCA(ctx); {
+	case err == nil:
+		state.ClearSyncError(SyncFlatcarCA)
+	case ctx.Err() != nil:
+		slog.Info("Flatcar Secure Boot CA sync interrupted by shutdown", "error", err)
+	default:
 		slog.Error("Flatcar Secure Boot CA sync failed", "error", err)
 		state.SetSyncError(SyncFlatcarCA, err)
-	} else {
-		state.ClearSyncError(SyncFlatcarCA)
 	}
 }
 

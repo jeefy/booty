@@ -397,11 +397,11 @@ func ValidateBluefinFlags() error {
 // BluefinVersionCheck brings the served Bluefin Server release in line with
 // --bluefinVersion or the newest release. Concurrent invocations are
 // skipped and the version only advances once every file is on disk and
-// verified.
-func BluefinVersionCheck() {
+// verified (so never when ctx is cancelled mid-sync).
+func BluefinVersionCheck(ctx context.Context) {
 	var src bluefinSource
 	var manifest BluefinManifest
-	runReleaseSync(releaseSync{
+	runReleaseSync(ctx, releaseSync{
 		os:      OSBluefin,
 		label:   "Bluefin",
 		tryLock: state.TryLockBluefinUpdate,
