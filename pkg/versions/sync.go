@@ -79,7 +79,14 @@ type errStopRetry struct{ err error }
 func (e errStopRetry) Error() string { return e.err.Error() }
 func (e errStopRetry) Unwrap() error { return e.err }
 
-func runReleaseSync(rs releaseSync) {
+// runReleaseSync runs rs under ctx. A sync cut short because ctx is done
+// (shutdown) returns without advancing the version or recording a sync
+// error: it did not fail, it was stopped.
+func runReleaseSync(ctx context.Context, rs releaseSync) {
+	if ctx.Err() != nil {
+		slog.Debug("Shutting down; skipping "+rs.label+" version check", "os", rs.os)
+		return
+	}
 	if rs.tracked != nil && !rs.tracked() {
 		slog.Debug(rs.label+" is not tracked; skipping version check", "os", rs.os)
 		return
@@ -90,12 +97,15 @@ func runReleaseSync(rs releaseSync) {
 		return
 	}
 	defer unlock()
-	ctx := context.Background()
 	slog.Debug("Checking " + rs.label + " version")
 
 	current := rs.local()
 	target, err := rs.target(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			slog.Info(rs.label+" version check interrupted by shutdown", "error", err)
+			return
+		}
 		slog.Error("Could not determine remote "+rs.label+" version, skipping update", "error", err)
 		state.SetSyncError(rs.os, err)
 		return
@@ -112,6 +122,10 @@ func runReleaseSync(rs releaseSync) {
 	}
 	slog.Info("Target "+rs.label+" version differs from local", "target", target, "local", current)
 	if err := rs.install(ctx, target, current); err != nil {
+		if ctx.Err() != nil {
+			slog.Info(rs.label+" release install interrupted by shutdown, not advancing version", "target", target, "error", err)
+			return
+		}
 		slog.Error(rs.label+" release install failed, not advancing version", "target", target, "error", err)
 		state.SetSyncError(rs.os, fmt.Errorf("install %s: %w", target, err))
 		return

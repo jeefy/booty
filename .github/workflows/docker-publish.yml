@@ -3,12 +3,12 @@ name: Docker
 on:
   push:
     branches: [ main ]
-    # Publish semver tags as releases.
+    # Publish semver tags as releases. There is deliberately no `release`
+    # trigger: publishing the GitHub release for a pushed tag would rebuild
+    # the same commit and push a second, different digest for the same tags.
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ main ]
-  release:
-    types: [published]
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -21,7 +21,7 @@ jobs:
   # the multi-arch image build, provenance or verification. This job decides;
   # everything else hangs off it through `needs`, so a docs-only push or PR
   # ends with every other job skipped (which GitHub counts as passing).
-  # Tags and releases always build.
+  # Tags always build.
   changes:
     runs-on: ubuntu-latest
     permissions:
@@ -47,7 +47,7 @@ jobs:
 
   test:
     needs: changes
-    if: needs.changes.outputs.code == 'true' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+    if: needs.changes.outputs.code == 'true' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,7 +81,7 @@ jobs:
         run: |
           cd web
           npm ci
-          npm run lint
+          npm run lint:check
           npm run type-check
           npm run test:unit -- --run
           npm run test:coverage -- --run

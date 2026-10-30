@@ -167,7 +167,7 @@ func TestSecureBootVersionCheckInstallsBundleAndFlatcarCA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	bundle := SecureBootBundleVersion()
 	if bundle != "ipxe-test_vtest_shim-9.9-1_grub-9.9-1.fc99" {
@@ -252,7 +252,7 @@ func TestSecureBootVersionCheckInstallsBundleAndFlatcarCA(t *testing.T) {
 	for p, h := range fx.hits {
 		before[p] = h.Load()
 	}
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 	for p, h := range fx.hits {
 		if h.Load() != before[p] {
 			t.Errorf("second check re-fetched %s", p)
@@ -266,7 +266,7 @@ func TestSecureBootVersionCheckOffDoesNothing(t *testing.T) {
 	viper.Set(config.SecureBoot, false)
 	state.SetCurrentFlatcarVersion("4757.2.0")
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	if _, err := os.Stat(filepath.Join(dir, "secureboot")); !os.IsNotExist(err) {
 		t.Error("secureboot directory created while --secureBoot is off")
@@ -286,7 +286,7 @@ func TestSecureBootBundleFailureLeavesNoCurrent(t *testing.T) {
 	dir := setupSecureBoot(t, srv.URL)
 	viper.Set(config.FedoraGrubVersion, "0.0-0.fc1")
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	if _, err := os.Stat(filepath.Join(dir, "secureboot", "current")); !os.IsNotExist(err) {
 		t.Error("current symlink created although the grub package was missing")
@@ -304,7 +304,7 @@ func TestSecureBootDigestMismatchIsRejected(t *testing.T) {
 	dir := setupSecureBoot(t, srv.URL)
 	fx.shim[0] ^= 0xff
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	if _, err := os.Stat(filepath.Join(dir, "secureboot", "current")); !os.IsNotExist(err) {
 		t.Error("bundle installed despite a shim digest mismatch")
@@ -326,7 +326,7 @@ func TestSecureBootFlatcarCARotationWarnsAndRewrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	ca, ok := CurrentFlatcarCA()
 	if !ok || ca.FlatcarVersion != "4757.2.0" || ca.Sha256 == "0000" {
@@ -402,7 +402,7 @@ func TestSecureBootRefusesFedoraRPMWithoutRepoMetadata(t *testing.T) {
 	repomd := "/fedora/development/45/Everything/x86_64/os/repodata/repomd.xml"
 	fx.fail[repomd] = http.StatusInternalServerError
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	if _, err := os.Stat(filepath.Join(dir, "secureboot", "current")); !os.IsNotExist(err) {
 		t.Error("bundle installed with an unverifiable Fedora shim")
@@ -415,7 +415,7 @@ func TestSecureBootRefusesFedoraRPMWithoutRepoMetadata(t *testing.T) {
 	}
 
 	viper.Set(config.AllowUnverifiedFedoraRPMs, true)
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 	if !SecureBootReady() {
 		t.Fatal("not ready with --allowUnverifiedFedoraRPMs")
 	}
@@ -432,7 +432,7 @@ func TestSecureBootFlatcarCAFailsClosedWithoutDigest(t *testing.T) {
 	state.SetCurrentFlatcarVersion("4757.2.0")
 	fx.fail["/stable/amd64-usr/4757.2.0/flatcar_production_image.shim.DIGESTS"] = http.StatusNotFound
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	if _, ok := CurrentFlatcarCA(); ok {
 		t.Error("Flatcar CA extracted from an unverified shim")
@@ -485,7 +485,7 @@ func TestSecureBootFedoraRepomdMissing(t *testing.T) {
 	fx.fail["/fedora/development/45/Everything/x86_64/os/repodata/repomd.xml"] = http.StatusNotFound
 	shimRPM := "/fedora/development/45/Everything/x86_64/os/Packages/s/shim-x64-9.9-1.x86_64.rpm"
 
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 
 	if _, err := os.Stat(filepath.Join(dir, "secureboot", "current")); !os.IsNotExist(err) {
 		t.Error("bundle installed with an unverifiable Fedora shim")
@@ -495,7 +495,7 @@ func TestSecureBootFedoraRepomdMissing(t *testing.T) {
 	}
 
 	viper.Set(config.AllowUnverifiedFedoraRPMs, true)
-	SecureBootVersionCheck()
+	SecureBootVersionCheck(t.Context())
 	if !SecureBootReady() {
 		t.Fatalf("not ready with --allowUnverifiedFedoraRPMs: %+v", state.SyncErrors()[SyncSecureBoot])
 	}

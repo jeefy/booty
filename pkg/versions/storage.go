@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/jeefy/booty/pkg/config"
@@ -302,14 +301,4 @@ func assetKind(name string) string {
 		return AssetSyslinux
 	}
 	return AssetOther
-}
-
-func statfs(dir string) (total, free int64) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		slog.Debug("statfs failed", "dir", dir, "error", err)
-		return 0, 0
-	}
-	bsize := int64(st.Bsize) //nolint:unconvert // Bsize is int64 on linux/amd64 but int32 on other ports
-	return int64(st.Blocks) * bsize, int64(st.Bavail) * bsize
 }

@@ -61,7 +61,7 @@ func TestUntrackedOSHasNoCachedReleases(t *testing.T) {
 		t.Fatalf("EffectiveTarget=%q want none", got)
 	}
 
-	CoreOSVersionCheck()
+	CoreOSVersionCheck(t.Context())
 	VerifyLocalArtifacts()
 	if v := state.CurrentCoreOSVersion(); v != "" {
 		t.Fatalf("neither the check nor the artifact scan may record a CoreOS version, got %q", v)
@@ -76,7 +76,7 @@ func TestUntrackedOSHasNoCachedReleases(t *testing.T) {
 	if state.CurrentFlatcarVersion() != "" {
 		t.Fatal("state.Init must not load version.txt for an untracked Flatcar")
 	}
-	FlatcarVersionCheck()
+	FlatcarVersionCheck(t.Context())
 	if state.CurrentFlatcarVersion() != "" || state.RemoteFlatcarVersion() != "" {
 		t.Fatal("FlatcarVersionCheck is a no-op when untracked")
 	}

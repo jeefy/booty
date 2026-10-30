@@ -56,5 +56,7 @@ The Web UI lives in `web/` (Vue 3 + Vite). `cd web && npm run dev` starts a dev 
 
 `.github/workflows/docker-publish.yml` runs tests, the multi-arch image build,
 SLSA provenance and its verification. Docs-only changes (Markdown, `docs/`,
-`LICENSE`, `.gitignore`) skip all of that through the `changes` job; tags and
-releases always build.
+`LICENSE`, `.gitignore`) skip all of that through the `changes` job; `v*.*.*`
+tags always build. Publishing the GitHub release does not trigger a second
+build, so a release tag, its `major.minor` tag and `latest` share one digest.
+CI lints the web UI with `npm run lint:check` (no `--fix`, zero warnings).

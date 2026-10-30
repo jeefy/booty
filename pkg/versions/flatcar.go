@@ -28,9 +28,9 @@ var flatcarArtifacts = []string{flatcarInitrd, flatcarKernel}
 
 // FlatcarVersionCheck brings the served Flatcar release in line with the pin
 // (if set) or the channel's latest version. Concurrent invocations are
-// skipped.
-func FlatcarVersionCheck() {
-	runReleaseSync(releaseSync{
+// skipped; cancelling ctx stops it without advancing the version.
+func FlatcarVersionCheck(ctx context.Context) {
+	runReleaseSync(ctx, releaseSync{
 		os:      OSFlatcar,
 		label:   "Flatcar",
 		tracked: config.FlatcarTracked,

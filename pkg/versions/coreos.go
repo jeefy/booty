@@ -31,11 +31,11 @@ func coreOSArtifactNames(version, arch string) map[string]string {
 
 // CoreOSVersionCheck downloads the channel's latest Fedora CoreOS PXE
 // artifacts when they differ from the served version. Concurrent invocations
-// are skipped.
-func CoreOSVersionCheck() {
+// are skipped; cancelling ctx stops it without advancing the version.
+func CoreOSVersionCheck(ctx context.Context) {
 	arch := viper.GetString(config.CoreOSArchitecture)
 	var body []byte
-	runReleaseSync(releaseSync{
+	runReleaseSync(ctx, releaseSync{
 		os:      OSCoreOS,
 		label:   "CoreOS",
 		tracked: config.CoreOSTracked,

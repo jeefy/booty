@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,6 +83,10 @@ func remoteIP(r *http.Request) string {
 // it contains index.html, otherwise WebDir on disk) and which embedded iPXE
 // binaries /boot/ exposes.
 type Options struct {
+	// Context is the app lifetime: it bounds background work a handler
+	// starts that outlives its request (the Flatcar check after a pin
+	// change). nil means context.Background().
+	Context   context.Context
 	WebFS     fs.FS
 	WebDir    string
 	BootFiles fs.FS
@@ -113,6 +118,8 @@ func uiFileSystem(o Options) http.FileSystem {
 // Server holds the per-handler dependencies that used to be package
 // globals. NewHandler returns one as its http.Handler.
 type Server struct {
+	// ctx is Options.Context, for work that outlives a request.
+	ctx            context.Context
 	pilot          *autopilot.Autopilot
 	powerTracker   *power.Tracker
 	clusterManager *cluster.Manager
@@ -130,7 +137,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 var serverCreated = func(*Server) {}
 
 func NewHandler(o Options) http.Handler {
-	s := &Server{nowFunc: time.Now}
+	s := &Server{ctx: o.Context, nowFunc: time.Now}
+	if s.ctx == nil {
+		s.ctx = context.Background()
+	}
 	serverCreated(s)
 	s.setJoinMinter(o.Minter)
 	s.setClusterManager(o.Cluster)
@@ -153,7 +163,7 @@ func NewHandler(o Options) http.Handler {
 	mux.HandleFunc("/unregister", handleUnregistrationRequest)
 	mux.HandleFunc("/booty.json", handleDataRequest)
 	mux.HandleFunc("/info", s.handleInfoRequest)
-	mux.HandleFunc("/flatcar/pin", handleFlatcarPinRequest)
+	mux.HandleFunc("/flatcar/pin", s.handleFlatcarPinRequest)
 	mux.HandleFunc("/config", handleConfigRequest)
 	mux.HandleFunc("/config/template", handleConfigTemplateRequest)
 	mux.HandleFunc("/config/template/validate", handleConfigTemplateValidateRequest)
