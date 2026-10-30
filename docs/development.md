@@ -13,7 +13,7 @@ docker run --rm -it \
   --network=host \
   --cap-drop ALL --cap-add NET_BIND_SERVICE --cap-add NET_RAW \
   -v $PWD:/data/ \
-  ghcr.io/jeefy/booty:main \
+  ghcr.io/jeefy/booty:v1.1.0 \
   --profile=kubeadm-worker \
   --joinString="kubeadm join 192.168.1.10:6443 --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${SHA_HASH}" \
   --serverIP=192.168.1.10 \
@@ -22,7 +22,7 @@ docker run --rm -it \
   --coreOSChannel=testing
 ```
 
-The image runs as nonroot (uid 65532; `:main` and releases after 1.0.0) with file capabilities; the mounted `/data` must be writable by that uid, and the bounding set must keep `NET_BIND_SERVICE` and `NET_RAW` (see [Running as root / capabilities](trust-model.md#running-as-root--capabilities)).
+The image runs as nonroot (uid 65532; `:main` and v1.1.0 and later) with file capabilities; the mounted `/data` must be writable by that uid, and the bounding set must keep `NET_BIND_SERVICE` and `NET_RAW` (see [Running as root / capabilities](trust-model.md#running-as-root--capabilities)).
 
 ### Kubernetes
 

@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [1.1.0] - 2026-10-29
+
+The headline is soak/cooldown pacing for the autopilot (#80): canaries still
+follow every release, and the rest of the fleet moves in waves, one per
+cooldown, onto releases that soaked healthy on a canary. The release also
+hardens the supply chain and the runtime after a review pass (#86): the image
+runs as nonroot with file capabilities, unverifiable downloads fail closed,
+`hardware.json` writes are batched, and the Web UI polls only while visible.
+Rounding it out are dependency bumps across the Go modules and the Web UI
+(#83, #87). Upgrading from v1.0.0 needs a `chown` of the data directory --
+see [docs/releases/v1.1.0.md](docs/releases/v1.1.0.md).
+
 ### Breaking changes
 
 - **The container image runs as nonroot (uid 65532)** with
