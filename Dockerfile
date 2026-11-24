@@ -12,7 +12,7 @@ RUN npm run build
 ### Stage Two: build the Go binary (web/dist is embedded via //go:embed)
 # Pinned to go1.26.10 to match the toolchain directive in go.mod (earlier
 # 1.26 patch releases carry stdlib vulnerabilities reported by govulncheck).
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build-go
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS build-go
 
 ARG TARGETARCH
 ARG BOOTY_VERSION=dev
